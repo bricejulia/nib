@@ -3,11 +3,15 @@ package editor
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/bricejulia/kiwi/internal/config"
+	"github.com/bricejulia/kiwi/internal/debuglog"
 	"github.com/bricejulia/kiwi/internal/layout"
 	"github.com/bricejulia/kiwi/internal/textwidth"
+	"github.com/bricejulia/kiwi/internal/ui/gitstyle"
+	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
 )
 
 // DefaultKeybinds are the editor pane's built-in keybindings, overridable
@@ -31,6 +35,51 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "End", Action: "line_end"},
 	{Trigger: "g", Action: "first_line"},
 	{Trigger: "G", Action: "last_line"},
+	{Trigger: "i", Action: "insert_mode"},
+	{Trigger: "a", Action: "append_mode"},
+	{Trigger: "o", Action: "append_new_line_mode"},
+	{Trigger: "Esc", Action: "normal_mode"},
+	{Trigger: "Enter", Action: "insert_newline"},
+	{Trigger: "Backspace", Action: "insert_backspace"},
+	{Trigger: "Ctrl+s", Action: "save"},
+	{Trigger: "u", Action: "undo"},
+	{Trigger: "Ctrl+r", Action: "redo"},
+	{Trigger: ":", Action: "command_mode"},
+}
+
+// editMode is the editor pane's modal-editing state: Normal (the pane's
+// original, navigation-only behavior), Insert (typed text goes into the
+// buffer), or Command (a minimal, digit-only ":<line>" prompt — see
+// handleCommandKey). Mirrors vim's Normal/Insert/command-line split,
+// matching the hjkl/g/G navigation scheme DefaultKeybinds already uses.
+type editMode int
+
+const (
+	modeNormal editMode = iota
+	modeInsert
+	modeCommand
+)
+
+// maxUndoEntries bounds each tab's undo stack, the same way
+// debuglog.maxEntries bounds its ring buffer: oldest entry dropped once
+// full, so a long editing session's undo history can't grow unbounded.
+// Redo's stack is naturally bounded by this too, since undo/redo only ever
+// move one entry between the two stacks.
+const maxUndoEntries = 100
+
+// undoEntry is one snapshot of a tab's editable state: the whole-buffer
+// contents an Insert session started from (or the state just before an
+// undo/redo), plus enough cursor state to restore it exactly. Taking a
+// whole-buffer snapshot once per Insert session (not per keystroke) is
+// cheap relative to the per-keystroke re-highlight this pane already does
+// (see reHighlight) — simple and correct, if not the most memory-frugal
+// possible approach. Deliberately does not capture Dirty — see
+// Buffer.Restore for why that has to be recomputed against Buffer.saved
+// instead of carried through a snapshot.
+type undoEntry struct {
+	lines     []string
+	cursorLn  int
+	cursorCol int
 }
 
 // tab holds one open file's buffer plus its own scroll/cursor state, so
@@ -58,17 +107,36 @@ type tab struct {
 	// highlighted is real tree-sitter output (see treesitter.go), one
 	// entry per buf.Lines index, raw/not-tab-expanded — nil (as a whole,
 	// or per-line) means "use the highlightLine heuristic instead", the
-	// fallback for files whose language isn't recognized. Computed ONCE
-	// in Open, since this pane is still read-only; MUST be recomputed
-	// (or invalidated) once editing exists, or edits will render with
-	// stale highlighting.
+	// fallback for files whose language isn't recognized. Computed in
+	// Open and recomputed in full after every edit (see reHighlight) —
+	// not incremental, but simple and correct; caching a tree-sitter
+	// *Tree per tab and re-parsing incrementally is the natural next
+	// optimization, once something needs the Tree anyway (e.g. real
+	// go-to-definition/find-references built on the same parse).
 	highlighted [][]layout.Segment
+
+	// undoStack/redoStack hold one undoEntry per completed Insert session
+	// (see exitInsertMode) — vim's own undo granularity, not per-keystroke.
+	// insertSnapshot is the pending entry for the Insert session currently
+	// in progress (nil outside of Insert mode), taken by enterInsertMode
+	// and either committed or discarded by exitInsertMode.
+	undoStack, redoStack []undoEntry
+	insertSnapshot       *undoEntry
+
+	// lineStatus is this tab's per-line git diff gutter markers (see
+	// gitstatus.FileHunks), keyed by 0-based index into buf.Lines. Set by
+	// ApplyLineStatus — the View itself never shells out to git, matching
+	// how file-level status flows in from the caller (see
+	// filetree.View.ApplyStatus) rather than being computed here. nil
+	// (the zero value, before the first ApplyLineStatus call, or whenever
+	// path has no git repo) means "draw no markers", same as an empty map.
+	lineStatus map[int]gitstatus.LineStatus
 }
 
-// View is the read-only editor pane: zero or more open tabs, each an
-// independent Buffer with its own scroll/cursor position. There is no
-// insert mode yet — that's a later step — but the pane does show the
-// terminal's real cursor (see CursorPosition) at the current position.
+// View is the editor pane: zero or more open tabs, each an independent
+// Buffer with its own scroll/cursor position and modal (Normal/Insert)
+// editing state — see editMode. The pane shows the terminal's real cursor
+// (see CursorPosition) at the current position.
 type View struct {
 	tabs     []*tab
 	active   int // index into tabs; meaningless when len(tabs) == 0
@@ -77,6 +145,15 @@ type View struct {
 	lastWidth, lastHeight int
 
 	keymap map[string]string
+
+	// mode is Normal unless the active tab is being typed into, or a
+	// ":<line>" prompt is open; see editMode and HandleKey.
+	mode editMode
+
+	// commandBuf holds the digits typed so far in Command mode (see
+	// handleCommandKey) — a single command line shared by the pane, like
+	// vim's, not per-tab.
+	commandBuf string
 }
 
 // NewView creates an empty editor pane with no tabs open; call Open to
@@ -109,6 +186,30 @@ func (v *View) activeTab() *tab {
 		return nil
 	}
 	return v.tabs[v.active]
+}
+
+// OpenPaths returns the paths of every open tab, for the caller
+// (cmd/kiwi/main.go) to compute per-file git line status against — the
+// View has no git/repo knowledge of its own; see ApplyLineStatus.
+func (v *View) OpenPaths() []string {
+	paths := make([]string, len(v.tabs))
+	for i, t := range v.tabs {
+		paths[i] = t.path
+	}
+	return paths
+}
+
+// ApplyLineStatus sets the git-diff gutter markers (see gitstatus.
+// FileHunks) for the open tab whose path matches path, redrawn on the
+// next Render. A no-op if path isn't currently open — a tab can close
+// between the caller listing OpenPaths and computing its status.
+func (v *View) ApplyLineStatus(path string, lines map[int]gitstatus.LineStatus) {
+	for _, t := range v.tabs {
+		if t.path == path {
+			t.lineStatus = lines
+			return
+		}
+	}
 }
 
 // Open loads path into a tab. If path is already open, its existing tab is
@@ -191,14 +292,23 @@ func (v *View) CloseAllTabs() {
 }
 
 // StatusText is the "Ln N, Col N" text meant for a status bar (see
-// internal/ui/statusbar). Col is 1-based over rune positions in the
+// internal/ui/statusbar), prefixed with an "-- INSERT --" indicator while
+// the pane is in Insert mode, or replaced by the in-progress ":<line>"
+// prompt while in Command mode. Col is 1-based over rune positions in the
 // current line, not raw terminal display columns.
 func (v *View) StatusText() string {
 	t := v.activeTab()
 	if t == nil || t.buf == nil {
 		return ""
 	}
-	return fmt.Sprintf("Ln %d, Col %d", t.cursorLn+1, t.cursorCol+1)
+	if v.mode == modeCommand {
+		return ":" + v.commandBuf
+	}
+	prefix := ""
+	if v.mode == modeInsert {
+		prefix = "-- INSERT -- "
+	}
+	return fmt.Sprintf("%sLn %d, Col %d", prefix, t.cursorLn+1, t.cursorCol+1)
 }
 
 // CursorPosition implements layout.CursorProvider: it reports where, in
@@ -297,6 +407,12 @@ func tabDisplayNames(tabs []*tab) []string {
 			names[i] = disambiguated[j]
 		}
 	}
+
+	for i, t := range tabs {
+		if t.buf != nil && t.buf.Dirty {
+			names[i] += " *" // unsaved-edits marker, appended after disambiguation
+		}
+	}
 	return names
 }
 
@@ -392,21 +508,26 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int) {
 		expandedSegs := textwidth.ExpandTabsSegments(raw, tabWidth)
 		visible := textwidth.SliceSegmentsByDisplayColumn(expandedSegs, t.leftCol, contentWidth)
 
+		diffSeg := layout.Segment{
+			Text:  gitstyle.LineMarker(t.lineStatus[ln]),
+			Style: gitstyle.LineStyle(t.lineStatus[ln]),
+		}
 		gutterSeg := layout.Segment{
-			Text:  fmt.Sprintf("%*d ", gutterWidth-1, ln+1),
+			Text:  fmt.Sprintf("%*d ", gutterWidth-2, ln+1),
 			Style: layout.Style{Attr: layout.AttrDim},
 		}
-		w.Println(rowOffset+i, append([]layout.Segment{gutterSeg}, visible...)...)
+		w.Println(rowOffset+i, append([]layout.Segment{diffSeg, gutterSeg}, visible...)...)
 	}
 }
 
-// gutterWidthFor is the line-number column's width (digits + 1 trailing
-// space), derived from the buffer's line count.
+// gutterWidthFor is the line-number column's width: a leading git-diff
+// marker column (see ApplyLineStatus), the line-number digits, and 1
+// trailing space, derived from the buffer's line count.
 func gutterWidthFor(t *tab) int {
 	if t.buf == nil {
-		return 1
+		return 2
 	}
-	return len(fmt.Sprintf("%d", len(t.buf.Lines))) + 1
+	return len(fmt.Sprintf("%d", len(t.buf.Lines))) + 2
 }
 
 // currentLineRunes returns the expanded (tabs-to-spaces) runes of t's
@@ -432,9 +553,66 @@ func cursorDisplayColumn(t *tab, tabWidth int) int {
 	return textwidth.DisplayWidth(string(runes[:col]))
 }
 
+// expandedColForRawIndex converts a raw rune index into line (an index
+// into the buffer's un-expanded storage) to the corresponding tab-expanded
+// rune index — cursorCol's own units — by measuring how many runes
+// ExpandTabs produces for the raw prefix up to idx. This is how an edit's
+// raw-index result (see rawIndexForExpandedCol) gets translated back into
+// cursorCol.
+func expandedColForRawIndex(line string, idx, tabWidth int) int {
+	runes := []rune(line)
+	if idx > len(runes) {
+		idx = len(runes)
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	return len([]rune(textwidth.ExpandTabs(string(runes[:idx]), tabWidth)))
+}
+
+// rawIndexForExpandedCol is expandedColForRawIndex's inverse: given col (a
+// tab-expanded rune index, i.e. cursorCol), it returns the corresponding
+// raw rune index into line, for splicing an edit into Buffer's un-expanded
+// storage. It walks raw runes tracking the same running column ExpandTabs
+// does; a column landing inside a tab's expansion (there is no single raw
+// rune "at" a mid-tab column) snaps to just past that tab — edits treat a
+// tab as one atomic character, never splitting it. Known edge case: this
+// tracks column by rune count rather than go-runewidth display width, so a
+// line mixing wide (CJK) runes before a tab could compute a slightly-off
+// split point — an accepted simplification, not meant to be pixel-perfect.
+func rawIndexForExpandedCol(line string, col, tabWidth int) int {
+	if tabWidth <= 0 {
+		tabWidth = 8
+	}
+	runes := []rune(line)
+	expanded := 0
+	for i, r := range runes {
+		if r == '\t' {
+			span := tabWidth - (expanded % tabWidth)
+			if col < expanded+span {
+				return i + 1 // snap past the tab, not into it
+			}
+			expanded += span
+			continue
+		}
+		if col <= expanded {
+			return i
+		}
+		expanded++
+	}
+	return len(runes)
+}
+
 func (v *View) HandleKey(k layout.Key) bool {
 	if k.EventType == layout.EventRelease {
 		return false
+	}
+
+	switch v.mode {
+	case modeInsert:
+		return v.handleInsertKey(k)
+	case modeCommand:
+		return v.handleCommandKey(k)
 	}
 
 	action, ok := v.keymap[k.String()]
@@ -455,6 +633,27 @@ func (v *View) HandleKey(k layout.Key) bool {
 	case "close_all_tabs":
 		v.CloseAllTabs()
 		return true
+	case "insert_mode":
+		v.enterInsertMode()
+		return true
+	case "append_mode":
+		// vim's "a": insert AFTER the character under the cursor, rather
+		// than before it — same one-past-the-end clamping normal cursor
+		// movement already allows (see TestViewCursorColClampsAtLineLength).
+		if v.enterInsertMode() {
+			t := v.activeTab()
+			t.cursorCol++
+			v.clamp(t)
+		}
+		return true
+	case "command_mode":
+		if v.activeTab() != nil {
+			v.mode = modeCommand
+		}
+		return true
+	case "save":
+		v.saveActive()
+		return true
 	}
 
 	t := v.activeTab()
@@ -462,6 +661,27 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return false
 	}
 
+	switch action {
+	case "undo":
+		v.undo(t)
+	case "redo":
+		v.redo(t)
+	default:
+		if !v.applyMovement(t, action) {
+			return false
+		}
+	}
+
+	v.clamp(t)
+	return true
+}
+
+// applyMovement mutates t's cursor for a Normal-mode movement action,
+// shared with handleInsertKey (arrow keys move the cursor even while
+// inserting — see there). Returns false if action isn't a movement
+// action, so callers can tell "not a movement" apart from "movement
+// handled, cursor happens not to have changed".
+func (v *View) applyMovement(t *tab, action string) bool {
 	switch action {
 	case "move_down":
 		t.cursorLn++
@@ -486,9 +706,256 @@ func (v *View) HandleKey(k layout.Key) bool {
 	default:
 		return false
 	}
-
-	v.clamp(t)
 	return true
+}
+
+// handleInsertKey handles a key while the pane is in Insert mode. Only
+// normal_mode/save/insert_newline/insert_backspace are read from the
+// keymap — deliberately not the full Normal-mode action set, so hjkl/g/G/
+// ]/[/x/X etc. stay literal insertable text instead of re-triggering their
+// Normal-mode actions. Anything else with printable text is inserted at
+// the cursor, mirroring internal/ui/finder/view.go's query-typing
+// fallback (same Ctrl/Alt/Super guard).
+func (v *View) handleInsertKey(k layout.Key) bool {
+	switch v.keymap[k.String()] {
+	case "normal_mode":
+		v.exitInsertMode()
+		return true
+	case "save":
+		v.saveActive()
+		return true
+	case "insert_newline":
+		v.insertNewline()
+		return true
+	case "insert_backspace":
+		v.deleteBackward()
+		return true
+	}
+
+	// Arrow keys move the cursor even while inserting, like most editors.
+	// hjkl (and any other letter bound to the same move_* actions) must
+	// NOT — they arrive as Text with Named == "", whereas arrow keys are
+	// always Named, so restricting to exactly these four action names
+	// (not the full applyMovement set: Home/End/PageUp/PageDown/g/G stay
+	// Normal-mode only) plus this Named check is what tells them apart.
+	if k.Named != "" {
+		switch v.keymap[k.String()] {
+		case "move_up", "move_down", "move_left", "move_right":
+			if t := v.activeTab(); t != nil {
+				v.applyMovement(t, v.keymap[k.String()])
+				v.clamp(t)
+			}
+			return true
+		}
+	}
+
+	if k.Text != "" && k.Mods&(layout.ModCtrl|layout.ModAlt|layout.ModSuper) == 0 {
+		v.insertText(k.Text)
+	}
+	return true
+}
+
+// handleCommandKey handles a key while the pane is in Command mode — a
+// minimal ":<line>" prompt (not a general ex-command line): digits
+// accumulate in v.commandBuf, Enter jumps the active tab's cursor to that
+// 1-based line (clamped to the buffer), Esc cancels, Backspace edits the
+// typed number. Anything else is ignored.
+func (v *View) handleCommandKey(k layout.Key) bool {
+	switch v.keymap[k.String()] {
+	case "normal_mode":
+		v.mode = modeNormal
+		v.commandBuf = ""
+		return true
+	case "insert_newline": // Enter
+		v.commitGoToLine()
+		return true
+	case "insert_backspace": // Backspace
+		if n := len(v.commandBuf); n > 0 {
+			v.commandBuf = v.commandBuf[:n-1]
+		}
+		return true
+	}
+
+	if len(k.Text) == 1 && k.Text[0] >= '0' && k.Text[0] <= '9' {
+		v.commandBuf += k.Text
+	}
+	return true
+}
+
+// commitGoToLine parses v.commandBuf as a 1-based line number and, if
+// valid, moves the active tab's cursor there (clamped to the buffer, via
+// the same v.clamp every other cursor move uses). An empty or invalid
+// number just closes the prompt without moving the cursor — no error UI,
+// matching the "simple first pass" precedent set by Save's error handling.
+func (v *View) commitGoToLine() {
+	line, err := strconv.Atoi(v.commandBuf)
+	v.commandBuf = ""
+	v.mode = modeNormal
+	if err != nil || line <= 0 {
+		return
+	}
+	t := v.activeTab()
+	if t == nil || t.buf == nil {
+		return
+	}
+	t.cursorLn = line - 1
+	t.cursorCol = 0
+	v.clamp(t)
+}
+
+// enterInsertMode switches to Insert mode and snapshots the active tab's
+// current state as the pending undo entry for this Insert session (see
+// exitInsertMode, which commits or discards it). Returns false, leaving
+// the mode unchanged, if there's no open buffer to edit.
+func (v *View) enterInsertMode() bool {
+	t := v.activeTab()
+	if t == nil || t.buf == nil {
+		return false
+	}
+	v.mode = modeInsert
+	snap := snapshotTab(t)
+	t.insertSnapshot = &snap
+	return true
+}
+
+// exitInsertMode returns to Normal mode, committing the just-finished
+// Insert session as a single undo entry if it actually changed the
+// buffer's Lines — vim's own undo granularity (one entry per Insert
+// session, not per keystroke). An Insert session opened and closed
+// without typing anything (or one that ends up producing identical text)
+// leaves no entry and never touches the redo stack.
+func (v *View) exitInsertMode() {
+	v.mode = modeNormal
+	t := v.activeTab()
+	if t == nil || t.insertSnapshot == nil {
+		return
+	}
+	snap := *t.insertSnapshot
+	t.insertSnapshot = nil
+	if t.buf == nil || linesEqual(snap.lines, t.buf.Lines) {
+		return
+	}
+	if len(t.undoStack) >= maxUndoEntries {
+		t.undoStack = t.undoStack[1:]
+	}
+	t.undoStack = append(t.undoStack, snap)
+	t.redoStack = nil
+}
+
+// undo reverts t's buffer to its state before the most recently completed
+// Insert session (or the most recent prior undo/redo), pushing the
+// current state onto the redo stack first so redo can reapply it. A no-op
+// on an empty undo stack.
+func (v *View) undo(t *tab) {
+	if len(t.undoStack) == 0 {
+		return
+	}
+	entry := t.undoStack[len(t.undoStack)-1]
+	t.undoStack = t.undoStack[:len(t.undoStack)-1]
+	t.redoStack = append(t.redoStack, snapshotTab(t))
+	applyUndoEntry(t, entry)
+	v.reHighlight(t)
+}
+
+// redo re-applies the most recently undone change, pushing the current
+// state onto the undo stack first so it can be undone again. A no-op on
+// an empty redo stack.
+func (v *View) redo(t *tab) {
+	if len(t.redoStack) == 0 {
+		return
+	}
+	entry := t.redoStack[len(t.redoStack)-1]
+	t.redoStack = t.redoStack[:len(t.redoStack)-1]
+	t.undoStack = append(t.undoStack, snapshotTab(t))
+	applyUndoEntry(t, entry)
+	v.reHighlight(t)
+}
+
+// snapshotTab captures t's current buffer contents (copied, so later
+// mutation of t.buf.Lines can't alias the snapshot) and cursor state into
+// an undoEntry.
+func snapshotTab(t *tab) undoEntry {
+	return undoEntry{
+		lines:     append([]string(nil), t.buf.Lines...),
+		cursorLn:  t.cursorLn,
+		cursorCol: t.cursorCol,
+	}
+}
+
+// applyUndoEntry restores t's buffer and cursor to a previously captured
+// undoEntry.
+func applyUndoEntry(t *tab, e undoEntry) {
+	t.buf.Restore(e.lines)
+	t.cursorLn = e.cursorLn
+	t.cursorCol = e.cursorCol
+}
+
+// insertText inserts s at the active tab's cursor, advances the cursor
+// past it, and re-highlights. A no-op if no editable buffer is open.
+func (v *View) insertText(s string) {
+	t := v.activeTab()
+	if t == nil || t.buf == nil {
+		return
+	}
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	newRaw := t.buf.InsertText(t.cursorLn, raw, s)
+	t.cursorCol = expandedColForRawIndex(t.buf.Lines[t.cursorLn], newRaw, v.tabWidth)
+	v.reHighlight(t)
+	v.clamp(t)
+}
+
+// insertNewline splits the active tab's current line at the cursor — the
+// Enter key's effect in Insert mode.
+func (v *View) insertNewline() {
+	t := v.activeTab()
+	if t == nil || t.buf == nil {
+		return
+	}
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	t.buf.SplitLine(t.cursorLn, raw)
+	t.cursorLn++
+	t.cursorCol = 0
+	v.reHighlight(t)
+	v.clamp(t)
+}
+
+// deleteBackward deletes one character before the active tab's cursor,
+// joining with the previous line if the cursor is at column 0 — the
+// Backspace key's effect in Insert mode.
+func (v *View) deleteBackward() {
+	t := v.activeTab()
+	if t == nil || t.buf == nil {
+		return
+	}
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	newLn, newRaw := t.buf.DeleteBackward(t.cursorLn, raw)
+	t.cursorLn = newLn
+	t.cursorCol = expandedColForRawIndex(t.buf.Lines[newLn], newRaw, v.tabWidth)
+	v.reHighlight(t)
+	v.clamp(t)
+}
+
+// reHighlight recomputes t.highlighted after an edit — a full re-parse, the
+// same cost as Open's initial call; see the highlighted field's doc
+// comment for the incremental-parsing optimization this defers.
+func (v *View) reHighlight(t *tab) {
+	if t.buf != nil {
+		t.highlighted = highlightBuffer(t.buf)
+	}
+}
+
+// saveActive writes the active tab's buffer back to disk. A failure is
+// logged rather than shown in the pane — the buffer's Dirty flag simply
+// stays true, so the tab's dirty marker keeps reflecting that the edit is
+// still unsaved.
+func (v *View) saveActive() {
+	t := v.activeTab()
+	if t == nil || t.buf == nil {
+		return
+	}
+	if err := t.buf.Save(); err != nil {
+		debuglog.Error("save %s: %v", t.buf.Path, err)
+	}
 }
 
 func (v *View) pageSize() int {

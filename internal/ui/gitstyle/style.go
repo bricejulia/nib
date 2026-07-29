@@ -1,7 +1,7 @@
-// Package gitstyle is the shared presentation for git file status — a
-// single-letter marker and a Style — used by both the file tree and the
-// fuzzy finder so a file's status renders identically wherever it shows
-// up.
+// Package gitstyle is the shared presentation for git status — file-level
+// (a single-letter marker and a Style, used by the file tree and fuzzy
+// finder) and line-level (a gutter glyph and a Style, used by the editor)
+// — so a status renders identically wherever it shows up.
 package gitstyle
 
 import (
@@ -45,6 +45,39 @@ func Style(s gitstatus.Status) layout.Style {
 		return layout.Style{Attr: layout.AttrDim}
 	case gitstatus.Conflicted:
 		return layout.Style{Foreground: layout.ColorBrightRed, Attr: layout.AttrBold}
+	default:
+		return layout.Style{}
+	}
+}
+
+// LineMarker is the single-character editor-gutter glyph for a line's git
+// diff status (see gitstatus.LineStatus): "+"/"~" sit on the changed line
+// itself, while "_" — like vim-gitgutter's convention — rides on the line
+// immediately after a deletion, since a pure deletion leaves no line of
+// its own to mark.
+func LineMarker(s gitstatus.LineStatus) string {
+	switch s {
+	case gitstatus.LineAdded:
+		return "+"
+	case gitstatus.LineModified:
+		return "~"
+	case gitstatus.LineDeletedBefore:
+		return "_"
+	default:
+		return " "
+	}
+}
+
+// LineStyle colors a line's gutter marker the same way Style colors a
+// file's: green=added, yellow=modified, red=deleted.
+func LineStyle(s gitstatus.LineStatus) layout.Style {
+	switch s {
+	case gitstatus.LineAdded:
+		return layout.Style{Foreground: layout.ColorGreen}
+	case gitstatus.LineModified:
+		return layout.Style{Foreground: layout.ColorYellow}
+	case gitstatus.LineDeletedBefore:
+		return layout.Style{Foreground: layout.ColorRed}
 	default:
 		return layout.Style{}
 	}

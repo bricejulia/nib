@@ -1,10 +1,14 @@
 package editor
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/kiwi/internal/ui/gitstyle"
+	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
 )
 
 type fakeWindow struct {
@@ -127,6 +131,60 @@ func TestViewCursorPositionFalseWithNoFileOpen(t *testing.T) {
 	v := NewView()
 	if _, _, ok := v.CursorPosition(); ok {
 		t.Fatal("expected CursorPosition ok=false with no tabs open")
+	}
+}
+
+func TestViewOpenPathsReturnsEveryOpenTab(t *testing.T) {
+	v := NewView()
+	if paths := v.OpenPaths(); len(paths) != 0 {
+		t.Fatalf("expected no open paths, got %v", paths)
+	}
+
+	path := fixturePath(t, "editor_sample.txt")
+	v.Open(path)
+	paths := v.OpenPaths()
+	if len(paths) != 1 || paths[0] != path {
+		t.Fatalf("got %v, want [%q]", paths, path)
+	}
+}
+
+func TestViewApplyLineStatusIgnoresUnknownPath(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+	// Applying status for a path that isn't open must not panic and must
+	// not affect the tab that is open.
+	v.ApplyLineStatus("/no/such/file.txt", map[int]gitstatus.LineStatus{0: gitstatus.LineAdded})
+
+	w := newFakeWindow(40, 10)
+	v.Render(w)
+	if strings.Contains(w.segs[1][0].Text, "+") {
+		t.Errorf("row 1's gutter marker should be untouched, got %q", w.segs[1][0].Text)
+	}
+}
+
+func TestViewRenderShowsLineStatusMarkerInGutter(t *testing.T) {
+	v := NewView()
+	path := fixturePath(t, "editor_sample.txt")
+	v.Open(path)
+	v.ApplyLineStatus(path, map[int]gitstatus.LineStatus{
+		0: gitstatus.LineAdded,
+		1: gitstatus.LineModified,
+	})
+
+	w := newFakeWindow(40, 10)
+	v.Render(w)
+
+	// Row 0 is the tab bar; buffer line 0 renders on row 1, line 1 on row
+	// 2. The marker is the gutter's leading segment (see renderBody).
+	if got := w.segs[1][0]; got.Text != gitstyle.LineMarker(gitstatus.LineAdded) || got.Style != gitstyle.LineStyle(gitstatus.LineAdded) {
+		t.Errorf("row 1 marker = %+v, want text %q style %+v", got, gitstyle.LineMarker(gitstatus.LineAdded), gitstyle.LineStyle(gitstatus.LineAdded))
+	}
+	if got := w.segs[2][0]; got.Text != gitstyle.LineMarker(gitstatus.LineModified) || got.Style != gitstyle.LineStyle(gitstatus.LineModified) {
+		t.Errorf("row 2 marker = %+v, want text %q style %+v", got, gitstyle.LineMarker(gitstatus.LineModified), gitstyle.LineStyle(gitstatus.LineModified))
+	}
+	// Line 2 has no entry in the map: unchanged, so a blank marker.
+	if got := w.segs[3][0]; got.Text != " " {
+		t.Errorf("row 3 marker = %+v, want a blank (unchanged) marker", got)
 	}
 }
 
@@ -711,4 +769,530 @@ func rowHasStyle(w *fakeWindow, row int, match func(layout.Style) bool) bool {
 		}
 	}
 	return false
+}
+
+func TestIAndEscToggleInsertAndNormalMode(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+
+	if v.mode != modeNormal {
+		t.Fatalf("expected to start in Normal mode")
+	}
+	if !v.HandleKey(layout.Key{Text: "i"}) {
+		t.Fatal("'i' should be consumed to enter Insert mode")
+	}
+	if v.mode != modeInsert {
+		t.Fatal("expected Insert mode after 'i'")
+	}
+	if !v.HandleKey(layout.Key{Named: layout.KeyEsc}) {
+		t.Fatal("Esc should be consumed to return to Normal mode")
+	}
+	if v.mode != modeNormal {
+		t.Fatal("expected Normal mode after Esc")
+	}
+}
+
+func TestTypingInInsertModeInsertsText(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"ac"}}}}
+	v.active = 0
+	v.HandleKey(layout.Key{Text: "i"})
+	v.activeTab().cursorCol = 1
+
+	v.HandleKey(layout.Key{Text: "b"})
+
+	if got := v.activeTab().buf.Lines[0]; got != "abc" {
+		t.Fatalf("Lines[0] = %q, want %q", got, "abc")
+	}
+	if v.activeTab().cursorCol != 2 {
+		t.Fatalf("cursorCol = %d, want 2 (advanced past the inserted rune)", v.activeTab().cursorCol)
+	}
+	if !v.activeTab().buf.Dirty {
+		t.Fatal("expected the buffer to be marked Dirty after typing")
+	}
+}
+
+func TestNormalModeLettersMoveInsteadOfInsertingText(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"line one", "line two"}}}}
+	v.active = 0
+
+	v.HandleKey(layout.Key{Text: "j"}) // move_down, not a literal "j"
+
+	if v.activeTab().cursorLn != 1 {
+		t.Fatalf("expected 'j' to move the cursor down in Normal mode, cursorLn=%d", v.activeTab().cursorLn)
+	}
+	if v.activeTab().buf.Lines[0] != "line one" {
+		t.Fatalf("Normal mode must not insert text: Lines[0] = %q", v.activeTab().buf.Lines[0])
+	}
+}
+
+func TestLettersBoundToActionsAreLiteralWhileInserting(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{""}}}}
+	v.active = 0
+	v.HandleKey(layout.Key{Text: "i"})
+
+	v.HandleKey(layout.Key{Text: "j"}) // "j" is move_down in Normal mode
+
+	if v.activeTab().cursorLn != 0 {
+		t.Fatalf("typing 'j' while inserting must not move the cursor, cursorLn=%d", v.activeTab().cursorLn)
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "j" {
+		t.Fatalf("Lines[0] = %q, want %q (the letter typed literally)", got, "j")
+	}
+}
+
+func TestEnterInInsertModeSplitsLine(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abcdef"}}}}
+	v.active = 0
+	v.HandleKey(layout.Key{Text: "i"})
+	v.activeTab().cursorCol = 3
+
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	tb := v.activeTab()
+	if len(tb.buf.Lines) != 2 || tb.buf.Lines[0] != "abc" || tb.buf.Lines[1] != "def" {
+		t.Fatalf("Lines = %+v, want [\"abc\" \"def\"]", tb.buf.Lines)
+	}
+	if tb.cursorLn != 1 || tb.cursorCol != 0 {
+		t.Fatalf("cursor = (%d,%d), want (1,0)", tb.cursorLn, tb.cursorCol)
+	}
+}
+
+func TestBackspaceInInsertModeDeletesAndJoinsLines(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo", "bar"}}}}
+	v.active = 0
+	v.HandleKey(layout.Key{Text: "i"})
+	v.activeTab().cursorLn = 1
+	v.activeTab().cursorCol = 0
+
+	v.HandleKey(layout.Key{Named: layout.KeyBackspace})
+
+	tb := v.activeTab()
+	if len(tb.buf.Lines) != 1 || tb.buf.Lines[0] != "foobar" {
+		t.Fatalf("Lines = %+v, want [\"foobar\"]", tb.buf.Lines)
+	}
+	if tb.cursorLn != 0 || tb.cursorCol != 3 {
+		t.Fatalf("cursor = (%d,%d), want (0,3)", tb.cursorLn, tb.cursorCol)
+	}
+}
+
+func TestDirtyMarkerAppearsInTabBarAfterEdit(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+	w := newFakeWindow(60, 10)
+	v.Render(w)
+	if strings.Contains(w.lines[0], "*") {
+		t.Fatalf("did not expect a dirty marker before any edit, got %q", w.lines[0])
+	}
+
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(layout.Key{Text: "x"})
+	v.Render(w)
+
+	if !strings.Contains(w.lines[0], "*") {
+		t.Errorf("expected a dirty marker in the tab bar after an edit, got %q", w.lines[0])
+	}
+}
+
+func TestStatusTextShowsInsertModeIndicator(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+	w := newFakeWindow(40, 10)
+	v.Render(w)
+
+	if got := v.StatusText(); strings.Contains(got, "INSERT") {
+		t.Fatalf("did not expect an INSERT indicator in Normal mode, got %q", got)
+	}
+
+	v.HandleKey(layout.Key{Text: "i"})
+	if got := v.StatusText(); !strings.Contains(got, "INSERT") {
+		t.Errorf("expected an INSERT indicator in Insert mode, got %q", got)
+	}
+}
+
+func TestCtrlSSavesActiveTabToDisk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "save_me.txt")
+	if err := os.WriteFile(path, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewView()
+	v.Open(path)
+	v.HandleKey(layout.Key{Text: "i"})
+	v.activeTab().cursorCol = len(v.activeTab().buf.Lines[0])
+	v.HandleKey(layout.Key{Text: "!"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	if !v.HandleKey(layout.Key{Text: "s", Mods: layout.ModCtrl}) {
+		t.Fatal("expected Ctrl+s to be consumed")
+	}
+
+	if v.activeTab().buf.Dirty {
+		t.Fatal("expected Dirty to clear after saving")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "before!" {
+		t.Fatalf("file contents = %q, want %q", got, "before!")
+	}
+}
+
+func TestSaveWorksWhileStillInInsertMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "save_me.txt")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewView()
+	v.Open(path)
+	v.HandleKey(layout.Key{Text: "i"})
+
+	if !v.HandleKey(layout.Key{Text: "s", Mods: layout.ModCtrl}) {
+		t.Fatal("expected Ctrl+s to be consumed while inserting")
+	}
+	if v.mode != modeInsert {
+		t.Fatal("saving should not exit Insert mode")
+	}
+}
+
+func TestSetKeymapOverridesInsertModeTrigger(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.SetKeymap(map[string]string{"Ctrl+g": "insert_mode"})
+
+	if !v.HandleKey(layout.Key{Text: "g", Mods: layout.ModCtrl}) {
+		t.Fatal("expected the overridden trigger to be consumed")
+	}
+	if v.mode != modeInsert {
+		t.Fatal("expected Ctrl+g remapped to insert_mode to enter Insert mode")
+	}
+}
+
+func TestRawExpandedColumnRoundTripThroughTab(t *testing.T) {
+	// "\ttabbed line" from testdata/editor_sample.txt: a tab (expands to
+	// tabWidth runes at tabWidth=4) followed by plain text.
+	const line = "\ttabbed line"
+	const tabWidth = 4
+
+	rawEnd := len([]rune(line))
+	expandedEnd := expandedColForRawIndex(line, rawEnd, tabWidth)
+	if got := rawIndexForExpandedCol(line, expandedEnd, tabWidth); got != rawEnd {
+		t.Fatalf("round-trip at end of line: got raw index %d, want %d", got, rawEnd)
+	}
+
+	// A column requested squarely inside the tab's expansion must snap to
+	// just past the tab (raw index 1), not split it.
+	if got := rawIndexForExpandedCol(line, 1, tabWidth); got != 1 {
+		t.Fatalf("mid-tab column should snap past the tab, got raw index %d, want 1", got)
+	}
+
+	// Past the tab, columns should map 1:1 back onto raw indices (no more
+	// tabs on this line).
+	for rawIdx := 1; rawIdx <= rawEnd; rawIdx++ {
+		expanded := expandedColForRawIndex(line, rawIdx, tabWidth)
+		if got := rawIndexForExpandedCol(line, expanded, tabWidth); got != rawIdx {
+			t.Errorf("round-trip at raw index %d: expanded=%d, got back raw index %d", rawIdx, expanded, got)
+		}
+	}
+}
+
+func TestArrowKeysMoveCursorWhileInserting(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"one", "two"}}}}
+	v.active = 0
+	v.HandleKey(layout.Key{Text: "i"})
+
+	if !v.HandleKey(layout.Key{Named: layout.KeyDown}) {
+		t.Fatal("expected Down to be consumed while inserting")
+	}
+	if v.activeTab().cursorLn != 1 {
+		t.Fatalf("cursorLn = %d, want 1 (arrow keys should move even in Insert mode)", v.activeTab().cursorLn)
+	}
+	if v.mode != modeInsert {
+		t.Fatal("moving with an arrow key must not leave Insert mode")
+	}
+	if v.activeTab().buf.Lines[1] != "two" {
+		t.Fatalf("Lines[1] = %q, want unchanged %q (arrow keys must not insert text)", v.activeTab().buf.Lines[1], "two")
+	}
+}
+
+func TestHjklStillInsertLiterallyWhileArrowsMove(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"", "second"}}}}
+	v.active = 0
+	v.HandleKey(layout.Key{Text: "i"})
+
+	v.HandleKey(layout.Key{Text: "j"}) // must insert "j", not move down
+
+	if v.activeTab().cursorLn != 0 {
+		t.Fatalf("cursorLn = %d, want 0 (letters must not move the cursor while inserting)", v.activeTab().cursorLn)
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "j" {
+		t.Fatalf("Lines[0] = %q, want %q", got, "j")
+	}
+}
+
+func TestAAppendsAfterCursor(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 1 // sitting on 'b'
+
+	if !v.HandleKey(layout.Key{Text: "a"}) {
+		t.Fatal("'a' should be consumed to enter Insert mode")
+	}
+	if v.mode != modeInsert {
+		t.Fatal("'a' should enter Insert mode")
+	}
+	if v.activeTab().cursorCol != 2 {
+		t.Fatalf("cursorCol = %d, want 2 ('a' inserts after the cursor, not before)", v.activeTab().cursorCol)
+	}
+
+	v.HandleKey(layout.Key{Text: "X"})
+	if got := v.activeTab().buf.Lines[0]; got != "abXc" {
+		t.Fatalf("Lines[0] = %q, want %q", got, "abXc")
+	}
+}
+
+func TestAAtEndOfLineAppendsPastTheEnd(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 3 // already one-past-the-end
+
+	v.HandleKey(layout.Key{Text: "a"})
+	v.HandleKey(layout.Key{Text: "!"})
+
+	if got := v.activeTab().buf.Lines[0]; got != "abc!" {
+		t.Fatalf("Lines[0] = %q, want %q", got, "abc!")
+	}
+}
+
+func TestUndoRevertsLastInsertSession(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 3
+
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(layout.Key{Text: "d"})
+	v.HandleKey(layout.Key{Text: "e"})
+	v.HandleKey(layout.Key{Text: "f"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	if got := v.activeTab().buf.Lines[0]; got != "abcdef" {
+		t.Fatalf("Lines[0] = %q, want %q", got, "abcdef")
+	}
+
+	if !v.HandleKey(layout.Key{Text: "u"}) {
+		t.Fatal("expected 'u' to be consumed")
+	}
+	tb := v.activeTab()
+	if tb.buf.Lines[0] != "abc" {
+		t.Fatalf("Lines[0] = %q, want %q after undo", tb.buf.Lines[0], "abc")
+	}
+	if tb.cursorCol != 3 {
+		t.Fatalf("cursorCol = %d, want 3 (restored to its pre-Insert-session position)", tb.cursorCol)
+	}
+}
+
+func TestRedoReappliesUndoneInsertSession(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 3
+
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(layout.Key{Text: "d"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+	v.HandleKey(layout.Key{Text: "u"})
+	if v.activeTab().buf.Lines[0] != "abc" {
+		t.Fatalf("expected undo to revert to %q, got %q", "abc", v.activeTab().buf.Lines[0])
+	}
+
+	if !v.HandleKey(layout.Key{Text: "r", Mods: layout.ModCtrl}) {
+		t.Fatal("expected Ctrl+r to be consumed")
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "abcd" {
+		t.Fatalf("Lines[0] = %q, want %q after redo", got, "abcd")
+	}
+}
+
+func TestNoOpInsertSessionLeavesNoUndoEntry(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc}) // typed nothing
+
+	if len(v.activeTab().undoStack) != 0 {
+		t.Fatalf("expected no undo entry for a no-op Insert session, got %d", len(v.activeTab().undoStack))
+	}
+}
+
+func TestNewEditClearsRedoStack(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 3
+
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(layout.Key{Text: "d"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+	v.HandleKey(layout.Key{Text: "u"}) // undo "d", populating the redo stack
+
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(layout.Key{Text: "z"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc}) // a fresh edit
+
+	if len(v.activeTab().redoStack) != 0 {
+		t.Fatalf("expected a new edit to clear the redo stack, got %d entries", len(v.activeTab().redoStack))
+	}
+}
+
+func TestUndoAndRedoOnEmptyStacksAreNoops(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+
+	if !v.HandleKey(layout.Key{Text: "u"}) {
+		t.Fatal("expected 'u' to still be consumed with an empty undo stack")
+	}
+	if !v.HandleKey(layout.Key{Text: "r", Mods: layout.ModCtrl}) {
+		t.Fatal("expected Ctrl+r to still be consumed with an empty redo stack")
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "abc" {
+		t.Fatalf("Lines[0] = %q, want unchanged %q", got, "abc")
+	}
+}
+
+func TestColonEntersCommandModeAndJumpsToLine(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt")) // 4 lines
+
+	if !v.HandleKey(layout.Key{Text: ":"}) {
+		t.Fatal("':' should be consumed to enter Command mode")
+	}
+	if v.mode != modeCommand {
+		t.Fatal("expected Command mode after ':'")
+	}
+	if got := v.StatusText(); got != ":" {
+		t.Fatalf("StatusText = %q, want %q", got, ":")
+	}
+
+	v.HandleKey(layout.Key{Text: "3"})
+	if got := v.StatusText(); got != ":3" {
+		t.Fatalf("StatusText = %q, want %q", got, ":3")
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if v.mode != modeNormal {
+		t.Fatal("expected Enter to return to Normal mode")
+	}
+	if v.activeTab().cursorLn != 2 {
+		t.Fatalf("cursorLn = %d, want 2 (line 3, 0-indexed)", v.activeTab().cursorLn)
+	}
+}
+
+func TestColonJumpClampsBeyondEndOfFile(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt")) // 4 lines
+
+	v.HandleKey(layout.Key{Text: ":"})
+	for _, r := range "999" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if v.activeTab().cursorLn != 3 {
+		t.Fatalf("cursorLn = %d, want 3 (clamped to last line)", v.activeTab().cursorLn)
+	}
+}
+
+func TestColonEscCancelsWithoutMovingCursor(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+	before := v.activeTab().cursorLn
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "3"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	if v.mode != modeNormal {
+		t.Fatal("expected Esc to cancel back to Normal mode")
+	}
+	if v.activeTab().cursorLn != before {
+		t.Fatalf("cursorLn = %d, want unchanged %d", v.activeTab().cursorLn, before)
+	}
+}
+
+func TestColonBackspaceEditsTypedNumber(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "4"})
+	v.HandleKey(layout.Key{Text: "2"})
+	v.HandleKey(layout.Key{Named: layout.KeyBackspace})
+
+	if got := v.StatusText(); got != ":4" {
+		t.Fatalf("StatusText = %q, want %q", got, ":4")
+	}
+}
+
+// TestUndoSaveRedoShowsDirtyWhenBufferDivergesFromDisk is a regression
+// test for a reported bug: edit, exit Insert, save, undo, save again,
+// redo — the file appeared "not dirty" after that final redo even though
+// the buffer no longer matched what was actually on disk. See
+// buffer_test.go's TestRestoreDirtyReflectsSaveThatHappenedAfterTheSnapshot
+// for the same scenario at the Buffer level; this drives it through the
+// real key sequence a user would type.
+func TestUndoSaveRedoShowsDirtyWhenBufferDivergesFromDisk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewView()
+	v.Open(path)
+	v.activeTab().cursorCol = len(v.activeTab().buf.Lines[0])
+
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(layout.Key{Text: "!"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+	v.HandleKey(layout.Key{Text: "s", Mods: layout.ModCtrl}) // disk: "original!"
+
+	v.HandleKey(layout.Key{Text: "u"}) // buffer reverts to "original"
+	if !v.activeTab().buf.Dirty {
+		t.Fatal("expected Dirty after undo: buffer no longer matches the just-saved disk content")
+	}
+	v.HandleKey(layout.Key{Text: "s", Mods: layout.ModCtrl}) // disk: "original"
+
+	v.HandleKey(layout.Key{Text: "r", Mods: layout.ModCtrl}) // buffer: "original!" again
+	if got := v.activeTab().buf.Lines[0]; got != "original!" {
+		t.Fatalf("Lines[0] = %q, want %q after redo", got, "original!")
+	}
+	if !v.activeTab().buf.Dirty {
+		t.Fatal("bug: expected Dirty after redo, since the buffer now diverges from disk (\"original\") again")
+	}
+
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) == v.activeTab().buf.Lines[0] {
+		t.Fatalf("test setup invalid: disk (%q) should NOT match the buffer (%q) at this point", onDisk, v.activeTab().buf.Lines[0])
+	}
 }

@@ -5,8 +5,13 @@ import (
 	"strings"
 )
 
-// Buffer is the simplest possible read model for Step 0's read-only pane:
-// no rope, no undo, no insert mode. Swapping in a rope/piece-table later
+// defaultSaveMode is the permission Save falls back to when Load couldn't
+// stat the original file (so Save still works even then, matching what
+// os.WriteFile would use by default).
+const defaultSaveMode = 0o644
+
+// Buffer is the editor pane's in-memory text model: no rope, no
+// piece-table, just a mutable slice of lines. Swapping in a rope later
 // replaces Buffer and the View's line-fetch code only, not the View's
 // scroll/cursor/tab/width logic.
 type Buffer struct {
@@ -14,6 +19,26 @@ type Buffer struct {
 	Path   string
 	Source []byte // raw bytes Lines was split from — same text, pre-split;
 	// tree-sitter's Highlight() needs byte offsets into this, not Lines.
+
+	// Dirty is true when Lines differs from saved (see below). It is
+	// always re-derived by resync/Restore, never set directly — undo/redo
+	// can restore Lines to a state from before an intervening Save, and a
+	// stored true/false flag carried along in that snapshot would go
+	// stale the moment a Save happens in between (see resync).
+	Dirty bool
+
+	// saved is the content as of Load or the last successful Save — the
+	// baseline Dirty is computed against. Comparing against this directly,
+	// rather than tracking Dirty as a flag that gets carried through
+	// undo/redo snapshots, is what keeps Dirty correct across a
+	// save-undo-save-redo sequence: whichever of Lines/saved changes most
+	// recently, Dirty always reflects the actual difference between them.
+	saved []string
+
+	// mode is the original file's permission bits, captured at Load so
+	// Save doesn't silently drop them (e.g. a script's executable bit) by
+	// writing back with some fixed default instead.
+	mode os.FileMode
 }
 
 // Load reads path into a Buffer.
@@ -21,6 +46,10 @@ func Load(path string) (*Buffer, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
+	}
+	mode := os.FileMode(defaultSaveMode)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode()
 	}
 	text := string(data)
 	text = strings.TrimSuffix(text, "\n")
@@ -30,5 +59,113 @@ func Load(path string) (*Buffer, error) {
 	} else {
 		lines = strings.Split(text, "\n")
 	}
-	return &Buffer{Lines: lines, Path: path, Source: []byte(text)}, nil
+	return &Buffer{Lines: lines, Path: path, Source: []byte(text), mode: mode, saved: append([]string(nil), lines...)}, nil
+}
+
+// InsertText inserts s (which must not contain '\n') into line ln at rune
+// index col and resyncs (Source, Dirty). It returns the rune index just
+// past the inserted text, for repositioning the cursor.
+func (b *Buffer) InsertText(ln, col int, s string) int {
+	runes := []rune(b.Lines[ln])
+	ins := []rune(s)
+
+	merged := make([]rune, 0, len(runes)+len(ins))
+	merged = append(merged, runes[:col]...)
+	merged = append(merged, ins...)
+	merged = append(merged, runes[col:]...)
+	b.Lines[ln] = string(merged)
+
+	b.resync()
+	return col + len(ins)
+}
+
+// SplitLine splits line ln at rune index col into two lines: ln keeps the
+// runes before col, a new line at ln+1 holds the rest — used for the
+// Enter key. Rebuilt as a fresh slice (rather than shifting elements in
+// place) to keep the insert-in-the-middle bookkeeping obviously correct.
+func (b *Buffer) SplitLine(ln, col int) {
+	runes := []rune(b.Lines[ln])
+	before := string(runes[:col])
+	after := string(runes[col:])
+
+	lines := make([]string, 0, len(b.Lines)+1)
+	lines = append(lines, b.Lines[:ln]...)
+	lines = append(lines, before, after)
+	lines = append(lines, b.Lines[ln+1:]...)
+	b.Lines = lines
+
+	b.resync()
+}
+
+// DeleteBackward deletes the rune immediately before (ln, col) — used for
+// Backspace. If col == 0 and ln > 0, it instead joins line ln onto the end
+// of line ln-1, removing the line break. A no-op at the very start of the
+// buffer (ln == 0, col == 0) returns (ln, col) unchanged. It returns the
+// resulting cursor position, since a join changes both ln and col.
+func (b *Buffer) DeleteBackward(ln, col int) (newLn, newCol int) {
+	if col > 0 {
+		runes := []rune(b.Lines[ln])
+		b.Lines[ln] = string(append(runes[:col-1], runes[col:]...))
+		b.resync()
+		return ln, col - 1
+	}
+	if ln == 0 {
+		return ln, col
+	}
+
+	joinCol := len([]rune(b.Lines[ln-1]))
+	b.Lines[ln-1] += b.Lines[ln]
+	b.Lines = append(b.Lines[:ln], b.Lines[ln+1:]...)
+	b.resync()
+	return ln - 1, joinCol
+}
+
+// resync re-derives Source from Lines — the same join Load's initial split
+// is the inverse of — and recomputes Dirty by comparing Lines against
+// saved, so tree-sitter re-highlighting and Save both see the current
+// text and the dirty marker stays correct regardless of how Lines got to
+// its current state (a direct edit, or Restore rewinding/replaying one).
+func (b *Buffer) resync() {
+	b.Source = []byte(strings.Join(b.Lines, "\n"))
+	b.Dirty = !linesEqual(b.Lines, b.saved)
+}
+
+// Restore replaces the buffer's contents with lines and resyncs — the
+// snapshot-restore counterpart to InsertText/SplitLine/DeleteBackward,
+// used by View's undo/redo to snap a buffer back to a recorded state.
+// Deliberately does not take a Dirty flag to restore verbatim: Dirty is
+// always recomputed against saved (see resync), since a Save that
+// happened after the snapshot was taken would make a carried-along flag
+// stale — restoring content from before that Save must still compare
+// against what's actually on disk now, not against a snapshot of Dirty
+// taken before the Save ever happened.
+func (b *Buffer) Restore(lines []string) {
+	b.Lines = lines
+	b.resync()
+}
+
+// Save writes the buffer's current contents back to Path, preserving the
+// original file's permission bits (see Load), records that content as the
+// new saved baseline, and clears Dirty.
+func (b *Buffer) Save() error {
+	if err := os.WriteFile(b.Path, b.Source, b.mode); err != nil {
+		return err
+	}
+	b.saved = append([]string(nil), b.Lines...)
+	b.Dirty = false
+	return nil
+}
+
+// linesEqual reports whether a and b hold the same lines in the same
+// order.
+func linesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

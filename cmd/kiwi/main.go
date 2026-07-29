@@ -167,6 +167,36 @@ func run() error {
 	activeEditorPane := editorPanes[editorLeaf.ID]
 	nextLeafID := layout.LeafID(4) // 1/2/3 are already taken by the static tree above
 
+	// refreshLineStatusFor recomputes path's git-diff gutter markers (see
+	// gitstatus.FileHunks) and applies them to every editor pane that has
+	// it open (path may be open in more than one pane at once — see
+	// trySplit below). Cheap enough (one `git diff` shellout) to call
+	// right after a file is opened, rather than waiting for the
+	// debounced refresh from refreshAllLineStatus to catch up.
+	refreshLineStatusFor := func(path string) {
+		lines, err := gitstatus.FileHunks(absRoot, path)
+		if err != nil {
+			return // not a git repo, path outside it, or git unavailable
+		}
+		for _, p := range editorPanes {
+			p.view.ApplyLineStatus(path, lines)
+		}
+	}
+	// refreshAllLineStatus re-runs refreshLineStatusFor for every path
+	// currently open in any editor pane — used whenever something not
+	// scoped to a single just-opened file may have invalidated the
+	// diffs: a git change (staging, commit, checkout) or any filesystem
+	// change, since FileHunks reads the working-tree file directly and
+	// so goes stale on a plain unstaged edit too (e.g. this app's own
+	// Save, which never touches .git/index or HEAD).
+	refreshAllLineStatus := func() {
+		for _, p := range editorPanes {
+			for _, path := range p.view.OpenPaths() {
+				refreshLineStatusFor(path)
+			}
+		}
+	}
+
 	statusBarView.TextFunc = func() string {
 		parts := make([]string, 0, 3)
 		if cursor := activeEditorPane.view.StatusText(); cursor != "" {
@@ -219,6 +249,7 @@ func run() error {
 	finderView.OnSelect = func(absPath string, line int) {
 		activeEditorPane.view.OpenAtLine(absPath, line)
 		app.FocusLeaf(activeEditorPane.leaf.ID)
+		refreshLineStatusFor(absPath)
 	}
 	// Content search runs `git grep` on its own goroutine (can take real
 	// time on a large project) and delivers its result back through Post
@@ -287,10 +318,14 @@ func run() error {
 			return
 		}
 		nextLeafID++
-		if path := target.view.ActivePath(); path != "" {
+		path := target.view.ActivePath()
+		if path != "" {
 			newView.Open(path) // new pane starts on the same file
 		}
 		editorPanes[newLeaf.ID] = &editorPane{leaf: newLeaf, view: newView}
+		if path != "" {
+			refreshLineStatusFor(path) // must run after registration above, so the new pane is in editorPanes to receive it
+		}
 		rebuildAndFocus(app, newLeaf.ID)
 	}
 	closeFocusedPane := func() {
@@ -332,6 +367,7 @@ func run() error {
 	treeView.OnOpen = func(path string) {
 		activeEditorPane.view.Open(path)
 		app.FocusLeaf(activeEditorPane.leaf.ID)
+		refreshLineStatusFor(path)
 	}
 
 	refreshGitStatus := func() {
@@ -348,6 +384,7 @@ func run() error {
 		if branch, err := gitstatus.CurrentBranch(absRoot); err == nil {
 			gitBranch = branch
 		}
+		refreshAllLineStatus()
 	}
 	refreshGitStatus()
 
@@ -364,6 +401,12 @@ func run() error {
 			}
 			if e.FSChanged {
 				treeView.Refresh()
+				// A plain unstaged edit (including this app's own Save)
+				// never touches .git/index or HEAD, so it's only ever
+				// reported as FSChanged, not GitChanged — but it can
+				// still change a file's line-level diff, so it has to be
+				// recomputed here too, not just in refreshGitStatus.
+				refreshAllLineStatus()
 			}
 		case finder.SearchResult:
 			finderView.ApplyContentResult(e)

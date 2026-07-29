@@ -47,3 +47,40 @@ func TestStyleUnmodifiedIsDefault(t *testing.T) {
 		t.Errorf("Style(Unmodified) = %+v, want the zero-value default style", got)
 	}
 }
+
+func TestLineMarkerCoversEveryStatus(t *testing.T) {
+	cases := map[gitstatus.LineStatus]string{
+		gitstatus.LineUnchanged:     " ",
+		gitstatus.LineAdded:         "+",
+		gitstatus.LineModified:      "~",
+		gitstatus.LineDeletedBefore: "_",
+	}
+	for status, want := range cases {
+		if got := LineMarker(status); got != want {
+			t.Errorf("LineMarker(%v) = %q, want %q", status, got, want)
+		}
+	}
+}
+
+func TestLineStyleIsDistinctPerNotableStatus(t *testing.T) {
+	statuses := []gitstatus.LineStatus{
+		gitstatus.LineAdded, gitstatus.LineModified, gitstatus.LineDeletedBefore,
+	}
+	seen := map[layout.Style]gitstatus.LineStatus{}
+	for _, s := range statuses {
+		style := LineStyle(s)
+		if style == (layout.Style{}) {
+			t.Errorf("LineStyle(%v) should not be the zero-value default style", s)
+		}
+		if prev, ok := seen[style]; ok {
+			t.Errorf("LineStyle(%v) collides with LineStyle(%v): both are %+v", s, prev, style)
+		}
+		seen[style] = s
+	}
+}
+
+func TestLineStyleUnchangedIsDefault(t *testing.T) {
+	if got := LineStyle(gitstatus.LineUnchanged); got != (layout.Style{}) {
+		t.Errorf("LineStyle(LineUnchanged) = %+v, want the zero-value default style", got)
+	}
+}
