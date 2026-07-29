@@ -57,7 +57,7 @@ func New(root string, debounce time.Duration) (*Watcher, error) {
 	}
 
 	if err := w.addProjectTree(root); err != nil {
-		fsw.Close()
+		_ = fsw.Close()
 		return nil, err
 	}
 	_ = fsw.Add(w.gitDir) // no .git directory: fine, just no git-change events

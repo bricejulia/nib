@@ -93,6 +93,17 @@ func (v *View) SetKeymap(overrides map[string]string) {
 
 func (v *View) Title() string { return "Editor" }
 
+// ActivePath returns the active tab's file path, or "" if no tabs are
+// open. Used when splitting a pane, so the new pane starts on the same
+// file rather than empty.
+func (v *View) ActivePath() string {
+	t := v.activeTab()
+	if t == nil {
+		return ""
+	}
+	return t.path
+}
+
 func (v *View) activeTab() *tab {
 	if v.active < 0 || v.active >= len(v.tabs) {
 		return nil

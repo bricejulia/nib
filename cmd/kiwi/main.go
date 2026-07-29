@@ -54,6 +54,33 @@ var globalDefaultKeybinds = config.Defaults{
 	// for Ctrl held with punctuation, so it would silently never fire on
 	// most terminals/multiplexers. Ctrl+letter is always representable.
 	{Trigger: "Ctrl+o", Action: "open_config"},
+	// These three are a reasonable starting point, not load-bearing —
+	// like every other binding here, they're trivially remapped via the
+	// user's own config file (Ctrl+O) if any of them collide with a given
+	// terminal's own chrome shortcuts.
+	{Trigger: "Ctrl+w", Action: "split_right"},
+	{Trigger: "Ctrl+e", Action: "split_down"},
+	{Trigger: "Ctrl+x", Action: "close_pane"},
+}
+
+// editorPane pairs an editor pane's window-tree leaf with its View, so
+// split/close/open-file logic can look either up from the other. Multiple
+// editorPanes can exist at once once the editor has been split.
+type editorPane struct {
+	leaf *layout.LeafNode
+	view *editor.View
+}
+
+// rebuildAndFocus recomputes focus traversal order after the tree's
+// leaves change, then immediately refocuses id — bundled into one call so
+// the two can't accidentally be split apart. FocusManager.Rebuild's own
+// fallback silently defaults to the first leaf (the file tree) the
+// instant a closed leaf's ID is no longer present, and that's only ever
+// correct here because every caller of Rebuild immediately follows it
+// with an explicit refocus.
+func rebuildAndFocus(app *ui.App, id layout.LeafID) {
+	app.Rebuild()
+	app.FocusLeaf(id)
 }
 
 // configTemplateScopes is every scope's built-in keybindings, in the
@@ -117,16 +144,32 @@ func run() error {
 	editorView := editor.NewView()
 	editorView.SetKeymap(cfg.Overrides("editor"))
 	statusBarView := statusbar.New()
+	statusBarView.Hint = mainShortcutsHint
 
 	// gitBranch/gitSummary are refreshed by refreshGitStatus (on startup
 	// and whenever the watcher reports a git change) rather than shelled
 	// out to on every render, which would run `git` on every keystroke.
 	var gitBranch, gitSummary string
 
-	statusBarView.Hint = mainShortcutsHint
+	fileTreeLeaf := &layout.LeafNode{ID: 1, View: treeView}
+	editorLeaf := &layout.LeafNode{ID: 2, View: editorView}
+	statusBarLeaf := &layout.LeafNode{ID: 3, View: statusBarView}
+
+	// editorPanes tracks every currently open editor pane (more than one
+	// once the editor has been split); activeEditorPane is the last one
+	// that genuinely had focus, kept in sync via SetFocusChangeHandler
+	// below — needed because opening a file from the tree/finder fires
+	// while focus is still on the tree/finder itself, never on an editor
+	// pane directly.
+	editorPanes := map[layout.LeafID]*editorPane{
+		editorLeaf.ID: {leaf: editorLeaf, view: editorView},
+	}
+	activeEditorPane := editorPanes[editorLeaf.ID]
+	nextLeafID := layout.LeafID(4) // 1/2/3 are already taken by the static tree above
+
 	statusBarView.TextFunc = func() string {
 		parts := make([]string, 0, 3)
-		if cursor := editorView.StatusText(); cursor != "" {
+		if cursor := activeEditorPane.view.StatusText(); cursor != "" {
 			parts = append(parts, cursor)
 		}
 		if gitBranch != "" {
@@ -139,10 +182,6 @@ func run() error {
 		parts = append(parts, "kiwi "+version.Version)
 		return strings.Join(parts, "   ")
 	}
-
-	fileTreeLeaf := &layout.LeafNode{ID: 1, View: treeView}
-	editorLeaf := &layout.LeafNode{ID: 2, View: editorView}
-	statusBarLeaf := &layout.LeafNode{ID: 3, View: statusBarView}
 
 	panes := &layout.SplitNode{
 		Dir: layout.Horizontal,
@@ -165,12 +204,21 @@ func run() error {
 	}
 	defer app.Close()
 
+	// The only place activeEditorPane is ever written: keeps it pointed at
+	// whichever editor pane last genuinely had focus, for Tab-cycling,
+	// mouse clicks, and FocusLeaf calls alike.
+	app.SetFocusChangeHandler(func(id layout.LeafID) {
+		if p, ok := editorPanes[id]; ok {
+			activeEditorPane = p
+		}
+	})
+
 	finderView := finder.New(absRoot)
 	finderView.SetKeymap(cfg.Overrides("finder"))
 	finderView.OnClose = app.CloseOverlay
 	finderView.OnSelect = func(absPath string, line int) {
-		editorView.OpenAtLine(absPath, line)
-		app.FocusLeaf(editorLeaf.ID)
+		activeEditorPane.view.OpenAtLine(absPath, line)
+		app.FocusLeaf(activeEditorPane.leaf.ID)
 	}
 	// Content search runs `git grep` on its own goroutine (can take real
 	// time on a large project) and delivers its result back through Post
@@ -215,6 +263,49 @@ func run() error {
 		}
 	}
 
+	// targetPane resolves the editor pane split/close should act on: the
+	// one currently focused, or ok=false if focus isn't on any known
+	// editor pane (e.g. it's on the file tree) — in which case split/close
+	// are simply no-ops.
+	targetPane := func() (*editorPane, bool) {
+		id, ok := app.FocusedLeaf()
+		if !ok {
+			return nil, false
+		}
+		p, ok := editorPanes[id]
+		return p, ok
+	}
+	trySplit := func(dir layout.Direction) {
+		target, ok := targetPane()
+		if !ok {
+			return
+		}
+		newView := editor.NewView()
+		newView.SetKeymap(cfg.Overrides("editor"))
+		newLeaf := &layout.LeafNode{ID: nextLeafID, View: newView}
+		if !layout.Split(tree, target.leaf, dir, newLeaf) {
+			return
+		}
+		nextLeafID++
+		if path := target.view.ActivePath(); path != "" {
+			newView.Open(path) // new pane starts on the same file
+		}
+		editorPanes[newLeaf.ID] = &editorPane{leaf: newLeaf, view: newView}
+		rebuildAndFocus(app, newLeaf.ID)
+	}
+	closeFocusedPane := func() {
+		target, ok := targetPane()
+		if !ok || len(editorPanes) == 1 {
+			return // not in an editor pane, or it's the last one: no-op
+		}
+		survivor, ok := layout.Close(tree, target.leaf)
+		if !ok {
+			return
+		}
+		delete(editorPanes, target.leaf.ID)
+		rebuildAndFocus(app, layout.Leaves(survivor)[0].ID)
+	}
+
 	actions := map[string]func(){
 		"quit":        app.Quit,
 		"focus_next":  app.CycleFocusNext,
@@ -223,6 +314,9 @@ func run() error {
 		"open_debug":  openDebugLog,
 		"open_help":   openHelp,
 		"open_config": openConfig,
+		"split_right": func() { trySplit(layout.Horizontal) },
+		"split_down":  func() { trySplit(layout.Vertical) },
+		"close_pane":  closeFocusedPane,
 	}
 	global := map[string]func(){}
 	for trigger, action := range globalDefaultKeybinds.Resolve(cfg.Overrides("global")) {
@@ -236,8 +330,8 @@ func run() error {
 	app.SetGlobalKeymap(global)
 
 	treeView.OnOpen = func(path string) {
-		editorView.Open(path)
-		app.FocusLeaf(editorLeaf.ID)
+		activeEditorPane.view.Open(path)
+		app.FocusLeaf(activeEditorPane.leaf.ID)
 	}
 
 	refreshGitStatus := func() {
@@ -277,7 +371,7 @@ func run() error {
 	})
 
 	if watcher, err := watch.New(absRoot, watchDebounce); err == nil {
-		defer watcher.Close()
+		defer func() { _ = watcher.Close() }()
 
 		go func() {
 			for re := range watcher.Events() {

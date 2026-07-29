@@ -35,7 +35,7 @@ func TestWatcherDebouncesBurstOfWritesIntoOneEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	target := filepath.Join(dir, "src", "main.go")
 	for i := 0; i < 5; i++ {
@@ -64,7 +64,7 @@ func TestWatcherReportsGitChangedForHeadAndIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	head := filepath.Join(dir, ".git", "HEAD")
 	if err := os.WriteFile(head, []byte("ref: refs/heads/other\n"), 0o644); err != nil {
@@ -86,7 +86,7 @@ func TestWatcherIgnoresRestOfGitDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// logs/ and objects/ are inside .git but are not HEAD/index; per the
 	// "ignore the rest of .git" contract these must not surface events.
@@ -107,7 +107,7 @@ func TestWatcherDoesNotWatchIgnoredDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// vendor/ is listed in .gitignore and must never have been added to
 	// the fsnotify watch set.
@@ -124,7 +124,7 @@ func TestWatcherDetectsChangeInNewlyCreatedDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	newDir := filepath.Join(dir, "newpkg")
 	if err := os.Mkdir(newDir, 0o755); err != nil {
@@ -157,7 +157,7 @@ func TestNewOnNonRepoStillWatchesFilesystem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New should succeed even outside a git repo: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("y"), 0o644); err != nil {
 		t.Fatal(err)

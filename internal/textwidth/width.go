@@ -216,7 +216,6 @@ outer:
 			if written+w > maxCols {
 				// Straddles the right edge: drop it, pad to fill, then stop.
 				appendText(strings.Repeat(" ", maxCols-written), layout.Style{})
-				written = maxCols
 				break outer
 			}
 

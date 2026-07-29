@@ -134,3 +134,63 @@ func TestTranslateKeyKeepsShiftForNamedKeys(t *testing.T) {
 		t.Errorf("got String()=%q, want %q", got.String(), "Shift+Tab")
 	}
 }
+
+type stubView struct{}
+
+func (stubView) Render(layout.Window)      {}
+func (stubView) HandleKey(layout.Key) bool { return false }
+func (stubView) Title() string             { return "" }
+
+func twoLeafTree() layout.Node {
+	return &layout.SplitNode{Dir: layout.Horizontal, Children: []layout.Child{
+		{Node: &layout.LeafNode{ID: 1, View: stubView{}}, Hint: layout.Ratio(1)},
+		{Node: &layout.LeafNode{ID: 2, View: stubView{}}, Hint: layout.Ratio(1)},
+	}}
+}
+
+func TestFocusedLeafReflectsCurrentFocus(t *testing.T) {
+	fm := &layout.FocusManager{}
+	fm.Rebuild(twoLeafTree())
+	a := &App{focus: fm}
+
+	id, ok := a.FocusedLeaf()
+	if !ok || id != 1 {
+		t.Fatalf("got id=%v ok=%v, want 1, true", id, ok)
+	}
+}
+
+// TestNotifyFocusChangeFiresOnRealChange guards the mechanism split-view
+// panes rely on to track "the last editor pane that genuinely had focus"
+// (needed because a file-tree row's OnOpen callback runs while focus is
+// still on the file tree, not yet on the editor pane it's handing off to).
+func TestNotifyFocusChangeFiresOnRealChange(t *testing.T) {
+	fm := &layout.FocusManager{}
+	fm.Rebuild(twoLeafTree())
+	a := &App{focus: fm}
+
+	var got []layout.LeafID
+	a.SetFocusChangeHandler(func(id layout.LeafID) { got = append(got, id) })
+
+	prev, hadPrev := fm.Focused() // leaf 1, the default
+	fm.FocusAt(2)
+	a.notifyFocusChange(prev, hadPrev)
+
+	if len(got) != 1 || got[0] != 2 {
+		t.Fatalf("expected exactly one callback with id=2, got %+v", got)
+	}
+}
+
+func TestNotifyFocusChangeSkipsWhenUnchanged(t *testing.T) {
+	fm := &layout.FocusManager{}
+	fm.Rebuild(twoLeafTree())
+	a := &App{focus: fm}
+
+	called := false
+	a.SetFocusChangeHandler(func(layout.LeafID) { called = true })
+
+	prev, hadPrev := fm.Focused()
+	a.notifyFocusChange(prev, hadPrev) // focus never actually moved
+	if called {
+		t.Error("expected no callback when focus didn't change")
+	}
+}

@@ -157,6 +157,11 @@ type App struct {
 	onDoubleShift  func()
 	lastShiftPress time.Time
 
+	// onFocusChange, if set, is called whenever the focused leaf actually
+	// changes (Tab-cycle, mouse click, or any FocusLeaf call) — see
+	// SetFocusChangeHandler.
+	onFocusChange func(id layout.LeafID)
+
 	// focused tracks whether the terminal (not just some pane within it)
 	// currently has OS-level focus, via vaxis.FocusIn/FocusOut — vaxis
 	// requests this reporting from the terminal unconditionally at
@@ -225,6 +230,39 @@ func (a *App) FocusLeaf(id layout.LeafID) {
 	a.focus.FocusAt(id)
 }
 
+// FocusedLeaf returns the currently focused leaf's ID, or ok=false if
+// nothing is focused (an empty tree).
+func (a *App) FocusedLeaf() (layout.LeafID, bool) {
+	return a.focus.Focused()
+}
+
+// SetFocusChangeHandler registers fn to be called whenever the focused
+// leaf actually changes, for any reason (Tab-cycle, mouse click, or any
+// FocusLeaf call) — e.g. so a caller managing multiple interchangeable
+// panes of the same kind (split editor panes) can track which one was
+// last genuinely focused, since that's not always recoverable from
+// FocusedLeaf alone at the moment it's needed (a callback fired from a
+// file-tree row's own key handler runs while focus is still on the file
+// tree, not yet on whatever editor pane it's about to hand off to).
+func (a *App) SetFocusChangeHandler(fn func(id layout.LeafID)) {
+	a.onFocusChange = fn
+}
+
+// notifyFocusChange calls onFocusChange iff the focused leaf differs from
+// prevFocus (hadPrev is false if there was no defined "before" focus,
+// e.g. an empty tree). Factored out of Run() so it's independently
+// testable without a live vaxis event loop.
+func (a *App) notifyFocusChange(prevFocus layout.LeafID, hadPrev bool) {
+	if a.onFocusChange == nil {
+		return
+	}
+	newFocus, ok := a.focus.Focused()
+	if !ok || (hadPrev && newFocus == prevFocus) {
+		return
+	}
+	a.onFocusChange(newFocus)
+}
+
 // SetCustomEventHandler registers fn to handle any event that isn't a
 // terminal Resize/Key/Mouse — e.g. an event injected via Post from an
 // external source such as a filesystem watcher. Delivering external events
@@ -251,7 +289,7 @@ func (a *App) SuspendAndRun(fn func() error) error {
 	if err := a.vx.Suspend(); err != nil {
 		return err
 	}
-	defer a.vx.Resume()
+	defer func() { _ = a.vx.Resume() }()
 	return fn()
 }
 
@@ -290,6 +328,7 @@ func (a *App) SetDoubleShiftHandler(fn func()) {
 // Run drives the event loop until Quit is called or the terminal closes.
 func (a *App) Run() error {
 	for ev := range a.vx.Events() {
+		prevFocus, hadPrev := a.focus.Focused()
 		switch e := ev.(type) {
 		case vaxis.Resize:
 			a.vx.Resize(e)
@@ -309,6 +348,7 @@ func (a *App) Run() error {
 			}
 		}
 
+		a.notifyFocusChange(prevFocus, hadPrev)
 		a.render()
 
 		if a.quit {

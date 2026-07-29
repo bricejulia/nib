@@ -44,7 +44,7 @@ func TestLeveledFuncsTagTheirLevel(t *testing.T) {
 }
 
 func TestLevelsAreOrderedBySeverity(t *testing.T) {
-	if !(LevelDebug < LevelInfo && LevelInfo < LevelWarn && LevelWarn < LevelError) {
+	if LevelDebug >= LevelInfo || LevelInfo >= LevelWarn || LevelWarn >= LevelError {
 		t.Errorf("expected Debug < Info < Warn < Error, got %v %v %v %v", LevelDebug, LevelInfo, LevelWarn, LevelError)
 	}
 }

@@ -130,6 +130,19 @@ func TestViewCursorPositionFalseWithNoFileOpen(t *testing.T) {
 	}
 }
 
+func TestActivePathReflectsOpenTab(t *testing.T) {
+	v := NewView()
+	if got := v.ActivePath(); got != "" {
+		t.Errorf("expected empty ActivePath with no tabs open, got %q", got)
+	}
+
+	path := fixturePath(t, "editor_sample.txt")
+	v.Open(path)
+	if got := v.ActivePath(); got != path {
+		t.Errorf("got %q, want %q", got, path)
+	}
+}
+
 func TestViewStatusTextReflectsCursor(t *testing.T) {
 	v := NewView()
 	v.Open(fixturePath(t, "editor_sample.txt"))

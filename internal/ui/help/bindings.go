@@ -27,6 +27,15 @@ var sections = []section{
 			{"Ctrl+p", "Open file finder (also: double-tap Shift)"},
 			{"Ctrl+d", "Open debug log"},
 			{"?", "Open this help"},
+			{"Ctrl+o", "Open config file"},
+		},
+	},
+	{
+		Title: "Splits",
+		Bindings: []binding{
+			{"Ctrl+w", "Split the focused editor pane (side-by-side, right)"},
+			{"Ctrl+e", "Split the focused editor pane (stacked, below)"},
+			{"Ctrl+x", "Close the focused editor pane"},
 		},
 	},
 	{
