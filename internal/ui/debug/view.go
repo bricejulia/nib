@@ -7,6 +7,7 @@ package debug
 import (
 	"fmt"
 
+	"github.com/bricejulia/kiwi/internal/config"
 	"github.com/bricejulia/kiwi/internal/debuglog"
 	"github.com/bricejulia/kiwi/internal/layout"
 )
@@ -14,6 +15,19 @@ import (
 // minLevels is the cycle order Tab steps through: everything, then
 // progressively noisier messages filtered out.
 var minLevels = []debuglog.Level{debuglog.LevelDebug, debuglog.LevelInfo, debuglog.LevelWarn, debuglog.LevelError}
+
+// DefaultKeybinds are the debug log pane's built-in keybindings,
+// overridable via the user config's "debug" scope (see internal/config).
+var DefaultKeybinds = config.Defaults{
+	{Trigger: "Esc", Action: "close"},
+	{Trigger: "Tab", Action: "cycle_filter"},
+	{Trigger: "Up", Action: "scroll_up"},
+	{Trigger: "Down", Action: "scroll_down"},
+	{Trigger: "PageUp", Action: "page_up"},
+	{Trigger: "PageDown", Action: "page_down"},
+	{Trigger: "Home", Action: "oldest"},
+	{Trigger: "End", Action: "newest"},
+}
 
 // View renders EntriesFunc's result, newest at the bottom, auto-following
 // as new messages arrive until the user scrolls up to look at history. Tab
@@ -32,11 +46,21 @@ type View struct {
 
 	// OnClose is called when Esc is pressed, dismissing the overlay.
 	OnClose func()
+
+	keymap map[string]string
 }
 
 // New creates a debug log view backed by debuglog's global ring buffer,
 // initially showing every level.
-func New() *View { return &View{EntriesFunc: debuglog.Entries, minLevel: debuglog.LevelDebug} }
+func New() *View {
+	return &View{EntriesFunc: debuglog.Entries, minLevel: debuglog.LevelDebug, keymap: DefaultKeybinds.Resolve(nil)}
+}
+
+// SetKeymap merges the user config's "debug" scope overrides on top of
+// DefaultKeybinds, replacing the pane's active keymap.
+func (v *View) SetKeymap(overrides map[string]string) {
+	v.keymap = DefaultKeybinds.Resolve(overrides)
+}
 
 func (v *View) Title() string {
 	if v.minLevel == debuglog.LevelDebug {
@@ -125,24 +149,24 @@ func (v *View) HandleKey(k layout.Key) bool {
 		page = 1
 	}
 
-	switch {
-	case k.Named == layout.KeyEsc:
+	switch v.keymap[k.String()] {
+	case "close":
 		if v.OnClose != nil {
 			v.OnClose()
 		}
-	case k.Named == layout.KeyTab:
+	case "cycle_filter":
 		v.cycleMinLevel()
-	case k.Named == layout.KeyUp:
+	case "scroll_up":
 		v.offsetFromBottom++
-	case k.Named == layout.KeyDown:
+	case "scroll_down":
 		v.scrollDown(1)
-	case k.Named == layout.KeyPageUp:
+	case "page_up":
 		v.offsetFromBottom += page
-	case k.Named == layout.KeyPageDown:
+	case "page_down":
 		v.scrollDown(page)
-	case k.Named == layout.KeyHome:
+	case "oldest":
 		v.offsetFromBottom = len(v.visibleEntries())
-	case k.Named == layout.KeyEnd:
+	case "newest":
 		v.offsetFromBottom = 0
 	}
 	return true

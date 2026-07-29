@@ -241,6 +241,20 @@ func (a *App) Post(ev interface{}) {
 	a.vx.PostEvent(ev)
 }
 
+// SuspendAndRun takes the terminal out of fullscreen mode, runs fn (e.g.
+// to shell out to an interactive subprocess like $EDITOR that needs the
+// real terminal to itself), then restores kiwi's own fullscreen state
+// regardless of whether fn succeeded. Run's event loop redraws
+// unconditionally after the key handler that calls this returns, so no
+// explicit redraw is needed here.
+func (a *App) SuspendAndRun(fn func() error) error {
+	if err := a.vx.Suspend(); err != nil {
+		return err
+	}
+	defer a.vx.Resume()
+	return fn()
+}
+
 // Rebuild recomputes focus traversal order after the tree's leaves change
 // (e.g. a new panel is opened). It is a no-op for Step 0, which has a fixed
 // two-pane tree, but future steps that open new panels need it.

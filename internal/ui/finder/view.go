@@ -11,11 +11,29 @@ import (
 	"sort"
 	"time"
 
+	"github.com/bricejulia/kiwi/internal/config"
 	"github.com/bricejulia/kiwi/internal/layout"
 	"github.com/bricejulia/kiwi/internal/textwidth"
 	"github.com/bricejulia/kiwi/internal/ui/gitstyle"
 	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
 )
+
+// DefaultKeybinds are the finder's built-in keybindings, overridable via
+// the user config's "finder" scope (see internal/config). Deliberately
+// narrow: any trigger not listed here (and not otherwise Ctrl/Alt/Super-
+// modified) falls through to being typed into the search query instead,
+// so overriding a plain letter key here means it stops being typeable —
+// see HandleKey.
+var DefaultKeybinds = config.Defaults{
+	{Trigger: "Esc", Action: "close"},
+	{Trigger: "Tab", Action: "switch_mode"},
+	{Trigger: "Enter", Action: "open_selection"},
+	{Trigger: "Down", Action: "move_down"},
+	{Trigger: "Up", Action: "move_up"},
+	{Trigger: "Right", Action: "peek_right"},
+	{Trigger: "Left", Action: "peek_left"},
+	{Trigger: "Backspace", Action: "backspace"},
+}
 
 // hScrollStep is how many display columns Left/Right shift the view of a
 // result line that's wider than the modal — Left/Right are otherwise
@@ -92,12 +110,20 @@ type View struct {
 	// goroutine of its own to do it off to the side without this. If nil
 	// (e.g. in unit tests), searches run synchronously instead.
 	Post func(ev interface{})
+
+	keymap map[string]string
 }
 
 // New creates a finder rooted at absPath. Call Open each time it's about
 // to be shown.
 func New(absPath string) *View {
-	return &View{root: absPath}
+	return &View{root: absPath, keymap: DefaultKeybinds.Resolve(nil)}
+}
+
+// SetKeymap merges the user config's "finder" scope overrides on top of
+// DefaultKeybinds, replacing the pane's active keymap.
+func (v *View) SetKeymap(overrides map[string]string) {
+	v.keymap = DefaultKeybinds.Resolve(overrides)
 }
 
 func (v *View) Title() string {
@@ -346,37 +372,37 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return true
 	}
 
-	switch {
-	case k.Named == layout.KeyEsc:
+	switch v.keymap[k.String()] {
+	case "close":
 		if v.OnClose != nil {
 			v.OnClose()
 		}
 		return true
-	case k.Named == layout.KeyTab:
+	case "switch_mode":
 		v.toggleMode()
 		return true
-	case k.Named == layout.KeyEnter:
+	case "open_selection":
 		v.selectCurrent()
 		if v.OnClose != nil {
 			v.OnClose()
 		}
 		return true
-	case k.Named == layout.KeyDown:
+	case "move_down":
 		v.moveCursor(1)
 		return true
-	case k.Named == layout.KeyUp:
+	case "move_up":
 		v.moveCursor(-1)
 		return true
-	case k.Named == layout.KeyRight:
+	case "peek_right":
 		v.hScroll += hScrollStep // clamped against the selected row's width in Render
 		return true
-	case k.Named == layout.KeyLeft:
+	case "peek_left":
 		v.hScroll -= hScrollStep
 		if v.hScroll < 0 {
 			v.hScroll = 0
 		}
 		return true
-	case k.Named == layout.KeyBackspace:
+	case "backspace":
 		if len(v.query) > 0 {
 			v.query = v.query[:len(v.query)-1]
 			v.refilter()
@@ -384,6 +410,10 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return true
 	}
 
+	// No bound action for this exact key: fall through to typing it into
+	// the query, as long as it's plain text with no Ctrl/Alt/Super held —
+	// this is what lets a "finder" scope override stick to Ctrl/Alt/Super
+	// combos (or named keys) without ever swallowing normal typing.
 	if k.Text != "" && k.Mods&(layout.ModCtrl|layout.ModAlt|layout.ModSuper) == 0 {
 		v.query = append(v.query, []rune(k.Text)...)
 		v.refilter()

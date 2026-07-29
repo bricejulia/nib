@@ -1,0 +1,74 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// Scope is one section of the generated template config file: a scope
+// name (as used in "keybind = <scope>:<trigger> = <action>") paired with
+// that scope's built-in keybindings.
+type Scope struct {
+	Name     string
+	Defaults Defaults
+}
+
+// Template renders a starting-point config file: every default
+// keybinding, commented out, grouped by scope, so the user can see
+// exactly what's bindable and uncomment/edit a line to override it.
+func Template(scopes []Scope) string {
+	var b strings.Builder
+	b.WriteString(`# kiwi config
+#
+# Uncomment and edit a line below to override that keybinding, or add a
+# new "keybind" line entirely. Format:
+#
+#   keybind = <scope>:<trigger> = <action>
+#
+# "global" is the default scope and its ":" prefix may be omitted, e.g.
+#
+#   keybind = ctrl+p = open_finder
+#
+# A trigger is a "+"-joined combination of modifiers (ctrl, alt, super,
+# shift) and a key — either a single character (x, ], ?) or a named key
+# (up, down, left, right, enter, tab, esc, pageup, pagedown, home, end,
+# backspace). Modifier names and named keys are case-insensitive; a
+# single-character key is not (x and X are different keys).
+#
+# Restart kiwi after editing this file for keybinding changes to take
+# effect.
+`)
+
+	for _, s := range scopes {
+		b.WriteString("\n# --- ")
+		b.WriteString(s.Name)
+		b.WriteString(" ---\n")
+		for _, bind := range s.Defaults {
+			prefix := s.Name + ":"
+			if s.Name == "global" {
+				prefix = ""
+			}
+			fmt.Fprintf(&b, "# keybind = %s%s = %s\n", prefix, bind.Trigger, bind.Action)
+		}
+	}
+
+	return b.String()
+}
+
+// EnsureFile writes Template(scopes) to path if no file exists there yet
+// (creating any missing parent directories); it leaves an existing file
+// untouched. Returns the (possibly newly created) path.
+func EnsureFile(path string, scopes []Scope) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(Template(scopes)), 0o644)
+}

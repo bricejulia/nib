@@ -4,9 +4,33 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/bricejulia/kiwi/internal/config"
 	"github.com/bricejulia/kiwi/internal/layout"
 	"github.com/bricejulia/kiwi/internal/textwidth"
 )
+
+// DefaultKeybinds are the editor pane's built-in keybindings, overridable
+// via the user config's "editor" scope (see internal/config).
+var DefaultKeybinds = config.Defaults{
+	{Trigger: "]", Action: "next_tab"},
+	{Trigger: "[", Action: "prev_tab"},
+	{Trigger: "x", Action: "close_tab"},
+	{Trigger: "X", Action: "close_all_tabs"},
+	{Trigger: "Down", Action: "move_down"},
+	{Trigger: "j", Action: "move_down"},
+	{Trigger: "Up", Action: "move_up"},
+	{Trigger: "k", Action: "move_up"},
+	{Trigger: "Left", Action: "move_left"},
+	{Trigger: "h", Action: "move_left"},
+	{Trigger: "Right", Action: "move_right"},
+	{Trigger: "l", Action: "move_right"},
+	{Trigger: "PageDown", Action: "page_down"},
+	{Trigger: "PageUp", Action: "page_up"},
+	{Trigger: "Home", Action: "line_start"},
+	{Trigger: "End", Action: "line_end"},
+	{Trigger: "g", Action: "first_line"},
+	{Trigger: "G", Action: "last_line"},
+}
 
 // tab holds one open file's buffer plus its own scroll/cursor state, so
 // switching tabs restores exactly where you left off. path is recorded
@@ -50,12 +74,20 @@ type View struct {
 	tabWidth int
 
 	lastWidth, lastHeight int
+
+	keymap map[string]string
 }
 
 // NewView creates an empty editor pane with no tabs open; call Open to
 // load a file into it.
 func NewView() *View {
-	return &View{tabWidth: 4}
+	return &View{tabWidth: 4, keymap: DefaultKeybinds.Resolve(nil)}
+}
+
+// SetKeymap merges the user config's "editor" scope overrides on top of
+// DefaultKeybinds, replacing the pane's active keymap.
+func (v *View) SetKeymap(overrides map[string]string) {
+	v.keymap = DefaultKeybinds.Resolve(overrides)
 }
 
 func (v *View) Title() string { return "Editor" }
@@ -320,17 +352,22 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return false
 	}
 
-	switch {
-	case k.Text == "]":
+	action, ok := v.keymap[k.String()]
+	if !ok {
+		return false
+	}
+
+	switch action {
+	case "next_tab":
 		v.NextTab()
 		return true
-	case k.Text == "[":
+	case "prev_tab":
 		v.PrevTab()
 		return true
-	case k.Text == "x":
+	case "close_tab":
 		v.CloseTab()
 		return true
-	case k.Text == "X":
+	case "close_all_tabs":
 		v.CloseAllTabs()
 		return true
 	}
@@ -340,26 +377,26 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return false
 	}
 
-	switch {
-	case k.Named == layout.KeyDown || k.Text == "j":
+	switch action {
+	case "move_down":
 		t.cursorLn++
-	case k.Named == layout.KeyUp || k.Text == "k":
+	case "move_up":
 		t.cursorLn--
-	case k.Named == layout.KeyLeft || k.Text == "h":
+	case "move_left":
 		t.cursorCol--
-	case k.Named == layout.KeyRight || k.Text == "l":
+	case "move_right":
 		t.cursorCol++
-	case k.Named == layout.KeyPageDown:
+	case "page_down":
 		t.cursorLn += v.pageSize()
-	case k.Named == layout.KeyPageUp:
+	case "page_up":
 		t.cursorLn -= v.pageSize()
-	case k.Named == layout.KeyHome:
+	case "line_start":
 		t.cursorCol = 0
-	case k.Named == layout.KeyEnd:
+	case "line_end":
 		t.cursorCol = len(currentLineRunes(t, t.cursorLn, v.tabWidth))
-	case k.Text == "g":
+	case "first_line":
 		t.cursorLn = 0
-	case k.Text == "G":
+	case "last_line":
 		t.cursorLn = len(t.buf.Lines) - 1
 	default:
 		return false

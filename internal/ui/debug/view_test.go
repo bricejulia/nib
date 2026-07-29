@@ -108,6 +108,24 @@ func TestUpScrollsToOlderEntries(t *testing.T) {
 	}
 }
 
+func TestSetKeymapOverridesATrigger(t *testing.T) {
+	v := New()
+	v.EntriesFunc = entriesAt(10)
+	w := newFakeWindow(40, 3)
+	v.Render(w)
+	v.SetKeymap(map[string]string{"Down": "scroll_up"}) // reverse Down's default action
+
+	v.HandleKey(layout.Key{Named: layout.KeyDown})
+	v.HandleKey(layout.Key{Named: layout.KeyDown})
+	v.HandleKey(layout.Key{Named: layout.KeyDown})
+	v.Render(w)
+
+	joined := strings.Join(w.lines, "\n")
+	if !strings.Contains(joined, "msg 6") {
+		t.Errorf("expected Down (remapped to scroll_up) to reveal msg 6, got:\n%s", joined)
+	}
+}
+
 func TestDownScrollsBackToNewest(t *testing.T) {
 	v := New()
 	v.EntriesFunc = entriesAt(10)

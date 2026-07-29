@@ -345,6 +345,34 @@ func TestViewHandleKeyOnEmptyViewIsNoop(t *testing.T) {
 	}
 }
 
+func TestSetKeymapOverridesATrigger(t *testing.T) {
+	v := NewView()
+	v.OpenAtLine(fixturePath(t, "editor_sample.txt"), 3) // not line 1: move_up must have room to move
+	v.SetKeymap(map[string]string{"j": "move_up"})       // reverse j's default action
+
+	before := v.activeTab().cursorLn
+	if !v.HandleKey(layout.Key{Text: "j"}) {
+		t.Fatal("expected the overridden trigger to still be consumed")
+	}
+	if v.activeTab().cursorLn != before-1 {
+		t.Fatalf("cursorLn = %d, want %d (j remapped to move_up)", v.activeTab().cursorLn, before-1)
+	}
+}
+
+func TestSetKeymapLeavesUnrelatedDefaultsIntact(t *testing.T) {
+	v := NewView()
+	v.OpenAtLine(fixturePath(t, "editor_sample.txt"), 1)
+	v.SetKeymap(map[string]string{"j": "move_up"})
+
+	before := v.activeTab().cursorLn
+	if !v.HandleKey(layout.Key{Named: layout.KeyDown}) {
+		t.Fatal("expected Down to still be consumed")
+	}
+	if v.activeTab().cursorLn != before+1 {
+		t.Fatalf("cursorLn = %d, want %d (Down's default action must survive overriding j)", v.activeTab().cursorLn, before+1)
+	}
+}
+
 func TestOpenAtLineMovesCursorToRequestedLine(t *testing.T) {
 	v := NewView()
 	v.OpenAtLine(fixturePath(t, "editor_sample.txt"), 3) // 1-based

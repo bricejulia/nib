@@ -116,6 +116,36 @@ func TestViewUpDownMovesCursorAndClamps(t *testing.T) {
 	}
 }
 
+func TestSetKeymapAddsCtrlBoundActionWithoutBreakingTyping(t *testing.T) {
+	v := newTestView("a.go", "b.go", "c.go")
+	v.SetKeymap(map[string]string{"Ctrl+n": "move_down"})
+
+	v.HandleKey(layout.Key{Text: "n", Mods: layout.ModCtrl})
+	if v.cursor != 1 {
+		t.Fatalf("cursor = %d, want 1 (Ctrl+n bound to move_down)", v.cursor)
+	}
+
+	// Plain "n" (no modifier) must still be typed into the query, not
+	// treated as a binding — overriding Ctrl+n must not affect it.
+	v.HandleKey(layout.Key{Text: "n"})
+	if string(v.query) != "n" {
+		t.Fatalf("query = %q, want \"n\" (plain typing unaffected by the Ctrl+n override)", string(v.query))
+	}
+}
+
+func TestSetKeymapOverridingAPlainLetterStopsItFromBeingTyped(t *testing.T) {
+	v := newTestView("a.go", "b.go", "c.go")
+	v.SetKeymap(map[string]string{"j": "move_down"})
+
+	v.HandleKey(layout.Key{Text: "j"})
+	if v.cursor != 1 {
+		t.Fatalf("cursor = %d, want 1 (j remapped to move_down)", v.cursor)
+	}
+	if len(v.query) != 0 {
+		t.Fatalf("query = %q, want empty: a plain-letter override intentionally stops that letter from being typed", string(v.query))
+	}
+}
+
 func TestViewEnterSelectsHighlightedItemAndCloses(t *testing.T) {
 	v := newTestView("a.go", "b.go", "c.go")
 	v.HandleKey(layout.Key{Named: layout.KeyDown}) // move to "b.go"

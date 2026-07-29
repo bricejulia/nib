@@ -3,11 +3,29 @@ package filetree
 import (
 	"fmt"
 
+	"github.com/bricejulia/kiwi/internal/config"
 	"github.com/bricejulia/kiwi/internal/layout"
 	"github.com/bricejulia/kiwi/internal/textwidth"
 	"github.com/bricejulia/kiwi/internal/ui/gitstyle"
 	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
 )
+
+// DefaultKeybinds are the file tree pane's built-in keybindings,
+// overridable via the user config's "filetree" scope (see
+// internal/config).
+var DefaultKeybinds = config.Defaults{
+	{Trigger: "Down", Action: "move_down"},
+	{Trigger: "j", Action: "move_down"},
+	{Trigger: "Up", Action: "move_up"},
+	{Trigger: "k", Action: "move_up"},
+	{Trigger: "Enter", Action: "open_or_expand"},
+	{Trigger: "Right", Action: "open_or_expand"},
+	{Trigger: "l", Action: "open_or_expand"},
+	{Trigger: "Left", Action: "collapse"},
+	{Trigger: "h", Action: "collapse"},
+	{Trigger: "Shift+Right", Action: "peek_right"},
+	{Trigger: "Shift+Left", Action: "peek_left"},
+}
 
 // hScrollStep is how many display columns Shift+Left/Shift+Right shift the
 // view of a row that's wider than the pane. Plain Left/Right are already
@@ -31,12 +49,20 @@ type View struct {
 	// file row. Set by the caller (cmd/kiwi/main.go) to wire in the
 	// editor pane.
 	OnOpen func(path string)
+
+	keymap map[string]string
 }
 
 // New creates a View rooted at absPath. The root's immediate children are
 // not loaded from disk until the first Render or HandleKey call.
 func New(absPath string) *View {
-	return &View{root: NewRoot(absPath), dirty: true}
+	return &View{root: NewRoot(absPath), dirty: true, keymap: DefaultKeybinds.Resolve(nil)}
+}
+
+// SetKeymap merges the user config's "filetree" scope overrides on top
+// of DefaultKeybinds, replacing the pane's active keymap.
+func (v *View) SetKeymap(overrides map[string]string) {
+	v.keymap = DefaultKeybinds.Resolve(overrides)
 }
 
 func (v *View) Title() string { return "Files" }
@@ -183,31 +209,30 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return false
 	}
 	v.ensureFresh()
-
-	switch {
-	// Checked before the plain Left/Right cases below, since a switch
-	// with no tag takes the first matching case: Shift+Right must not
-	// also satisfy the bare k.Named == layout.KeyRight case.
-	case k.Named == layout.KeyRight && k.Mods&layout.ModShift != 0:
-		v.scrollRight()
-		return true
-	case k.Named == layout.KeyLeft && k.Mods&layout.ModShift != 0:
-		v.scrollLeft()
-		return true
-	case k.Named == layout.KeyDown || k.Text == "j":
-		v.moveCursor(1)
-		return true
-	case k.Named == layout.KeyUp || k.Text == "k":
-		v.moveCursor(-1)
-		return true
-	case k.Named == layout.KeyEnter || k.Named == layout.KeyRight || k.Text == "l":
-		v.activate()
-		return true
-	case k.Named == layout.KeyLeft || k.Text == "h":
-		v.collapse()
-		return true
+	if v.keymap == nil {
+		// A View built via a bare struct literal (as some tests do, to
+		// set up a fixture root directly) skips New's initialization —
+		// fall back to the defaults rather than consuming no keys.
+		v.keymap = DefaultKeybinds.Resolve(nil)
 	}
-	return false
+
+	switch v.keymap[k.String()] {
+	case "peek_right":
+		v.scrollRight()
+	case "peek_left":
+		v.scrollLeft()
+	case "move_down":
+		v.moveCursor(1)
+	case "move_up":
+		v.moveCursor(-1)
+	case "open_or_expand":
+		v.activate()
+	case "collapse":
+		v.collapse()
+	default:
+		return false
+	}
+	return true
 }
 
 func (v *View) scrollRight() {

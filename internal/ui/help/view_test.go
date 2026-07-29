@@ -87,6 +87,23 @@ func TestScrollDownThenHomeReturnsToTop(t *testing.T) {
 	}
 }
 
+func TestSetKeymapOverridesATrigger(t *testing.T) {
+	v := New("dev")
+	w := newFakeWindow(60, 3)
+	v.Render(w)
+	v.SetKeymap(map[string]string{"Down": "close"}) // reverse Down's default action
+
+	closed := false
+	v.OnClose = func() { closed = true }
+	v.HandleKey(layout.Key{Named: layout.KeyDown})
+	if !closed {
+		t.Fatal("expected Down (remapped to close) to invoke OnClose")
+	}
+	if v.topLine != 0 {
+		t.Fatalf("topLine = %d, want 0 (Down's default scroll must not also fire)", v.topLine)
+	}
+}
+
 func TestScrollClampsAtBottom(t *testing.T) {
 	v := New("dev")
 	w := newFakeWindow(60, 5)

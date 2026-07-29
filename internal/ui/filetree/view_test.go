@@ -89,6 +89,22 @@ func TestViewHandleKeyCursorClampsAtBounds(t *testing.T) {
 	}
 }
 
+func TestSetKeymapOverridesATrigger(t *testing.T) {
+	v := New(fixtureRoot(t))
+	w := newFakeWindow(40, 10)
+	v.Render(w)
+	v.SetKeymap(map[string]string{"j": "move_up"}) // reverse j's default action
+
+	v.HandleKey(downKey())
+	before := v.cursor
+	if !v.HandleKey(layout.Key{Text: "j"}) {
+		t.Fatal("expected the overridden trigger to still be consumed")
+	}
+	if v.cursor != before-1 {
+		t.Fatalf("cursor = %d, want %d (j remapped to move_up)", v.cursor, before-1)
+	}
+}
+
 func TestViewEnterOnDirectoryExpandsAndLazyLoads(t *testing.T) {
 	v := New(fixtureRoot(t))
 	w := newFakeWindow(40, 10)
