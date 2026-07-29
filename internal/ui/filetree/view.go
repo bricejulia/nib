@@ -248,6 +248,13 @@ func (v *View) activate() {
 	}
 }
 
+// collapse handles Left/h. On an expanded directory it just closes that
+// directory. Otherwise — a file, or an already-collapsed directory — it
+// walks up to the parent directory, closes that instead, and moves the
+// cursor onto the parent's row, so collapsing works from anywhere inside a
+// folder, not just from the folder's own row. There's nothing to do if the
+// node is a top-level entry: its parent is the root, which has no row of
+// its own to collapse onto.
 func (v *View) collapse() {
 	if v.cursor < 0 || v.cursor >= len(v.rows) {
 		return
@@ -256,5 +263,20 @@ func (v *View) collapse() {
 	if n.IsDir && n.Expanded {
 		n.Expanded = false
 		v.dirty = true
+		return
+	}
+
+	parent := n.Parent
+	if parent == nil || parent == v.root {
+		return
+	}
+	parent.Expanded = false
+	v.dirty = true
+	v.ensureFresh()
+	for i, row := range v.rows {
+		if row.Node == parent {
+			v.cursor = i
+			break
+		}
 	}
 }

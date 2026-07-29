@@ -22,6 +22,7 @@ type Node struct {
 	Expanded bool
 	Loaded   bool
 	Children []*Node
+	Parent   *Node
 	Status   gitstatus.Status
 }
 
@@ -71,9 +72,10 @@ func (n *Node) EnsureLoaded() error {
 	children := make([]*Node, 0, len(entries))
 	for _, e := range entries {
 		child := &Node{
-			Name:  e.Name(),
-			Path:  filepath.Join(n.Path, e.Name()),
-			IsDir: e.IsDir(),
+			Name:   e.Name(),
+			Path:   filepath.Join(n.Path, e.Name()),
+			IsDir:  e.IsDir(),
+			Parent: n,
 		}
 		if old, ok := existing[e.Name()]; ok && old.IsDir == child.IsDir {
 			child.Expanded = old.Expanded

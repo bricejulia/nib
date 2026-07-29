@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/bricejulia/kiwi/internal/debuglog"
 	"github.com/bricejulia/kiwi/internal/layout"
 	"github.com/bricejulia/kiwi/internal/ui"
+	"github.com/bricejulia/kiwi/internal/ui/debug"
 	"github.com/bricejulia/kiwi/internal/ui/editor"
 	"github.com/bricejulia/kiwi/internal/ui/filetree"
 	"github.com/bricejulia/kiwi/internal/ui/finder"
@@ -85,6 +87,10 @@ func run() error {
 	}
 	app.SetDoubleShiftHandler(openFinder)
 
+	debugView := debug.New()
+	debugView.OnClose = app.CloseOverlay
+	openDebugLog := func() { app.ShowOverlay(debugView) }
+
 	global := map[string]func(){
 		"Ctrl+c": app.Quit,
 		"Tab":    app.CycleFocus,
@@ -92,6 +98,7 @@ func run() error {
 		// terminals reporting bare modifier keypresses (kitty keyboard
 		// protocol) — Ctrl+P is the conventional fallback everywhere else.
 		"Ctrl+p": openFinder,
+		"Ctrl+d": openDebugLog,
 	}
 	app.SetGlobalKeymap(global)
 
@@ -120,6 +127,7 @@ func run() error {
 	app.SetCustomEventHandler(func(ev interface{}) {
 		switch e := ev.(type) {
 		case watch.RefreshEvent:
+			debuglog.Debug("fsnotify refresh: gitChanged=%v fsChanged=%v", e.GitChanged, e.FSChanged)
 			if e.GitChanged {
 				refreshGitStatus()
 			}
@@ -139,6 +147,8 @@ func run() error {
 				app.Post(re)
 			}
 		}()
+	} else {
+		debuglog.Warn("filesystem watcher unavailable: %v", err)
 	}
 
 	return app.Run()

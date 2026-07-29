@@ -180,6 +180,18 @@ func (a *App) SetGlobalKeymap(global map[string]func()) {
 // CycleFocus moves focus to the next leaf, wrapping around. It is intended
 // to be bound in the global keymap (e.g. under "Tab").
 func (a *App) CycleFocus() {
+	a.CycleFocusNext()
+}
+
+// CycleFocus moves focus to the next leaf, wrapping around. It is intended
+// to be bound in the global keymap (e.g. under "Tab").
+func (a *App) CycleFocusPrev() {
+	a.focus.Prev()
+}
+
+// CycleFocus moves focus to the next leaf, wrapping around. It is intended
+// to be bound in the global keymap (e.g. under "Tab").
+func (a *App) CycleFocusNext() {
 	a.focus.Next()
 }
 

@@ -124,6 +124,49 @@ func TestViewLeftCollapsesExpandedDirectory(t *testing.T) {
 	}
 }
 
+func TestViewLeftFromChildFileCollapsesParentAndMovesCursorToIt(t *testing.T) {
+	v := New(fixtureRoot(t))
+	w := newFakeWindow(40, 10)
+	v.Render(w)
+	v.HandleKey(enterKey()) // expand "sub"
+	v.Render(w)
+
+	v.HandleKey(downKey()) // move onto "sub/c.txt"
+	if v.rows[v.cursor].Node.Name != "c.txt" {
+		t.Fatalf("expected cursor on c.txt, got %q", v.rows[v.cursor].Node.Name)
+	}
+
+	v.HandleKey(leftKey()) // collapse from the child file, not "sub" itself
+	v.Render(w)
+
+	joined := strings.Join(w.lines, "\n")
+	if strings.Contains(joined, "c.txt") {
+		t.Errorf("c.txt should be hidden after collapsing its parent from within it:\n%s", joined)
+	}
+	if v.rows[v.cursor].Node.Name != "sub" {
+		t.Errorf("expected cursor to land on \"sub\" after collapsing it, got %q", v.rows[v.cursor].Node.Name)
+	}
+}
+
+func TestViewLeftOnTopLevelFileIsNoop(t *testing.T) {
+	v := New(fixtureRoot(t))
+	w := newFakeWindow(40, 10)
+	v.Render(w)
+
+	v.HandleKey(downKey())
+	v.HandleKey(downKey())
+	if v.rows[v.cursor].Node.Name != "a.txt" {
+		t.Fatalf("expected cursor on a.txt, got %q", v.rows[v.cursor].Node.Name)
+	}
+	before := v.cursor
+
+	v.HandleKey(leftKey())
+
+	if v.cursor != before {
+		t.Errorf("Left on a top-level file should be a no-op, cursor moved from %d to %d", before, v.cursor)
+	}
+}
+
 func longNameTree(name string) *Node {
 	return &Node{IsDir: true, Loaded: true, Children: []*Node{{Name: name}}}
 }
