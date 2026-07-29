@@ -10,8 +10,10 @@ import (
 // replaces Buffer and the View's line-fetch code only, not the View's
 // scroll/cursor/tab/width logic.
 type Buffer struct {
-	Lines []string // one entry per line, no trailing newline
-	Path  string
+	Lines  []string // one entry per line, no trailing newline
+	Path   string
+	Source []byte // raw bytes Lines was split from — same text, pre-split;
+	// tree-sitter's Highlight() needs byte offsets into this, not Lines.
 }
 
 // Load reads path into a Buffer.
@@ -28,5 +30,5 @@ func Load(path string) (*Buffer, error) {
 	} else {
 		lines = strings.Split(text, "\n")
 	}
-	return &Buffer{Lines: lines, Path: path}, nil
+	return &Buffer{Lines: lines, Path: path, Source: []byte(text)}, nil
 }

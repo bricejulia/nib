@@ -2,6 +2,7 @@ package editor
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +28,31 @@ func TestLoadSplitsLinesWithoutTrailingNewline(t *testing.T) {
 	}
 	if buf.Lines[1] != "\ttabbed line" {
 		t.Errorf("line 1 should retain its raw tab, got %q", buf.Lines[1])
+	}
+}
+
+func TestLoadSourceMatchesLinesJoinedForTrailingNewlineFile(t *testing.T) {
+	buf, err := Load(fixturePath(t, "editor_sample.txt")) // has a trailing \n on disk
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := strings.Join(buf.Lines, "\n")
+	if string(buf.Source) != want {
+		t.Errorf("Source = %q, want %q (Lines joined by \\n)", buf.Source, want)
+	}
+}
+
+func TestLoadSourceMatchesLinesJoinedForNoTrailingNewlineFile(t *testing.T) {
+	buf, err := Load(fixturePath(t, "no_trailing_newline.txt")) // no trailing \n on disk
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(buf.Lines) != 1 || buf.Lines[0] != "no trailing newline" {
+		t.Fatalf("got Lines=%+v", buf.Lines)
+	}
+	want := strings.Join(buf.Lines, "\n")
+	if string(buf.Source) != want {
+		t.Errorf("Source = %q, want %q", buf.Source, want)
 	}
 }
 

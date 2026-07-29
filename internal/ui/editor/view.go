@@ -29,6 +29,15 @@ type tab struct {
 	leftCol   int
 	cursorLn  int
 	cursorCol int
+
+	// highlighted is real tree-sitter output (see treesitter.go), one
+	// entry per buf.Lines index, raw/not-tab-expanded — nil (as a whole,
+	// or per-line) means "use the highlightLine heuristic instead", the
+	// fallback for files whose language isn't recognized. Computed ONCE
+	// in Open, since this pane is still read-only; MUST be recomputed
+	// (or invalidated) once editing exists, or edits will render with
+	// stale highlighting.
+	highlighted [][]layout.Segment
 }
 
 // View is the read-only editor pane: zero or more open tabs, each an
@@ -74,7 +83,11 @@ func (v *View) Open(path string) {
 	}
 
 	buf, err := Load(path)
-	v.tabs = append(v.tabs, &tab{path: path, buf: buf, err: err})
+	t := &tab{path: path, buf: buf, err: err}
+	if buf != nil {
+		t.highlighted = highlightBuffer(buf)
+	}
+	v.tabs = append(v.tabs, t)
 	v.active = len(v.tabs) - 1
 }
 
@@ -250,8 +263,14 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int) {
 		if ln >= len(t.buf.Lines) {
 			break
 		}
-		expanded := textwidth.ExpandTabs(t.buf.Lines[ln], tabWidth)
-		visible := textwidth.SliceSegmentsByDisplayColumn(highlightLine(expanded), t.leftCol, contentWidth)
+		var raw []layout.Segment
+		if ln < len(t.highlighted) && t.highlighted[ln] != nil {
+			raw = t.highlighted[ln] // real tree-sitter output, raw (not tab-expanded)
+		} else {
+			raw = highlightLine(t.buf.Lines[ln]) // heuristic fallback, also raw
+		}
+		expandedSegs := textwidth.ExpandTabsSegments(raw, tabWidth)
+		visible := textwidth.SliceSegmentsByDisplayColumn(expandedSegs, t.leftCol, contentWidth)
 
 		gutterSeg := layout.Segment{
 			Text:  fmt.Sprintf("%*d ", gutterWidth-1, ln+1),

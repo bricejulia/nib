@@ -514,3 +514,79 @@ func TestViewAppliesSyntaxHighlightSegments(t *testing.T) {
 		t.Errorf("expected a dim-styled segment containing the comment, got %+v", segs)
 	}
 }
+
+// TestOpenRealGoFileRendersRealTreeSitterHighlighting is the end-to-end
+// substitute for eyeballing this in a real terminal (not possible in this
+// sandbox — see the plan's verification notes): opens a real multi-line
+// .go fixture through the actual Open -> highlightBuffer -> Render
+// pipeline and asserts specific tokens land on the expected rows with
+// real tree-sitter-derived styles, including a raw string literal that
+// spans two lines (proving splitHighlightsByLine's line-splitting works
+// end-to-end, not just in its own unit tests).
+func TestOpenRealGoFileRendersRealTreeSitterHighlighting(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "highlight_sample.go"))
+
+	w := newFakeWindow(60, 15)
+	v.Render(w)
+
+	// Row 0 is the tab bar; buffer line i renders on row 1+i. Fixture:
+	//   0 package sample
+	//   1 (blank)
+	//   2 // greet prints a friendly message.
+	//   3 func greet(name string) {
+	//   4     count := 3
+	//   5     message := `line one
+	//   6 line two`
+	//   7     println("hello", name, count, message)
+	//   8 }
+	if !rowHasStyledText(w, 1, "package", layout.ColorYellow) {
+		t.Errorf("expected \"package\" styled as a keyword on row 1, got %q %+v", w.lines[1], w.segs[1])
+	}
+	if !rowHasStyle(w, 2, func(s layout.Style) bool { return s.Attr&layout.AttrDim != 0 }) {
+		t.Errorf("expected a dim comment on row 2, got %q %+v", w.lines[2], w.segs[2])
+	}
+	if !rowHasStyledText(w, 5, "3", layout.ColorMagenta) {
+		t.Errorf("expected \"3\" styled as a number on row 5, got %q %+v", w.lines[5], w.segs[5])
+	}
+	// The backtick raw string spans buffer lines 5-6 (rows 6-7): both
+	// halves must render as a string-styled segment, proving a
+	// multi-line highlight range was correctly split across the two rows
+	// rather than merged, truncated, or losing its style partway through.
+	if !rowHasStyle(w, 6, func(s layout.Style) bool { return s.Foreground == layout.ColorGreen }) {
+		t.Errorf("expected the first half of the multi-line string styled green on row 6, got %q %+v", w.lines[6], w.segs[6])
+	}
+	if !rowHasStyle(w, 7, func(s layout.Style) bool { return s.Foreground == layout.ColorGreen }) {
+		t.Errorf("expected the second half of the multi-line string styled green on row 7, got %q %+v", w.lines[7], w.segs[7])
+	}
+	if !strings.Contains(w.lines[6], "line one") {
+		t.Errorf("expected row 6 text to contain \"line one\", got %q", w.lines[6])
+	}
+	if !strings.Contains(w.lines[7], "line two") {
+		t.Errorf("expected row 7 text to contain \"line two\", got %q", w.lines[7])
+	}
+}
+
+func rowHasStyledText(w *fakeWindow, row int, text string, color layout.Color) bool {
+	if row < 0 || row >= len(w.segs) {
+		return false
+	}
+	for _, s := range w.segs[row] {
+		if strings.Contains(s.Text, text) && s.Style.Foreground == color {
+			return true
+		}
+	}
+	return false
+}
+
+func rowHasStyle(w *fakeWindow, row int, match func(layout.Style) bool) bool {
+	if row < 0 || row >= len(w.segs) {
+		return false
+	}
+	for _, s := range w.segs[row] {
+		if match(s.Style) {
+			return true
+		}
+	}
+	return false
+}

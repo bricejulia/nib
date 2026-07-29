@@ -37,6 +37,71 @@ func TestExpandTabsAlignsToTabStopsFromLineStart(t *testing.T) {
 	}
 }
 
+func TestExpandTabsSegmentsThreadsColumnAcrossSegmentBoundary(t *testing.T) {
+	// A tab straddling a segment boundary must still land on the tab stop
+	// determined by the WHOLE line's column, not reset per segment.
+	segs := []layout.Segment{
+		{Text: "a\t", Style: layout.Style{Foreground: layout.ColorRed}},
+		{Text: "\tb", Style: layout.Style{Foreground: layout.ColorGreen}},
+	}
+	got := ExpandTabsSegments(segs, 4)
+	joined := segText(got)
+	want := segText([]layout.Segment{{Text: ExpandTabs("a\t\tb", 4)}})
+	if joined != want {
+		t.Fatalf("got %q, want %q (must match ExpandTabs on the concatenated plain string)", joined, want)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 segments preserved, got %d: %+v", len(got), got)
+	}
+	if got[0].Style.Foreground != layout.ColorRed || got[1].Style.Foreground != layout.ColorGreen {
+		t.Errorf("styles must be preserved per segment, got %+v", got)
+	}
+}
+
+func TestExpandTabsSegmentsAtLineStart(t *testing.T) {
+	got := ExpandTabsSegments([]layout.Segment{{Text: "\tx"}}, 4)
+	if segText(got) != "    x" {
+		t.Errorf("got %q, want %q", segText(got), "    x")
+	}
+}
+
+func TestExpandTabsSegmentsNoTabsPassesThroughUnchanged(t *testing.T) {
+	segs := []layout.Segment{{Text: "abc", Style: layout.Style{Foreground: layout.ColorBlue}}}
+	got := ExpandTabsSegments(segs, 4)
+	if len(got) != 1 || got[0].Text != "abc" || got[0].Style.Foreground != layout.ColorBlue {
+		t.Errorf("got %+v, want unchanged input", got)
+	}
+}
+
+func TestExpandTabsSegmentsCJKAdvancesColumnByTwo(t *testing.T) {
+	// "日" is width 2; a following tab must land on the stop as if two
+	// columns were consumed, matching ExpandTabs's own CJK handling.
+	segs := []layout.Segment{
+		{Text: "日"},
+		{Text: "\tx"},
+	}
+	got := ExpandTabsSegments(segs, 4)
+	want := ExpandTabs("日\tx", 4)
+	if segText(got) != want {
+		t.Errorf("got %q, want %q", segText(got), want)
+	}
+}
+
+func TestExpandTabsSegmentsEmptyInput(t *testing.T) {
+	got := ExpandTabsSegments(nil, 4)
+	if len(got) != 0 {
+		t.Errorf("expected empty output for empty input, got %+v", got)
+	}
+}
+
+func TestExpandTabsSegmentsZeroTabWidthDefaultsToEight(t *testing.T) {
+	got := ExpandTabsSegments([]layout.Segment{{Text: "\tx"}}, 0)
+	want := ExpandTabs("\tx", 0)
+	if segText(got) != want {
+		t.Errorf("got %q, want %q", segText(got), want)
+	}
+}
+
 func TestDisplayWidthASCII(t *testing.T) {
 	if w := DisplayWidth("hello"); w != 5 {
 		t.Errorf("got %d, want 5", w)

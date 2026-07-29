@@ -40,6 +40,58 @@ func ExpandTabs(line string, tabWidth int) string {
 	return string(b)
 }
 
+// ExpandTabsSegments is ExpandTabs's counterpart for styled text: it
+// expands every '\t' across segs into spaces up to the next tabWidth-column
+// stop, threading ONE running display column across all segments in order —
+// tab-stop width depends on the column a tab starts at, which is a property
+// of the whole line, not of any single segment, so a tab straddling a
+// segment boundary must see the column left by the segment before it.
+// Given the same underlying text and tabWidth, this produces byte-for-byte
+// the same expansion ExpandTabs would on the concatenated plain string,
+// just with segment boundaries and Style preserved. Non-tab runes advance
+// the column via go-runewidth, exactly like ExpandTabs, so double-width
+// runes (CJK, most emoji) are handled identically. Output has the same
+// length and order as segs — this never merges or reorders segments, only
+// rewrites each Text in place.
+func ExpandTabsSegments(segs []layout.Segment, tabWidth int) []layout.Segment {
+	if tabWidth <= 0 {
+		tabWidth = 8
+	}
+	if len(segs) == 0 {
+		return segs
+	}
+
+	out := make([]layout.Segment, len(segs))
+	col := 0
+	for i, seg := range segs {
+		if !strings.ContainsRune(seg.Text, '\t') {
+			// Fast path: nothing to expand, just advance col so a tab in
+			// a later segment lands on the right stop.
+			out[i] = seg
+			for _, r := range seg.Text {
+				col += runewidth.RuneWidth(r)
+			}
+			continue
+		}
+		var b strings.Builder
+		b.Grow(len(seg.Text))
+		for _, r := range seg.Text {
+			if r == '\t' {
+				spaces := tabWidth - (col % tabWidth)
+				for n := 0; n < spaces; n++ {
+					b.WriteByte(' ')
+				}
+				col += spaces
+				continue
+			}
+			b.WriteRune(r)
+			col += runewidth.RuneWidth(r)
+		}
+		out[i] = layout.Segment{Text: b.String(), Style: seg.Style}
+	}
+	return out
+}
+
 // DisplayWidth returns the total terminal-column width of s, accounting for
 // double-width (CJK, many emoji) runes.
 func DisplayWidth(s string) int {
