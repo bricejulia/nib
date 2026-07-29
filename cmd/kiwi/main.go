@@ -294,6 +294,16 @@ func run() error {
 	}
 	app.SetDoubleShiftHandler(openFinder)
 
+	// "Find references" (Ctrl+f) reuses the finder's own content-search
+	// overlay, pre-seeded with the identifier under the cursor, rather
+	// than a separate results picker — see finder.View.OpenWithQuery.
+	// Wired for the initial pane here; trySplit below wires the same for
+	// every split-created pane.
+	editorView.OnFindReferences = func(word string) {
+		finderView.OpenWithQuery(word)
+		app.ShowOverlay(finderView)
+	}
+
 	debugView := debug.New()
 	debugView.SetKeymap(cfg.Overrides("debug"))
 	debugView.OnClose = app.CloseOverlay
@@ -348,6 +358,10 @@ func run() error {
 		newView.SetKeymap(cfg.Overrides("editor"))
 		newView.SetBufferStore(bufferStore)
 		newView.OnAllTabsClosed = func() { app.FocusLeaf(fileTreeLeaf.ID) }
+		newView.OnFindReferences = func(word string) {
+			finderView.OpenWithQuery(word)
+			app.ShowOverlay(finderView)
+		}
 		newLeaf := &layout.LeafNode{ID: nextLeafID, View: newView}
 		if !layout.Split(tree, target.leaf, dir, newLeaf) {
 			return

@@ -380,6 +380,19 @@ func TestViewTabTogglesModeAndTitle(t *testing.T) {
 	}
 }
 
+func TestOpenWithQueryEntersContentModeWithQueryPreFilled(t *testing.T) {
+	v := New("/project")
+
+	v.OpenWithQuery("myIdentifier")
+
+	if v.mode != modeContent {
+		t.Fatal("expected OpenWithQuery to switch to content-search mode")
+	}
+	if string(v.query) != "myIdentifier" {
+		t.Errorf("query = %q, want %q", string(v.query), "myIdentifier")
+	}
+}
+
 func TestViewOpenAlwaysResetsToFileMode(t *testing.T) {
 	v := newTestView("main.go")
 	v.HandleKey(layout.Key{Named: layout.KeyTab}) // switch to content mode

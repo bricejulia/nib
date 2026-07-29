@@ -64,6 +64,11 @@ var sections = []section{
 			{":qa :qa!", "Close all tabs (refuses if any unsaved; ! discards)"},
 			{":wq", "Save then close the active tab"},
 			{"Ctrl+s", "Save the active tab"},
+			{"Ctrl+g", "Go to parent (syntax tree)"},
+			{"Ctrl+]", "Go to definition"},
+			{"Ctrl+b", "Jump back"},
+			{"Ctrl+f", "Find references (opens the finder)"},
+			{"Ctrl+Space", "Trigger autocomplete (Insert mode)"},
 		},
 	},
 	{

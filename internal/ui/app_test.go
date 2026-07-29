@@ -45,6 +45,23 @@ func TestTranslateKeyPlainLetterHasNoNamedField(t *testing.T) {
 	}
 }
 
+func TestTranslateKeySpaceIsPromotedToNamedButKeepsText(t *testing.T) {
+	got := translateKey(vaxis.Key{Text: " ", Keycode: ' ', EventType: vaxis.EventPress})
+	if got.Named != layout.KeySpace {
+		t.Errorf("Named = %q, want %q", got.Named, layout.KeySpace)
+	}
+	if got.Text != " " {
+		t.Errorf("expected Text to stay %q so a bare Space still inserts a literal space, got %q", " ", got.Text)
+	}
+}
+
+func TestTranslateKeyCtrlSpaceProducesCleanTrigger(t *testing.T) {
+	got := translateKey(vaxis.Key{Text: " ", Keycode: ' ', Modifiers: vaxis.ModCtrl, EventType: vaxis.EventPress})
+	if got.String() != "Ctrl+Space" {
+		t.Errorf("String() = %q, want %q", got.String(), "Ctrl+Space")
+	}
+}
+
 func TestTranslateKeyEventTypes(t *testing.T) {
 	cases := []struct {
 		name string

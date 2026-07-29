@@ -46,6 +46,17 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "u", Action: "undo"},
 	{Trigger: "Ctrl+r", Action: "redo"},
 	{Trigger: ":", Action: "command_mode"},
+	{Trigger: "Ctrl+g", Action: "go_to_parent"},
+	{Trigger: "Ctrl+]", Action: "go_to_definition"},
+	// Not Ctrl+[ (a more obvious visual pairing with Ctrl+]): on legacy
+	// terminal protocols Ctrl+[ sends the exact same byte as Esc, so it's
+	// indistinguishable from a bare Esc keypress and would never fire —
+	// the same class of terminal ambiguity the double-shift detector
+	// elsewhere already has to work around. Ctrl+b ("back") has no such
+	// collision.
+	{Trigger: "Ctrl+b", Action: "jump_back"},
+	{Trigger: "Ctrl+f", Action: "find_references"},
+	{Trigger: "Ctrl+Space", Action: "trigger_autocomplete"},
 }
 
 // editMode is the editor pane's modal-editing state: Normal (the pane's
@@ -125,6 +136,12 @@ type tab struct {
 	// (the zero value, before the first ApplyLineStatus call, or whenever
 	// path has no git repo) means "draw no markers", same as an empty map.
 	lineStatus map[int]gitstatus.LineStatus
+
+	// jumpStack holds cursor positions saved by goToParent/goToDefinition
+	// (see navigate.go), popped by jumpBack (Ctrl+b) — per-pane navigation
+	// history, not buffer content, so it stays on tab like cursorLn/
+	// cursorCol rather than moving to Buffer alongside undo/redo.
+	jumpStack []jumpLocation
 }
 
 // View is the editor pane: zero or more open tabs, each with its own
@@ -159,6 +176,17 @@ type View struct {
 	// cmd/kiwi/main.go to refocus the file tree — same plain-callback
 	// pattern as finder.View.OnClose/debug.View.OnClose.
 	OnAllTabsClosed func()
+
+	// OnFindReferences, if set, is called with the identifier under the
+	// cursor when "find references" (Ctrl+f) fires — set by
+	// cmd/kiwi/main.go to open the finder overlay pre-seeded with that
+	// query (see finder.View.OpenWithQuery). Same plain-callback pattern
+	// as OnAllTabsClosed.
+	OnFindReferences func(word string)
+
+	// completion holds the in-progress autocomplete popup (Ctrl+Space),
+	// nil when none is showing — see completion.go.
+	completion *completionState
 
 	// store resolves Open's path to a *Buffer — see BufferStore. Defaults
 	// to a private store (below), so a View nobody explicitly shares one
@@ -403,6 +431,12 @@ func (v *View) Render(w layout.Window) {
 	// lives one level down, on the real vaxis.Window), so the offset is
 	// applied directly to the row index passed to Println instead.
 	renderBody(w, t, v.tabWidth, cols, bodyRows, 1)
+
+	if v.completion != nil {
+		if col, row, ok := v.CursorPosition(); ok {
+			v.renderCompletionPopup(w, cols, rows, col, row)
+		}
+	}
 }
 
 // tabBarSegments builds the tab bar as styled segments — the active tab is
@@ -727,6 +761,14 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.deleteCharForward(t)
 	case "delete_char_backward":
 		v.deleteCharBackward(t)
+	case "go_to_parent":
+		v.goToParent(t)
+	case "go_to_definition":
+		v.goToDefinition(t)
+	case "jump_back":
+		v.jumpBack(t)
+	case "find_references":
+		v.findReferences(t)
 	default:
 		if !v.applyMovement(t, action) {
 			return false
@@ -778,6 +820,14 @@ func (v *View) applyMovement(t *tab, action string) bool {
 // the cursor, mirroring internal/ui/finder/view.go's query-typing
 // fallback (same Ctrl/Alt/Super guard).
 func (v *View) handleInsertKey(k layout.Key) bool {
+	// The autocomplete popup (Ctrl+Space) gets first look at every key
+	// while it's open — Up/Down/Enter/Tab/Esc are fully its own; anything
+	// else (Backspace, printable text) falls through to the normal
+	// handling below, which re-filters the popup afterward.
+	if v.completion != nil && v.handleCompletionKey(k) {
+		return true
+	}
+
 	switch v.keymap[k.String()] {
 	case "normal_mode":
 		v.exitInsertMode()
@@ -786,16 +836,24 @@ func (v *View) handleInsertKey(k layout.Key) bool {
 		v.saveActive()
 		return true
 	case "insert_newline":
+		// Never reached while the popup is open — handleCompletionKey
+		// above already intercepts Enter as "accept" in that case.
 		v.insertNewline()
 		return true
 	case "insert_backspace":
 		v.deleteBackward()
+		if v.completion != nil {
+			v.refilterCompletion()
+		}
 		return true
 	case "insert_tab":
 		// Tab arrives as a Named key with no Text (same as Enter/Esc/
 		// Backspace), so the printable-text fallback below never sees
 		// it — it needs its own action, same as those.
 		v.insertText("\t")
+		return true
+	case "trigger_autocomplete":
+		v.triggerAutocomplete()
 		return true
 	}
 
@@ -812,12 +870,16 @@ func (v *View) handleInsertKey(k layout.Key) bool {
 				v.applyMovement(t, v.keymap[k.String()])
 				v.clamp(t)
 			}
+			v.completion = nil // moving the cursor invalidates any open popup's context
 			return true
 		}
 	}
 
 	if k.Text != "" && k.Mods&(layout.ModCtrl|layout.ModAlt|layout.ModSuper) == 0 {
 		v.insertText(k.Text)
+		if v.completion != nil {
+			v.refilterCompletion()
+		}
 	}
 	return true
 }

@@ -143,6 +143,13 @@ const (
 	KeyHome      = "Home"
 	KeyEnd       = "End"
 	KeyBackspace = "Backspace"
+	// KeySpace names the space bar. Unlike the other named keys above,
+	// the underlying terminal reports space as an ordinary printable
+	// rune (Text: " "), not a special sentinel — App.translateKey
+	// specifically promotes it to this Named value (while leaving Text
+	// intact) so triggers like "Ctrl+Space" have a clean, typeable
+	// spelling instead of relying on a literal trailing space.
+	KeySpace = "Space"
 	// KeyShift names a bare press of the Shift key by itself (no other
 	// key held down at the same time) — only reported by terminals
 	// supporting the kitty keyboard protocol's "report all keys" mode.

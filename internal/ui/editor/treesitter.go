@@ -49,6 +49,45 @@ func highlightBuffer(buf *Buffer) [][]layout.Segment {
 	return splitHighlightsByLine(buf.Source, hl.Highlight(buf.Source))
 }
 
+// parserCache holds one *gotreesitter.Parser per language name, mirroring
+// highlighterCache above — Parser construction is cheap relative to a
+// Query compile, but reused all the same for consistency and to avoid any
+// repeated setup cost across calls.
+var parserCache = map[string]*gotreesitter.Parser{}
+
+// parseTree parses buf's current Source fresh with its detected grammar,
+// for on-demand navigation queries (go to parent/definition — see
+// navigate.go). Returns ok=false if the language isn't recognized or
+// parsing fails.
+//
+// Deliberately not cached on Buffer: unlike highlighting, which is
+// recomputed on every keystroke via reHighlight, these actions only ever
+// fire on an explicit keypress, so a fresh parse each time is cheap and
+// needs no invalidation — notably simpler now that a Buffer can be shown
+// in more than one pane at once (see BufferStore), where a cached *Tree
+// would need to account for edits made from any of them.
+func parseTree(buf *Buffer) (*gotreesitter.Tree, bool) {
+	if buf == nil {
+		return nil, false
+	}
+	entry := grammars.DetectLanguage(buf.Path)
+	if entry == nil {
+		return nil, false
+	}
+
+	p, cached := parserCache[entry.Name]
+	if !cached {
+		p = gotreesitter.NewParser(entry.Language())
+		parserCache[entry.Name] = p
+	}
+
+	tree, err := p.Parse(buf.Source)
+	if err != nil || tree == nil {
+		return nil, false
+	}
+	return tree, true
+}
+
 // computeLineBounds returns, for each line i (0-indexed), the half-open
 // byte range [starts[i], ends[i]) of that line's content within source —
 // ends[i] excludes the terminating '\n' (there is none for the last

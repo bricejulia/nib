@@ -122,7 +122,8 @@ var namedKeys = map[string]string{
 	"pagedown": "PageDown", "pgdown": "PageDown", "pgdn": "PageDown",
 	"home": "Home", "end": "End",
 	"backspace": "Backspace",
-	"shift":     "Shift",
+	"space":     "Space", "spacebar": "Space",
+	"shift": "Shift",
 }
 
 // modOrder is the order Key.String() emits held modifiers in.

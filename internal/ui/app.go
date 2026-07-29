@@ -69,6 +69,17 @@ func translateKey(k vaxis.Key) layout.Key {
 	}
 
 	named := namedKey(k.Keycode)
+	if named == "" && k.Text == " " {
+		// vaxis reports space as an ordinary printable rune, not a
+		// special sentinel like Enter/Tab/Esc, so namedKey (which only
+		// matches those) never catches it. Promoting it to a Named key
+		// gives triggers like "Ctrl+Space" a clean, typeable spelling —
+		// see layout.KeySpace's doc comment. Text stays " ", so a bare,
+		// unmodified Space still inserts a literal space exactly as
+		// before (handleInsertKey's printable-text fallback keys off
+		// Text, not Named).
+		named = layout.KeySpace
+	}
 	if named == "" && k.Text != "" {
 		// Shift's effect on a produced character (case for letters, the
 		// shifted symbol for punctuation — e.g. "?" for Shift+/) is

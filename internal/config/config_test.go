@@ -7,19 +7,21 @@ import (
 
 func TestNormalizeCanonicalizesModifiersAndNamedKeys(t *testing.T) {
 	cases := map[string]string{
-		"ctrl+p":         "Ctrl+p",
-		"CTRL+P":         "Ctrl+P",
-		"control+left":   "Ctrl+Left",
-		"shift+left":     "Shift+Left",
-		"ctrl+shift+p":   "Ctrl+Shift+p",
-		"cmd+q":          "Super+q",
-		"esc":            "Esc",
-		"ESCAPE":         "Esc",
-		"pgdown":         "PageDown",
-		"x":              "x",
-		"X":              "X",
-		"]":              "]",
-		"?":              "?",
+		"ctrl+p":        "Ctrl+p",
+		"CTRL+P":        "Ctrl+P",
+		"control+left":  "Ctrl+Left",
+		"shift+left":    "Shift+Left",
+		"ctrl+shift+p":  "Ctrl+Shift+p",
+		"cmd+q":         "Super+q",
+		"esc":           "Esc",
+		"ESCAPE":        "Esc",
+		"pgdown":        "PageDown",
+		"x":             "x",
+		"X":             "X",
+		"]":             "]",
+		"?":             "?",
+		"ctrl+space":    "Ctrl+Space",
+		"ctrl+spacebar": "Ctrl+Space",
 	}
 	for in, want := range cases {
 		if got := Normalize(in); got != want {

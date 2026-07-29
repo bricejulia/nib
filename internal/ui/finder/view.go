@@ -147,6 +147,17 @@ func (v *View) Open() {
 	v.refilter()
 }
 
+// OpenWithQuery opens the finder already in content-search mode with
+// query pre-filled and searched — used by the editor's find-references
+// action (see editor.View.OnFindReferences) so the user doesn't have to
+// retype the identifier under their cursor.
+func (v *View) OpenWithQuery(query string) {
+	v.Open()
+	v.mode = modeContent
+	v.query = []rune(query)
+	v.refilter()
+}
+
 // ApplyStatus attaches git statuses (repo-relative path -> Status, the
 // same direct per-file map the file tree rolls up) so file-mode matches
 // show a status marker and color. It's fine to call this before Open,
