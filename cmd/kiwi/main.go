@@ -141,8 +141,16 @@ func run() error {
 
 	treeView := filetree.New(absRoot)
 	treeView.SetKeymap(cfg.Overrides("filetree"))
+	// bufferStore is shared by every editor pane (this one and any created
+	// by trySplit below), so opening the same file in two panes gives them
+	// the SAME Buffer — edits, dirty state, and undo are shared exactly
+	// like vim's buffers-vs-windows model, instead of each pane silently
+	// keeping its own independent copy. See editor.BufferStore.
+	bufferStore := editor.NewBufferStore()
+
 	editorView := editor.NewView()
 	editorView.SetKeymap(cfg.Overrides("editor"))
+	editorView.SetBufferStore(bufferStore)
 	statusBarView := statusbar.New()
 	statusBarView.Hint = mainShortcutsHint
 
@@ -234,14 +242,39 @@ func run() error {
 	}
 	defer app.Close()
 
-	// The only place activeEditorPane is ever written: keeps it pointed at
-	// whichever editor pane last genuinely had focus, for Tab-cycling,
-	// mouse clicks, and FocusLeaf calls alike.
+	// lastFocusedLeaf is only used to know which editor pane (if any) just
+	// LOST focus, immediately below — activeEditorPane (which pane last
+	// genuinely had focus, full stop) is a separate, longer-lived thing
+	// other callbacks below still need even once focus moves elsewhere
+	// (e.g. onto the file tree).
+	var lastFocusedLeaf layout.LeafID
 	app.SetFocusChangeHandler(func(id layout.LeafID) {
+		// A pane left mid-Insert/Command-mode when focus moves away (e.g.
+		// a mouse click elsewhere, which — unlike Tab-cycling — never
+		// routes a key through the losing pane's own HandleKey) must not
+		// stay that way: with buffers now shared across panes (see
+		// editor.BufferStore), two panes simultaneously mid-edit on the
+		// same buffer would scramble undo history. See
+		// editor.View.ExitEditingModes.
+		if p, ok := editorPanes[lastFocusedLeaf]; ok && lastFocusedLeaf != id {
+			p.view.ExitEditingModes()
+		}
+		lastFocusedLeaf = id
+
+		// The only place activeEditorPane is ever written: keeps it
+		// pointed at whichever editor pane last genuinely had focus, for
+		// Tab-cycling, mouse clicks, and FocusLeaf calls alike.
 		if p, ok := editorPanes[id]; ok {
 			activeEditorPane = p
 		}
 	})
+
+	// Closing an editor pane's last tab (via ":q"/":qa"/etc.) leaves it
+	// showing the "No file open" placeholder with nothing left to do in
+	// it, so hand focus back to the file tree — for every editor pane,
+	// not just this initial one (see trySplit below for split-created
+	// panes getting the same wiring).
+	editorView.OnAllTabsClosed = func() { app.FocusLeaf(fileTreeLeaf.ID) }
 
 	finderView := finder.New(absRoot)
 	finderView.SetKeymap(cfg.Overrides("finder"))
@@ -313,6 +346,8 @@ func run() error {
 		}
 		newView := editor.NewView()
 		newView.SetKeymap(cfg.Overrides("editor"))
+		newView.SetBufferStore(bufferStore)
+		newView.OnAllTabsClosed = func() { app.FocusLeaf(fileTreeLeaf.ID) }
 		newLeaf := &layout.LeafNode{ID: nextLeafID, View: newView}
 		if !layout.Split(tree, target.leaf, dir, newLeaf) {
 			return
@@ -320,7 +355,7 @@ func run() error {
 		nextLeafID++
 		path := target.view.ActivePath()
 		if path != "" {
-			newView.Open(path) // new pane starts on the same file
+			newView.Open(path) // new pane starts on the same file — the SAME Buffer, via bufferStore
 		}
 		editorPanes[newLeaf.ID] = &editorPane{leaf: newLeaf, view: newView}
 		if path != "" {
@@ -333,6 +368,12 @@ func run() error {
 		if !ok || len(editorPanes) == 1 {
 			return // not in an editor pane, or it's the last one: no-op
 		}
+		// Release every open tab's Buffer reference before the pane
+		// itself is discarded — otherwise bufferStore would keep each of
+		// them alive (and, worse, hand back their now-orphaned stale
+		// content instead of a fresh Load) forever, since nothing would
+		// ever call Release for them again.
+		target.view.CloseAllTabs()
 		survivor, ok := layout.Close(tree, target.leaf)
 		if !ok {
 			return

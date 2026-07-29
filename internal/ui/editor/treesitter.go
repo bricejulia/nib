@@ -21,9 +21,9 @@ var highlighterCache = map[string]*gotreesitter.Highlighter{}
 // highlightBuffer returns per-line, tab-unexpanded, styled segments for
 // buf's entire contents, or nil if no grammar matches buf.Path or the
 // highlighter fails to construct — callers fall back to the heuristic
-// highlightLine in that case. Computed once per Open/OpenAtLine; see the
-// tab.highlighted field's doc comment for why that's safe only as long as
-// this pane stays read-only.
+// highlightLine in that case. Computed once in Open and recomputed after
+// every edit (see View.reHighlight); the result is cached on
+// Buffer.highlighted, not per-tab — see its doc comment for why.
 func highlightBuffer(buf *Buffer) [][]layout.Segment {
 	if buf == nil {
 		return nil

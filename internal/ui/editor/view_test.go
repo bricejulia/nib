@@ -650,7 +650,7 @@ func TestPlaceholderMessageIsDimmed(t *testing.T) {
 	}
 }
 
-func TestBracketKeysSwitchTabsAndXClosesActiveTab(t *testing.T) {
+func TestBracketKeysSwitchTabs(t *testing.T) {
 	v := NewView()
 	v.Open(fixturePath(t, "editor_sample.txt"))
 	v.Open("/some/other/file.txt")
@@ -660,12 +660,6 @@ func TestBracketKeysSwitchTabsAndXClosesActiveTab(t *testing.T) {
 	}
 	if v.active != 0 {
 		t.Fatalf("'[' should have switched to tab 0, got %d", v.active)
-	}
-	if !v.HandleKey(layout.Key{Text: "x"}) {
-		t.Fatal("'x' should be consumed to close the active tab")
-	}
-	if len(v.tabs) != 1 {
-		t.Fatalf("expected 1 tab remaining after close, got %d", len(v.tabs))
 	}
 }
 
@@ -1136,8 +1130,8 @@ func TestNoOpInsertSessionLeavesNoUndoEntry(t *testing.T) {
 	v.HandleKey(layout.Key{Text: "i"})
 	v.HandleKey(layout.Key{Named: layout.KeyEsc}) // typed nothing
 
-	if len(v.activeTab().undoStack) != 0 {
-		t.Fatalf("expected no undo entry for a no-op Insert session, got %d", len(v.activeTab().undoStack))
+	if len(v.activeTab().buf.undoStack) != 0 {
+		t.Fatalf("expected no undo entry for a no-op Insert session, got %d", len(v.activeTab().buf.undoStack))
 	}
 }
 
@@ -1156,8 +1150,8 @@ func TestNewEditClearsRedoStack(t *testing.T) {
 	v.HandleKey(layout.Key{Text: "z"})
 	v.HandleKey(layout.Key{Named: layout.KeyEsc}) // a fresh edit
 
-	if len(v.activeTab().redoStack) != 0 {
-		t.Fatalf("expected a new edit to clear the redo stack, got %d entries", len(v.activeTab().redoStack))
+	if len(v.activeTab().buf.redoStack) != 0 {
+		t.Fatalf("expected a new edit to clear the redo stack, got %d entries", len(v.activeTab().buf.redoStack))
 	}
 }
 
@@ -1294,5 +1288,532 @@ func TestUndoSaveRedoShowsDirtyWhenBufferDivergesFromDisk(t *testing.T) {
 	}
 	if string(onDisk) == v.activeTab().buf.Lines[0] {
 		t.Fatalf("test setup invalid: disk (%q) should NOT match the buffer (%q) at this point", onDisk, v.activeTab().buf.Lines[0])
+	}
+}
+
+func TestXDeletesCharUnderCursorAndIsUndoable(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 1 // sitting on 'b'
+
+	if !v.HandleKey(layout.Key{Text: "x"}) {
+		t.Fatal("'x' should be consumed")
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "ac" {
+		t.Fatalf("Lines[0] = %q, want %q", got, "ac")
+	}
+	if v.activeTab().cursorCol != 1 {
+		t.Fatalf("cursorCol = %d, want 1 (stays put; 'c' slid into the deleted position)", v.activeTab().cursorCol)
+	}
+	if v.mode != modeNormal {
+		t.Fatal("'x' must not enter Insert mode")
+	}
+
+	v.HandleKey(layout.Key{Text: "u"})
+	if got := v.activeTab().buf.Lines[0]; got != "abc" {
+		t.Fatalf("Lines[0] after undo = %q, want %q", got, "abc")
+	}
+}
+
+func TestXAtEndOfLineIsNoopAndPushesNoUndoEntry(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 3 // one-past-the-end: nothing under the cursor
+
+	v.HandleKey(layout.Key{Text: "x"})
+
+	if got := v.activeTab().buf.Lines[0]; got != "abc" {
+		t.Fatalf("Lines[0] = %q, want unchanged %q", got, "abc")
+	}
+	if len(v.activeTab().buf.undoStack) != 0 {
+		t.Fatalf("expected no undo entry for a no-op 'x', got %d", len(v.activeTab().buf.undoStack))
+	}
+}
+
+func TestXOnEmptyLineIsNoop(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{""}}}}
+	v.active = 0
+
+	if !v.HandleKey(layout.Key{Text: "x"}) {
+		t.Fatal("'x' should still be consumed on an empty line")
+	}
+	if v.activeTab().buf.Lines[0] != "" {
+		t.Fatalf("Lines[0] = %q, want unchanged empty", v.activeTab().buf.Lines[0])
+	}
+}
+
+func TestCapitalXDeletesCharBeforeCursor(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 2 // sitting on 'c'
+
+	if !v.HandleKey(layout.Key{Text: "X"}) {
+		t.Fatal("'X' should be consumed")
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "ac" {
+		t.Fatalf("Lines[0] = %q, want %q", got, "ac")
+	}
+	if v.activeTab().cursorCol != 1 {
+		t.Fatalf("cursorCol = %d, want 1", v.activeTab().cursorCol)
+	}
+	if v.mode != modeNormal {
+		t.Fatal("'X' must not enter Insert mode")
+	}
+
+	v.HandleKey(layout.Key{Text: "u"})
+	if got := v.activeTab().buf.Lines[0]; got != "abc" {
+		t.Fatalf("Lines[0] after undo = %q, want %q", got, "abc")
+	}
+}
+
+func TestOOpensBlankLineBelowAndEntersInsertMode(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"first", "second"}}}}
+	v.active = 0
+
+	if !v.HandleKey(layout.Key{Text: "o"}) {
+		t.Fatal("'o' should be consumed")
+	}
+	if v.mode != modeInsert {
+		t.Fatal("'o' should enter Insert mode")
+	}
+	tb := v.activeTab()
+	if len(tb.buf.Lines) != 3 || tb.buf.Lines[0] != "first" || tb.buf.Lines[1] != "" || tb.buf.Lines[2] != "second" {
+		t.Fatalf("Lines = %+v, want [\"first\" \"\" \"second\"]", tb.buf.Lines)
+	}
+	if tb.cursorLn != 1 || tb.cursorCol != 0 {
+		t.Fatalf("cursor = (%d,%d), want (1,0)", tb.cursorLn, tb.cursorCol)
+	}
+
+	v.HandleKey(layout.Key{Text: "x"})
+	v.HandleKey(layout.Key{Text: "y"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+	if got := v.activeTab().buf.Lines[1]; got != "xy" {
+		t.Fatalf("Lines[1] = %q, want %q", got, "xy")
+	}
+
+	// The opened line plus the typed text undo as ONE unit, back to the
+	// original two-line buffer.
+	v.HandleKey(layout.Key{Text: "u"})
+	tb = v.activeTab()
+	if len(tb.buf.Lines) != 2 || tb.buf.Lines[0] != "first" || tb.buf.Lines[1] != "second" {
+		t.Fatalf("Lines after undo = %+v, want [\"first\" \"second\"]", tb.buf.Lines)
+	}
+}
+
+func TestColonQClosesCleanTab(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+	v.Open("/some/other/file.txt")
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "q"})
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if len(v.tabs) != 1 {
+		t.Fatalf("expected 1 tab remaining after :q, got %d", len(v.tabs))
+	}
+	if v.mode != modeNormal {
+		t.Fatal("expected :q to return to Normal mode")
+	}
+}
+
+func TestColonQRefusesToCloseDirtyTab(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{path: "a.txt", buf: &Buffer{Lines: []string{"abc"}, Dirty: true}}}
+	v.active = 0
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "q"})
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if len(v.tabs) != 1 {
+		t.Fatal(":q should have refused to close a dirty tab")
+	}
+}
+
+func TestColonQForceClosesDirtyTab(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{path: "a.txt", buf: &Buffer{Lines: []string{"abc"}, Dirty: true}}}
+	v.active = 0
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "q"})
+	v.HandleKey(layout.Key{Text: "!"})
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if len(v.tabs) != 0 {
+		t.Fatalf("':q!' should have force-closed the dirty tab, got %d tabs remaining", len(v.tabs))
+	}
+}
+
+func TestColonQaRefusesWhenAnyTabDirty(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{
+		{path: "a.txt", buf: &Buffer{Lines: []string{"a"}, Dirty: false}},
+		{path: "b.txt", buf: &Buffer{Lines: []string{"b"}, Dirty: true}},
+	}
+	v.active = 0
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "q"})
+	v.HandleKey(layout.Key{Text: "a"})
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if len(v.tabs) != 2 {
+		t.Fatal(":qa should have refused to close while any tab is dirty")
+	}
+}
+
+func TestColonQaForceClosesAllTabs(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{
+		{path: "a.txt", buf: &Buffer{Lines: []string{"a"}, Dirty: true}},
+		{path: "b.txt", buf: &Buffer{Lines: []string{"b"}, Dirty: true}},
+	}
+	v.active = 0
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "q"})
+	v.HandleKey(layout.Key{Text: "a"})
+	v.HandleKey(layout.Key{Text: "!"})
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if len(v.tabs) != 0 {
+		t.Fatalf("':qa!' should have force-closed every tab, got %d remaining", len(v.tabs))
+	}
+}
+
+func TestColonWSavesWithoutClosing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewView()
+	v.Open(path)
+	v.activeTab().cursorCol = len(v.activeTab().buf.Lines[0])
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(layout.Key{Text: "!"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "w"})
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if len(v.tabs) != 1 {
+		t.Fatal(":w must not close the tab")
+	}
+	if v.activeTab().buf.Dirty {
+		t.Fatal("expected :w to save (clearing Dirty)")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "x!" {
+		t.Fatalf("file contents = %q, want %q", got, "x!")
+	}
+}
+
+func TestColonWqSavesThenCloses(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewView()
+	v.Open(path)
+	v.activeTab().cursorCol = len(v.activeTab().buf.Lines[0])
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(layout.Key{Text: "!"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "w"})
+	v.HandleKey(layout.Key{Text: "q"})
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if len(v.tabs) != 0 {
+		t.Fatalf(":wq should have closed the tab, got %d remaining", len(v.tabs))
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "x!" {
+		t.Fatalf("file contents = %q, want %q", got, "x!")
+	}
+}
+
+func TestUnknownCommandIsIgnored(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "z"})
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if v.mode != modeNormal {
+		t.Fatal("an unrecognized command should still close the prompt")
+	}
+	if len(v.tabs) != 1 {
+		t.Fatal("an unrecognized command must not close any tab")
+	}
+}
+
+func TestOnAllTabsClosedFiresWhenLastTabCloses(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+	calls := 0
+	v.OnAllTabsClosed = func() { calls++ }
+
+	v.CloseTab()
+
+	if calls != 1 {
+		t.Fatalf("expected OnAllTabsClosed to fire exactly once, got %d", calls)
+	}
+}
+
+func TestOnAllTabsClosedFiresForCloseAllTabs(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+	v.Open("/some/other/file.txt")
+	calls := 0
+	v.OnAllTabsClosed = func() { calls++ }
+
+	v.CloseAllTabs()
+
+	if calls != 1 {
+		t.Fatalf("expected OnAllTabsClosed to fire exactly once, got %d", calls)
+	}
+}
+
+func TestOnAllTabsClosedDoesNotFireWhileTabsRemain(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+	v.Open("/some/other/file.txt")
+	calls := 0
+	v.OnAllTabsClosed = func() { calls++ }
+
+	v.CloseTab() // one tab remains
+
+	if calls != 0 {
+		t.Fatalf("expected OnAllTabsClosed NOT to fire while a tab remains, got %d calls", calls)
+	}
+}
+
+func TestOnAllTabsClosedFiresViaColonQ(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+	calls := 0
+	v.OnAllTabsClosed = func() { calls++ }
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "q"})
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if calls != 1 {
+		t.Fatalf("expected OnAllTabsClosed to fire once via :q, got %d", calls)
+	}
+}
+
+// sharedPanes opens path in two Views that share one BufferStore — the
+// split-pane-on-the-same-file scenario cmd/kiwi/main.go sets up.
+func sharedPanes(t *testing.T, path string) (v1, v2 *View) {
+	t.Helper()
+	store := NewBufferStore()
+	v1, v2 = NewView(), NewView()
+	v1.SetBufferStore(store)
+	v2.SetBufferStore(store)
+	v1.Open(path)
+	v2.Open(path)
+	return v1, v2
+}
+
+func TestTwoPanesSharingAStoreShareTheSameBuffer(t *testing.T) {
+	v1, v2 := sharedPanes(t, fixturePath(t, "editor_sample.txt"))
+	if v1.activeTab().buf != v2.activeTab().buf {
+		t.Fatal("expected both panes' tabs to point at the same *Buffer")
+	}
+}
+
+func TestEditInOnePaneIsVisibleInAnotherSharingTheBuffer(t *testing.T) {
+	v1, v2 := sharedPanes(t, fixturePath(t, "editor_sample.txt"))
+
+	v1.HandleKey(layout.Key{Text: "A"}) // not bound; harmless
+	v1.activeTab().cursorCol = len(v1.activeTab().buf.Lines[0])
+	v1.HandleKey(layout.Key{Text: "i"})
+	v1.HandleKey(layout.Key{Text: "!"})
+	v1.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	if got := v2.activeTab().buf.Lines[0]; got != "line one!" {
+		t.Fatalf("pane 2's Lines[0] = %q, want %q (edit made in pane 1)", got, "line one!")
+	}
+	if !v2.activeTab().buf.Dirty {
+		t.Fatal("expected pane 2's tab bar to also see the buffer as dirty")
+	}
+}
+
+func TestSavingFromOnePaneIsReflectedInTheOther(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v1, v2 := sharedPanes(t, path)
+	v1.activeTab().cursorCol = 1
+	v1.HandleKey(layout.Key{Text: "i"})
+	v1.HandleKey(layout.Key{Text: "!"})
+	v1.HandleKey(layout.Key{Named: layout.KeyEsc})
+	v1.HandleKey(layout.Key{Text: "s", Mods: layout.ModCtrl})
+
+	if v2.activeTab().buf.Dirty {
+		t.Fatal("expected pane 2 to see the buffer as saved (not dirty) after pane 1's Ctrl+s")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "x!" {
+		t.Fatalf("file contents = %q, want %q", got, "x!")
+	}
+}
+
+func TestUndoInOnePaneUndoesEditMadeInAnotherPane(t *testing.T) {
+	v1, v2 := sharedPanes(t, fixturePath(t, "editor_sample.txt"))
+
+	v1.activeTab().cursorCol = len(v1.activeTab().buf.Lines[0])
+	v1.HandleKey(layout.Key{Text: "i"})
+	v1.HandleKey(layout.Key{Text: "!"})
+	v1.HandleKey(layout.Key{Named: layout.KeyEsc})
+	if got := v2.activeTab().buf.Lines[0]; got != "line one!" {
+		t.Fatalf("setup: pane 2 Lines[0] = %q, want %q", got, "line one!")
+	}
+
+	if !v2.HandleKey(layout.Key{Text: "u"}) {
+		t.Fatal("expected 'u' in pane 2 to be consumed")
+	}
+	if got := v2.activeTab().buf.Lines[0]; got != "line one" {
+		t.Fatalf("pane 2's Lines[0] after undo = %q, want %q (reverts an edit made in pane 1)", got, "line one")
+	}
+	if v2.activeTab().cursorCol != len("line one") {
+		t.Fatalf("expected pane 2's OWN cursor to move to the undone edit's position, got %d", v2.activeTab().cursorCol)
+	}
+}
+
+func TestClosingOneTabDoesNotDisturbSiblingPaneStillShowingTheBuffer(t *testing.T) {
+	v1, v2 := sharedPanes(t, fixturePath(t, "editor_sample.txt"))
+
+	v1.CloseTab()
+
+	if v2.activeTab().buf == nil || v2.activeTab().buf.Lines[0] != "line one" {
+		t.Fatal("expected pane 2's buffer to remain valid and unaffected by pane 1 closing its own tab")
+	}
+}
+
+func TestClosingEveryReferencingTabEvictsFromStore(t *testing.T) {
+	store := NewBufferStore()
+	v1, v2 := NewView(), NewView()
+	v1.SetBufferStore(store)
+	v2.SetBufferStore(store)
+	path := fixturePath(t, "editor_sample.txt")
+	v1.Open(path)
+	v2.Open(path)
+
+	v1.CloseTab()
+	if store.Len() != 1 {
+		t.Fatalf("Len() = %d, want 1 (pane 2 still references it)", store.Len())
+	}
+	v2.CloseTab()
+	if store.Len() != 0 {
+		t.Fatalf("Len() = %d, want 0 (no pane references it anymore)", store.Len())
+	}
+}
+
+func TestExitEditingModesCommitsInsertSessionAndClearsCommandPrompt(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(layout.Key{Text: "X"})
+
+	v.ExitEditingModes()
+
+	if v.mode != modeNormal {
+		t.Fatal("expected Normal mode after ExitEditingModes")
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "Xabc" {
+		t.Fatalf("Lines[0] = %q, want %q (typed text committed)", got, "Xabc")
+	}
+	if !v.HandleKey(layout.Key{Text: "u"}) {
+		t.Fatal("expected the committed session to be undoable")
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "abc" {
+		t.Fatalf("Lines[0] after undo = %q, want %q", got, "abc")
+	}
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "4"})
+	v.ExitEditingModes()
+	if v.mode != modeNormal || v.commandBuf != "" {
+		t.Fatalf("expected ExitEditingModes to clear the Command prompt, got mode=%v commandBuf=%q", v.mode, v.commandBuf)
+	}
+}
+
+func TestRenderClampsCursorAfterSiblingPaneShrinksSharedBuffer(t *testing.T) {
+	store := NewBufferStore()
+	v1, v2 := NewView(), NewView()
+	v1.SetBufferStore(store)
+	v2.SetBufferStore(store)
+	shared := &Buffer{Lines: []string{"one", "two", "three", "four", "five"}}
+	store.bufs["shared"] = &storedBuffer{buf: shared, count: 2}
+	v1.tabs = []*tab{{path: "shared", buf: shared}}
+	v2.tabs = []*tab{{path: "shared", buf: shared}}
+	v1.active, v2.active = 0, 0
+	v2.activeTab().cursorLn = 4 // last line
+
+	shared.Restore([]string{"only line"}) // simulates pane 1 shrinking the buffer
+
+	w := newFakeWindow(40, 10)
+	v2.Render(w) // must not panic, and must clamp instead of rendering an empty body
+
+	if v2.activeTab().cursorLn != 0 {
+		t.Fatalf("cursorLn = %d, want 0 (clamped into the shrunk buffer)", v2.activeTab().cursorLn)
+	}
+	if !strings.Contains(w.lines[1], "only line") {
+		t.Fatalf("expected the shrunk content to actually render, got %q", w.lines[1])
+	}
+}
+
+func TestTabInsertsTabCharacterInInsertMode(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"ab"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 1
+	v.HandleKey(layout.Key{Text: "i"})
+
+	if !v.HandleKey(layout.Key{Named: layout.KeyTab}) {
+		t.Fatal("expected Tab to be consumed while inserting")
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "a\tb" {
+		t.Fatalf("Lines[0] = %q, want %q", got, "a\tb")
+	}
+}
+
+func TestTabInNormalModeIsNotConsumedByEditor(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"ab"}}}}
+	v.active = 0
+
+	if v.HandleKey(layout.Key{Named: layout.KeyTab}) {
+		t.Fatal("expected Tab in Normal mode to fall through unconsumed, so the global focus-cycle keybind still fires")
 	}
 }

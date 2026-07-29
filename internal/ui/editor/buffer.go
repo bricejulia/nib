@@ -3,6 +3,8 @@ package editor
 import (
 	"os"
 	"strings"
+
+	"github.com/bricejulia/kiwi/internal/layout"
 )
 
 // defaultSaveMode is the permission Save falls back to when Load couldn't
@@ -39,6 +41,30 @@ type Buffer struct {
 	// Save doesn't silently drop them (e.g. a script's executable bit) by
 	// writing back with some fixed default instead.
 	mode os.FileMode
+
+	// highlighted is real tree-sitter output (see treesitter.go), one
+	// entry per Lines index, raw/not-tab-expanded — nil (as a whole, or
+	// per-line) means "use the highlightLine heuristic instead", the
+	// fallback for files whose language isn't recognized. Lives on Buffer
+	// rather than on a per-tab view of it because it's a pure function of
+	// this buffer's own content: with the same Buffer now potentially
+	// shown in more than one pane (see BufferStore), a per-tab cache would
+	// go stale in every OTHER tab the moment just one of them re-highlights
+	// after an edit. Computed on first Open and recomputed in full after
+	// every edit (see View.reHighlight) — not incremental, but simple and
+	// correct; caching a tree-sitter *Tree and re-parsing incrementally is
+	// the natural next optimization, once something needs the Tree anyway
+	// (e.g. real go-to-definition/find-references built on the same parse).
+	highlighted [][]layout.Segment
+
+	// undoStack/redoStack hold one undoEntry (see view.go) per completed
+	// Insert session or single-key Normal-mode edit — vim's own undo
+	// granularity, and like vim, a property of the buffer, not of
+	// whichever pane happens to be looking at it: undo in one pane on a
+	// buffer undoes an edit committed from any pane showing that same
+	// buffer. The in-progress (not yet committed) session's snapshot
+	// stays on tab, not here — see tab.insertSnapshot's doc comment.
+	undoStack, redoStack []undoEntry
 }
 
 // Load reads path into a Buffer.

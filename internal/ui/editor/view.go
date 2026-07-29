@@ -19,8 +19,8 @@ import (
 var DefaultKeybinds = config.Defaults{
 	{Trigger: "]", Action: "next_tab"},
 	{Trigger: "[", Action: "prev_tab"},
-	{Trigger: "x", Action: "close_tab"},
-	{Trigger: "X", Action: "close_all_tabs"},
+	{Trigger: "x", Action: "delete_char_forward"},
+	{Trigger: "X", Action: "delete_char_backward"},
 	{Trigger: "Down", Action: "move_down"},
 	{Trigger: "j", Action: "move_down"},
 	{Trigger: "Up", Action: "move_up"},
@@ -41,6 +41,7 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "Esc", Action: "normal_mode"},
 	{Trigger: "Enter", Action: "insert_newline"},
 	{Trigger: "Backspace", Action: "insert_backspace"},
+	{Trigger: "Tab", Action: "insert_tab"},
 	{Trigger: "Ctrl+s", Action: "save"},
 	{Trigger: "u", Action: "undo"},
 	{Trigger: "Ctrl+r", Action: "redo"},
@@ -104,24 +105,17 @@ type tab struct {
 	cursorLn  int
 	cursorCol int
 
-	// highlighted is real tree-sitter output (see treesitter.go), one
-	// entry per buf.Lines index, raw/not-tab-expanded — nil (as a whole,
-	// or per-line) means "use the highlightLine heuristic instead", the
-	// fallback for files whose language isn't recognized. Computed in
-	// Open and recomputed in full after every edit (see reHighlight) —
-	// not incremental, but simple and correct; caching a tree-sitter
-	// *Tree per tab and re-parsing incrementally is the natural next
-	// optimization, once something needs the Tree anyway (e.g. real
-	// go-to-definition/find-references built on the same parse).
-	highlighted [][]layout.Segment
-
-	// undoStack/redoStack hold one undoEntry per completed Insert session
-	// (see exitInsertMode) — vim's own undo granularity, not per-keystroke.
-	// insertSnapshot is the pending entry for the Insert session currently
-	// in progress (nil outside of Insert mode), taken by enterInsertMode
-	// and either committed or discarded by exitInsertMode.
-	undoStack, redoStack []undoEntry
-	insertSnapshot       *undoEntry
+	// insertSnapshot is the pending undo entry for the Insert session
+	// currently in progress in THIS pane (nil outside of Insert mode),
+	// taken by enterInsertMode and either committed (onto buf.undoStack)
+	// or discarded by exitInsertMode. Deliberately per-tab rather than on
+	// Buffer, unlike the committed undoStack/redoStack: it's the
+	// not-yet-committed half of an edit, scoped to whichever single pane
+	// is mid-session — cmd/kiwi/main.go's focus-change wiring (see
+	// View.ExitEditingModes) guarantees at most one pane is ever
+	// mid-session on a given buffer at a time, which is what makes this
+	// split safe.
+	insertSnapshot *undoEntry
 
 	// lineStatus is this tab's per-line git diff gutter markers (see
 	// gitstatus.FileHunks), keyed by 0-based index into buf.Lines. Set by
@@ -133,10 +127,14 @@ type tab struct {
 	lineStatus map[int]gitstatus.LineStatus
 }
 
-// View is the editor pane: zero or more open tabs, each an independent
-// Buffer with its own scroll/cursor position and modal (Normal/Insert)
-// editing state — see editMode. The pane shows the terminal's real cursor
-// (see CursorPosition) at the current position.
+// View is the editor pane: zero or more open tabs, each with its own
+// scroll/cursor position and modal (Normal/Insert) editing state — see
+// editMode. A tab's Buffer is not necessarily private to it: opening the
+// same path from more than one View sharing a BufferStore (see
+// SetBufferStore, e.g. split panes in cmd/kiwi/main.go) gives both tabs
+// the SAME Buffer, so edits/dirty state/undo are shared exactly like
+// vim's buffers-vs-windows model. The pane shows the terminal's real
+// cursor (see CursorPosition) at the current position.
 type View struct {
 	tabs     []*tab
 	active   int // index into tabs; meaningless when len(tabs) == 0
@@ -150,16 +148,37 @@ type View struct {
 	// ":<line>" prompt is open; see editMode and HandleKey.
 	mode editMode
 
-	// commandBuf holds the digits typed so far in Command mode (see
+	// commandBuf holds the characters typed so far in Command mode (see
 	// handleCommandKey) — a single command line shared by the pane, like
 	// vim's, not per-tab.
 	commandBuf string
+
+	// OnAllTabsClosed, if set, is called whenever CloseTab/CloseAllTabs
+	// (directly, or via the ":q"/":qa" family — see closeActiveTab/
+	// closeAllTabsCmd) leaves this pane with zero open tabs. Set by
+	// cmd/kiwi/main.go to refocus the file tree — same plain-callback
+	// pattern as finder.View.OnClose/debug.View.OnClose.
+	OnAllTabsClosed func()
+
+	// store resolves Open's path to a *Buffer — see BufferStore. Defaults
+	// to a private store (below), so a View nobody explicitly shares one
+	// with behaves exactly as if buffers were never shared at all.
+	store *BufferStore
 }
 
 // NewView creates an empty editor pane with no tabs open; call Open to
 // load a file into it.
 func NewView() *View {
-	return &View{tabWidth: 4, keymap: DefaultKeybinds.Resolve(nil)}
+	return &View{tabWidth: 4, keymap: DefaultKeybinds.Resolve(nil), store: NewBufferStore()}
+}
+
+// SetBufferStore replaces this pane's BufferStore, so it shares loaded
+// buffers with every other View given the same store (e.g. split panes)
+// instead of loading its own private copies. Call before opening any
+// tabs — an already-open tab's Buffer came from whichever store was
+// active when it was opened, and doesn't retroactively move.
+func (v *View) SetBufferStore(s *BufferStore) {
+	v.store = s
 }
 
 // SetKeymap merges the user config's "editor" scope overrides on top of
@@ -227,10 +246,10 @@ func (v *View) Open(path string) {
 		}
 	}
 
-	buf, err := Load(path)
+	buf, err := v.store.Open(path)
 	t := &tab{path: path, buf: buf, err: err}
-	if buf != nil {
-		t.highlighted = highlightBuffer(buf)
+	if buf != nil && buf.highlighted == nil {
+		buf.highlighted = highlightBuffer(buf) // already cached if another pane opened this path first
 	}
 	v.tabs = append(v.tabs, t)
 	v.active = len(v.tabs) - 1
@@ -271,24 +290,50 @@ func (v *View) PrevTab() {
 }
 
 // CloseTab closes the active tab, activating the tab to its left (or the
-// new last tab, if the closed tab was leftmost).
+// new last tab, if the closed tab was leftmost). Fires OnAllTabsClosed if
+// this was the last one.
 func (v *View) CloseTab() {
 	if len(v.tabs) == 0 {
 		return
 	}
+	closed := v.tabs[v.active]
 	v.tabs = append(v.tabs[:v.active], v.tabs[v.active+1:]...)
 	if v.active >= len(v.tabs) {
 		v.active = len(v.tabs) - 1
 	}
+	v.releaseTab(closed)
+	v.notifyIfEmpty()
 }
 
-// CloseAllTabs closes all tabs.
+// CloseAllTabs closes all tabs. Fires OnAllTabsClosed.
 func (v *View) CloseAllTabs() {
 	if len(v.tabs) == 0 {
 		return
 	}
+	closed := v.tabs
 	v.tabs = []*tab{}
 	v.active = 0
+	for _, t := range closed {
+		v.releaseTab(t)
+	}
+	v.notifyIfEmpty()
+}
+
+// releaseTab releases t's Buffer back to the store (if it successfully
+// loaded one — a failed load never registered a reference to release),
+// decrementing the shared reference count; see BufferStore.Release.
+func (v *View) releaseTab(t *tab) {
+	if t.buf != nil {
+		v.store.Release(t.path)
+	}
+}
+
+// notifyIfEmpty calls OnAllTabsClosed, if set, when the pane has just been
+// left with zero open tabs.
+func (v *View) notifyIfEmpty() {
+	if len(v.tabs) == 0 && v.OnAllTabsClosed != nil {
+		v.OnAllTabsClosed()
+	}
 }
 
 // StatusText is the "Ln N, Col N" text meant for a status bar (see
@@ -340,6 +385,15 @@ func (v *View) Render(w layout.Window) {
 	w.Println(0, tabBarSegments(v.tabs, v.active, cols)...)
 
 	t := v.activeTab()
+	// Defensive: a sibling pane sharing this tab's Buffer (see
+	// BufferStore) could have shrunk it since this pane's own last
+	// keypress — the only other time cursorLn/cursorCol are normally
+	// clamped. Without this, a now-out-of-range cursorLn makes the body
+	// loop below break on its very first row, silently rendering an empty
+	// pane until this pane's own next keystroke.
+	if t != nil {
+		v.clamp(t)
+	}
 	bodyRows := rows - 1
 	if bodyRows < 0 {
 		bodyRows = 0
@@ -500,8 +554,8 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int) {
 			break
 		}
 		var raw []layout.Segment
-		if ln < len(t.highlighted) && t.highlighted[ln] != nil {
-			raw = t.highlighted[ln] // real tree-sitter output, raw (not tab-expanded)
+		if ln < len(t.buf.highlighted) && t.buf.highlighted[ln] != nil {
+			raw = t.buf.highlighted[ln] // real tree-sitter output, raw (not tab-expanded)
 		} else {
 			raw = highlightLine(t.buf.Lines[ln]) // heuristic fallback, also raw
 		}
@@ -627,12 +681,6 @@ func (v *View) HandleKey(k layout.Key) bool {
 	case "prev_tab":
 		v.PrevTab()
 		return true
-	case "close_tab":
-		v.CloseTab()
-		return true
-	case "close_all_tabs":
-		v.CloseAllTabs()
-		return true
 	case "insert_mode":
 		v.enterInsertMode()
 		return true
@@ -644,6 +692,15 @@ func (v *View) HandleKey(k layout.Key) bool {
 			t := v.activeTab()
 			t.cursorCol++
 			v.clamp(t)
+		}
+		return true
+	case "append_new_line_mode":
+		// vim's "o": open a blank line below the cursor and enter Insert
+		// mode on it, as a single undo unit covering the opened line plus
+		// anything typed before the next Esc — enterInsertMode captures
+		// that pre-edit snapshot, exactly like "i"/"a" do.
+		if v.enterInsertMode() {
+			v.openLineBelow()
 		}
 		return true
 	case "command_mode":
@@ -666,6 +723,10 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.undo(t)
 	case "redo":
 		v.redo(t)
+	case "delete_char_forward":
+		v.deleteCharForward(t)
+	case "delete_char_backward":
+		v.deleteCharBackward(t)
 	default:
 		if !v.applyMovement(t, action) {
 			return false
@@ -730,6 +791,12 @@ func (v *View) handleInsertKey(k layout.Key) bool {
 	case "insert_backspace":
 		v.deleteBackward()
 		return true
+	case "insert_tab":
+		// Tab arrives as a Named key with no Text (same as Enter/Esc/
+		// Backspace), so the printable-text fallback below never sees
+		// it — it needs its own action, same as those.
+		v.insertText("\t")
+		return true
 	}
 
 	// Arrow keys move the cursor even while inserting, like most editors.
@@ -756,10 +823,9 @@ func (v *View) handleInsertKey(k layout.Key) bool {
 }
 
 // handleCommandKey handles a key while the pane is in Command mode — a
-// minimal ":<line>" prompt (not a general ex-command line): digits
-// accumulate in v.commandBuf, Enter jumps the active tab's cursor to that
-// 1-based line (clamped to the buffer), Esc cancels, Backspace edits the
-// typed number. Anything else is ignored.
+// minimal ":<command>" prompt (not a general ex-command line): characters
+// accumulate in v.commandBuf, Enter commits (see commitCommand), Esc
+// cancels, Backspace edits what's typed so far.
 func (v *View) handleCommandKey(k layout.Key) bool {
 	switch v.keymap[k.String()] {
 	case "normal_mode":
@@ -767,7 +833,7 @@ func (v *View) handleCommandKey(k layout.Key) bool {
 		v.commandBuf = ""
 		return true
 	case "insert_newline": // Enter
-		v.commitGoToLine()
+		v.commitCommand()
 		return true
 	case "insert_backspace": // Backspace
 		if n := len(v.commandBuf); n > 0 {
@@ -776,22 +842,54 @@ func (v *View) handleCommandKey(k layout.Key) bool {
 		return true
 	}
 
-	if len(k.Text) == 1 && k.Text[0] >= '0' && k.Text[0] <= '9' {
+	if len(k.Text) == 1 && k.Mods&(layout.ModCtrl|layout.ModAlt|layout.ModSuper) == 0 {
 		v.commandBuf += k.Text
 	}
 	return true
 }
 
-// commitGoToLine parses v.commandBuf as a 1-based line number and, if
-// valid, moves the active tab's cursor there (clamped to the buffer, via
-// the same v.clamp every other cursor move uses). An empty or invalid
-// number just closes the prompt without moving the cursor — no error UI,
-// matching the "simple first pass" precedent set by Save's error handling.
-func (v *View) commitGoToLine() {
-	line, err := strconv.Atoi(v.commandBuf)
+// commitCommand parses v.commandBuf and executes it, then always closes
+// the prompt back to Normal mode. A purely numeric command jumps the
+// active tab's cursor to that 1-based line (see goToLine); otherwise it's
+// matched against a small fixed set of vim ex-commands — "q"/"q!" close
+// the active tab, "qa"/"qa!" close all tabs, "w" saves, "wq" saves then
+// closes. Anything else (including an empty buffer) just closes the
+// prompt without effect — no error UI, matching the "simple first pass"
+// precedent set by Save's error handling.
+func (v *View) commitCommand() {
+	cmd := v.commandBuf
 	v.commandBuf = ""
 	v.mode = modeNormal
-	if err != nil || line <= 0 {
+
+	if n, err := strconv.Atoi(cmd); err == nil {
+		v.goToLine(n)
+		return
+	}
+
+	switch cmd {
+	case "q":
+		v.closeActiveTab(false)
+	case "q!":
+		v.closeActiveTab(true)
+	case "qa":
+		v.closeAllTabsCmd(false)
+	case "qa!":
+		v.closeAllTabsCmd(true)
+	case "w":
+		v.saveActive()
+	case "wq":
+		v.saveActive()
+		v.closeActiveTab(false) // if the save failed, Dirty is still true and this correctly still refuses
+	default:
+		debuglog.Warn("editor: unknown command %q", cmd)
+	}
+}
+
+// goToLine moves the active tab's cursor to line (1-based), clamped to
+// the buffer (via the same v.clamp every other cursor move uses). line
+// <= 0 is a no-op.
+func (v *View) goToLine(line int) {
+	if line <= 0 {
 		return
 	}
 	t := v.activeTab()
@@ -801,6 +899,40 @@ func (v *View) commitGoToLine() {
 	t.cursorLn = line - 1
 	t.cursorCol = 0
 	v.clamp(t)
+}
+
+// closeActiveTab implements vim's ":q"/":q!": closes the active tab,
+// refusing (vim: "no write since last change") if it has unsaved changes
+// unless force is true.
+func (v *View) closeActiveTab(force bool) {
+	t := v.activeTab()
+	if t == nil {
+		return
+	}
+	if !force && t.buf != nil && t.buf.Dirty {
+		debuglog.Warn("q: %s has unsaved changes (use q! to discard)", t.path)
+		return
+	}
+	v.CloseTab()
+}
+
+// closeAllTabsCmd implements vim's ":qa"/":qa!": closes every tab,
+// refusing (naming which are unsaved) if any has unsaved changes unless
+// force is true.
+func (v *View) closeAllTabsCmd(force bool) {
+	if !force {
+		var dirty []string
+		for _, t := range v.tabs {
+			if t.buf != nil && t.buf.Dirty {
+				dirty = append(dirty, t.path)
+			}
+		}
+		if len(dirty) > 0 {
+			debuglog.Warn("qa: %d unsaved file(s) (use qa! to discard): %s", len(dirty), strings.Join(dirty, ", "))
+			return
+		}
+	}
+	v.CloseAllTabs()
 }
 
 // enterInsertMode switches to Insert mode and snapshots the active tab's
@@ -832,27 +964,66 @@ func (v *View) exitInsertMode() {
 	}
 	snap := *t.insertSnapshot
 	t.insertSnapshot = nil
-	if t.buf == nil || linesEqual(snap.lines, t.buf.Lines) {
+	v.pushUndoIfChanged(t, snap)
+}
+
+// ExitEditingModes returns the pane to Normal mode, discarding an
+// in-progress Command prompt and committing (or discarding, if nothing
+// was typed) an in-progress Insert session — exactly what Esc would do in
+// either mode. Meant to be called when focus moves away from this pane
+// (see cmd/kiwi/main.go's focus-change wiring): a mouse click can switch
+// focus without ever routing a key through the losing pane's HandleKey
+// (unlike Tab-cycling, which Insert mode's own key-trap already blocks),
+// so without this a pane could be left "stuck" mid-Insert-session
+// indefinitely. That matters now that buffers can be shared across panes
+// (see BufferStore) — two panes simultaneously mid-session on the same
+// buffer would scramble whose pending snapshot ends up committed to its
+// undo history; this guarantees at most one pane ever is.
+func (v *View) ExitEditingModes() {
+	switch v.mode {
+	case modeInsert:
+		v.exitInsertMode()
+	case modeCommand:
+		v.mode = modeNormal
+		v.commandBuf = ""
+	}
+}
+
+// pushUndoIfChanged pushes before onto t.buf's undo stack (capped at
+// maxUndoEntries, oldest dropped) and clears its redo stack, but only if
+// t.buf.Lines actually differs from before's — an edit that ends up a
+// no-op doesn't clutter undo history. Shared by exitInsertMode (one entry
+// per Insert session) and any single-key Normal-mode edit like "x"/"X"
+// (one entry per keypress, since those are already complete changes on
+// their own, unlike an Insert session). Lives on Buffer, not tab — see
+// Buffer.undoStack's doc comment — so this is undo history shared by
+// every pane showing t.buf, not just this one.
+func (v *View) pushUndoIfChanged(t *tab, before undoEntry) {
+	if t.buf == nil || linesEqual(before.lines, t.buf.Lines) {
 		return
 	}
-	if len(t.undoStack) >= maxUndoEntries {
-		t.undoStack = t.undoStack[1:]
+	if len(t.buf.undoStack) >= maxUndoEntries {
+		t.buf.undoStack = t.buf.undoStack[1:]
 	}
-	t.undoStack = append(t.undoStack, snap)
-	t.redoStack = nil
+	t.buf.undoStack = append(t.buf.undoStack, before)
+	t.buf.redoStack = nil
 }
 
 // undo reverts t's buffer to its state before the most recently completed
-// Insert session (or the most recent prior undo/redo), pushing the
-// current state onto the redo stack first so redo can reapply it. A no-op
-// on an empty undo stack.
+// Insert session (or the most recent prior undo/redo) — from ANY pane
+// sharing t.buf, not just this one — pushing the current state onto the
+// redo stack first so redo can reapply it. A no-op on an empty undo
+// stack. Moves only THIS pane's cursor to the reverted entry's recorded
+// position; a sibling pane also showing t.buf keeps its own cursor
+// wherever it was (clamped defensively on its next Render if the content
+// shrank out from under it).
 func (v *View) undo(t *tab) {
-	if len(t.undoStack) == 0 {
+	if len(t.buf.undoStack) == 0 {
 		return
 	}
-	entry := t.undoStack[len(t.undoStack)-1]
-	t.undoStack = t.undoStack[:len(t.undoStack)-1]
-	t.redoStack = append(t.redoStack, snapshotTab(t))
+	entry := t.buf.undoStack[len(t.buf.undoStack)-1]
+	t.buf.undoStack = t.buf.undoStack[:len(t.buf.undoStack)-1]
+	t.buf.redoStack = append(t.buf.redoStack, snapshotTab(t))
 	applyUndoEntry(t, entry)
 	v.reHighlight(t)
 }
@@ -861,12 +1032,12 @@ func (v *View) undo(t *tab) {
 // state onto the undo stack first so it can be undone again. A no-op on
 // an empty redo stack.
 func (v *View) redo(t *tab) {
-	if len(t.redoStack) == 0 {
+	if len(t.buf.redoStack) == 0 {
 		return
 	}
-	entry := t.redoStack[len(t.redoStack)-1]
-	t.redoStack = t.redoStack[:len(t.redoStack)-1]
-	t.undoStack = append(t.undoStack, snapshotTab(t))
+	entry := t.buf.redoStack[len(t.buf.redoStack)-1]
+	t.buf.redoStack = t.buf.redoStack[:len(t.buf.redoStack)-1]
+	t.buf.undoStack = append(t.buf.undoStack, snapshotTab(t))
 	applyUndoEntry(t, entry)
 	v.reHighlight(t)
 }
@@ -935,12 +1106,67 @@ func (v *View) deleteBackward() {
 	v.clamp(t)
 }
 
-// reHighlight recomputes t.highlighted after an edit — a full re-parse, the
-// same cost as Open's initial call; see the highlighted field's doc
-// comment for the incremental-parsing optimization this defers.
+// deleteCharForward implements vim's "x": deletes the rune under the
+// cursor (not the one before it, like Backspace) and stays in Normal
+// mode. A no-op on an empty line or when the cursor is already past the
+// last rune. Recorded as its own undo entry — unlike an Insert session, a
+// single "x" press is already a complete change on its own.
+func (v *View) deleteCharForward(t *tab) {
+	if t.buf == nil {
+		return
+	}
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	if raw >= len([]rune(t.buf.Lines[t.cursorLn])) {
+		return
+	}
+	before := snapshotTab(t)
+	_, newRaw := t.buf.DeleteBackward(t.cursorLn, raw+1) // deletes exactly the rune at raw
+	t.cursorCol = expandedColForRawIndex(t.buf.Lines[t.cursorLn], newRaw, v.tabWidth)
+	v.pushUndoIfChanged(t, before)
+	v.reHighlight(t)
+}
+
+// deleteCharBackward implements vim's "X": deletes the rune immediately
+// before the cursor (joining with the previous line at column 0, just
+// like Backspace in Insert mode) but stays in Normal mode and is recorded
+// as its own undo entry rather than folded into an Insert session.
+func (v *View) deleteCharBackward(t *tab) {
+	if t.buf == nil {
+		return
+	}
+	before := snapshotTab(t)
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	newLn, newRaw := t.buf.DeleteBackward(t.cursorLn, raw)
+	t.cursorLn = newLn
+	t.cursorCol = expandedColForRawIndex(t.buf.Lines[newLn], newRaw, v.tabWidth)
+	v.pushUndoIfChanged(t, before)
+	v.reHighlight(t)
+}
+
+// openLineBelow implements vim's "o": inserts a new blank line below the
+// cursor's current line and moves the cursor onto it — called after
+// enterInsertMode has already captured the pre-"o" snapshot, so the
+// opened line plus anything typed into it undoes as one unit, exactly
+// like "i"/"a".
+func (v *View) openLineBelow() {
+	t := v.activeTab()
+	if t == nil || t.buf == nil {
+		return
+	}
+	t.buf.SplitLine(t.cursorLn, len([]rune(t.buf.Lines[t.cursorLn])))
+	t.cursorLn++
+	t.cursorCol = 0
+	v.reHighlight(t)
+	v.clamp(t)
+}
+
+// reHighlight recomputes t.buf.highlighted after an edit — a full
+// re-parse, the same cost as Open's initial call; see the highlighted
+// field's doc comment for the incremental-parsing optimization this
+// defers.
 func (v *View) reHighlight(t *tab) {
 	if t.buf != nil {
-		t.highlighted = highlightBuffer(t.buf)
+		t.buf.highlighted = highlightBuffer(t.buf)
 	}
 }
 
