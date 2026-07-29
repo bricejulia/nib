@@ -391,6 +391,22 @@ func TestViewContentModeSearchesFileContentsViaGitGrep(t *testing.T) {
 	}
 }
 
+func TestViewContentModeDimsThePathLinePrefix(t *testing.T) {
+	dir := newContentSearchRepo(t)
+	v := New(dir)
+	v.HandleKey(layout.Key{Named: layout.KeyTab}) // content mode
+	for _, r := range "needle" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+
+	w := newFakeWindow(80, 10)
+	v.Render(w)
+
+	if w.styles[1].Attr&layout.AttrDim == 0 {
+		t.Errorf("expected the path:line: prefix to be dim-styled, got %+v", w.styles[1])
+	}
+}
+
 func TestViewContentModeSelectReportsPathAndLine(t *testing.T) {
 	dir := newContentSearchRepo(t)
 	v := New(dir)

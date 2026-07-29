@@ -68,6 +68,21 @@ func translateKey(k vaxis.Key) layout.Key {
 		mods |= layout.ModSuper
 	}
 
+	named := namedKey(k.Keycode)
+	if named == "" && k.Text != "" {
+		// Shift's effect on a produced character (case for letters, the
+		// shifted symbol for punctuation — e.g. "?" for Shift+/) is
+		// already baked into Text itself, and terminals are inconsistent
+		// about ALSO reporting ModShift alongside it: vaxis's own legacy
+		// decoder only sets ModShift for uppercase letters, never for
+		// shifted punctuation, so a binding keyed on "Shift+?" would
+		// silently never match on some terminals while "?" alone always
+		// would. Named keys (Shift+Tab, Shift+Left, ...) keep their
+		// modifier: there Shift changes the key's MEANING, not its
+		// printed form, so it stays significant.
+		mods &^= layout.ModShift
+	}
+
 	et := layout.EventPress
 	switch k.EventType {
 	case vaxis.EventRepeat:
@@ -79,7 +94,7 @@ func translateKey(k vaxis.Key) layout.Key {
 	return layout.Key{
 		Text:      k.Text,
 		Codepoint: k.Keycode,
-		Named:     namedKey(k.Keycode),
+		Named:     named,
 		Mods:      mods,
 		EventType: et,
 	}
@@ -141,6 +156,16 @@ type App struct {
 
 	onDoubleShift  func()
 	lastShiftPress time.Time
+
+	// focused tracks whether the terminal (not just some pane within it)
+	// currently has OS-level focus, via vaxis.FocusIn/FocusOut — vaxis
+	// requests this reporting from the terminal unconditionally at
+	// startup. It guards the double-shift detector specifically: some
+	// terminals/multiplexers (observed with Ghostty tabs) can still
+	// deliver a stray bare-Shift keypress to an unfocused tab, which would
+	// otherwise pop the finder open in a session the user isn't even
+	// looking at.
+	focused bool
 }
 
 // doubleShiftWindow is the maximum gap between two bare Shift presses for
@@ -157,7 +182,12 @@ func NewApp(root layout.Node, global map[string]func()) (*App, error) {
 	}
 	fm := &layout.FocusManager{}
 	fm.Rebuild(root)
-	return &App{vx: vx, root: root, focus: fm, global: global}, nil
+	// Assumed focused until told otherwise: a terminal that doesn't
+	// support focus reporting at all will simply never send FocusOut, and
+	// starting out unfocused would otherwise leave a non-reporting
+	// terminal's session permanently unresponsive to the double-shift
+	// detector.
+	return &App{vx: vx, root: root, focus: fm, global: global, focused: true}, nil
 }
 
 // Close tears down the terminal. Callers must defer this after NewApp
@@ -177,20 +207,14 @@ func (a *App) SetGlobalKeymap(global map[string]func()) {
 	a.global = global
 }
 
-// CycleFocus moves focus to the next leaf, wrapping around. It is intended
-// to be bound in the global keymap (e.g. under "Tab").
-func (a *App) CycleFocus() {
-	a.CycleFocusNext()
-}
-
-// CycleFocus moves focus to the next leaf, wrapping around. It is intended
-// to be bound in the global keymap (e.g. under "Tab").
+// CycleFocusPrev moves focus to the previous leaf, wrapping around. It is
+// intended to be bound in the global keymap (e.g. under "Shift+Tab").
 func (a *App) CycleFocusPrev() {
 	a.focus.Prev()
 }
 
-// CycleFocus moves focus to the next leaf, wrapping around. It is intended
-// to be bound in the global keymap (e.g. under "Tab").
+// CycleFocusNext moves focus to the next leaf, wrapping around. It is
+// intended to be bound in the global keymap (e.g. under "Tab").
 func (a *App) CycleFocusNext() {
 	a.focus.Next()
 }
@@ -261,6 +285,10 @@ func (a *App) Run() error {
 			if a.overlay == nil {
 				a.handleMouse(e)
 			}
+		case vaxis.FocusIn:
+			a.focused = true
+		case vaxis.FocusOut:
+			a.focused = false
 		default:
 			if a.onCustomEvent != nil {
 				a.onCustomEvent(ev)
@@ -277,7 +305,7 @@ func (a *App) Run() error {
 }
 
 func (a *App) handleKey(k layout.Key) {
-	if a.overlay == nil && k.EventType == layout.EventPress && k.Named == layout.KeyShift {
+	if a.focused && a.overlay == nil && k.EventType == layout.EventPress && k.Named == layout.KeyShift {
 		now := time.Now()
 		if !a.lastShiftPress.IsZero() && now.Sub(a.lastShiftPress) <= doubleShiftWindow {
 			a.lastShiftPress = time.Time{}
@@ -449,11 +477,12 @@ func (a *App) renderNode(n layout.Node, full vaxis.Window) bool {
 }
 
 // drawBorder draws a one-cell box around win with title in the top edge,
-// bold when focused and dim otherwise, so the focused pane stands out. It
-// is a no-op (returning false) if win is too small to fit a border — e.g.
-// a Fixed(1) status-bar leaf, which then gets its full area as content
-// with no inset. This is App-level chrome, not part of any View — keeping
-// it here means Views never need to know about focus or borders.
+// bold and cyan when focused, dim (default color) otherwise, so the
+// focused pane stands out at a glance rather than by weight alone. It is a
+// no-op (returning false) if win is too small to fit a border — e.g. a
+// Fixed(1) status-bar leaf, which then gets its full area as content with
+// no inset. This is App-level chrome, not part of any View — keeping it
+// here means Views never need to know about focus or borders.
 func drawBorder(win vaxis.Window, focused bool, title string) bool {
 	cols, rows := win.Size()
 	if cols < 2 || rows < 2 {
@@ -462,7 +491,7 @@ func drawBorder(win vaxis.Window, focused bool, title string) bool {
 
 	style := vaxis.Style{Attribute: vaxis.AttrDim}
 	if focused {
-		style = vaxis.Style{Attribute: vaxis.AttrBold}
+		style = vaxis.Style{Attribute: vaxis.AttrBold, Foreground: translateColor(layout.ColorCyan)}
 	}
 	cell := func(ch string) vaxis.Cell {
 		return vaxis.Cell{Character: vaxis.Character{Grapheme: ch, Width: 1}, Style: style}

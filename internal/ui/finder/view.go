@@ -319,7 +319,7 @@ func (v *View) Render(w layout.Window) {
 	// never scroll past the end of the very line you're looking at, the
 	// same policy the editor pane uses for its own horizontal scroll.
 	if v.cursor >= 0 && v.cursor < v.resultCount() {
-		selectedText, _ := v.rowText(v.cursor)
+		selectedText := rowSegmentsText(v.rowSegments(v.cursor))
 		v.hScroll = textwidth.ClampScroll(v.hScroll, textwidth.DisplayWidth(selectedText), cols)
 	}
 
@@ -328,12 +328,14 @@ func (v *View) Render(w layout.Window) {
 		if idx >= v.resultCount() {
 			break
 		}
-		text, style := v.rowText(idx)
+		segs := v.rowSegments(idx)
 		if idx == v.cursor {
-			style.Attr |= layout.AttrReverse
+			for j := range segs {
+				segs[j].Style.Attr |= layout.AttrReverse
+			}
 		}
-		text = textwidth.SliceByDisplayColumn(text, v.hScroll, cols)
-		w.Println(1+i, layout.Segment{Text: text, Style: style})
+		segs = textwidth.SliceSegmentsByDisplayColumn(segs, v.hScroll, cols)
+		w.Println(1+i, segs...)
 	}
 }
 
@@ -412,16 +414,33 @@ func (v *View) moveCursor(delta int) {
 	v.hScroll = 0 // peeking is per-row: start from the left on the new selection
 }
 
-// rowText builds the full (unclipped) display text for result row idx —
-// shared between Render's per-row loop and the hScroll clamp, which needs
-// to know the SELECTED row's full width regardless of how it'll actually
-// be clipped for display.
-func (v *View) rowText(idx int) (text string, style layout.Style) {
+// rowSegments builds the full (unclipped) styled segments for result row
+// idx — shared between Render's per-row loop and the hScroll clamp, which
+// needs to know the SELECTED row's full width regardless of how it'll
+// actually be clipped for display. Content-mode rows dim the "path:line: "
+// prefix so the matched text itself stands out, matching the file-mode
+// rows' git-status coloring convention of styling metadata separately from
+// the path/text a user actually reads.
+func (v *View) rowSegments(idx int) []layout.Segment {
 	if v.mode == modeContent {
 		m := v.contentMatches[idx]
-		return fmt.Sprintf("%s:%d: %s", m.path, m.line, m.text), layout.Style{}
+		prefix := fmt.Sprintf("%s:%d: ", m.path, m.line)
+		return []layout.Segment{
+			{Text: prefix, Style: layout.Style{Attr: layout.AttrDim}},
+			{Text: m.text},
+		}
 	}
 	item := v.fileMatches[idx]
 	status := v.status[item.path]
-	return gitstyle.Marker(status) + " " + item.path, gitstyle.Style(status)
+	return []layout.Segment{{Text: gitstyle.Marker(status) + " " + item.path, Style: gitstyle.Style(status)}}
+}
+
+// rowSegmentsText joins rowSegments' text with no styling, for width
+// measurement (see the hScroll clamp in Render).
+func rowSegmentsText(segs []layout.Segment) string {
+	text := ""
+	for _, s := range segs {
+		text += s.Text
+	}
+	return text
 }

@@ -78,3 +78,59 @@ func TestTranslateKeyModifiers(t *testing.T) {
 		t.Errorf("got String()=%q, want %q", got.String(), "Ctrl+c")
 	}
 }
+
+// TestTranslateKeyStripsShiftFromPunctuationText guards a real bug: some
+// terminals report ModShift alongside a shifted punctuation character (the
+// kitty protocol can, when it sends associated text) while vaxis's own
+// legacy decoder never does for anything but uppercase letters — so a
+// global keybinding keyed on "Shift+?" silently never matched on some
+// terminals (e.g. Ghostty) even though pressing "?" is inherently a Shift
+// combo on a US keyboard. Shift's effect is already baked into Text itself
+// here, so it must not also survive as a modifier.
+func TestTranslateKeyStripsShiftFromPunctuationText(t *testing.T) {
+	got := translateKey(vaxis.Key{Text: "?", Keycode: '?', Modifiers: vaxis.ModShift, EventType: vaxis.EventPress})
+	if got.Mods&layout.ModShift != 0 {
+		t.Errorf("expected ModShift to be stripped for a produced punctuation character, got Mods=%v", got.Mods)
+	}
+	if got.String() != "?" {
+		t.Errorf("got String()=%q, want %q", got.String(), "?")
+	}
+}
+
+// TestDoubleShiftIgnoredWhenTerminalUnfocused guards a real bug: some
+// terminals/multiplexers (observed with Ghostty tabs) can deliver a stray
+// bare-Shift keypress to a kiwi session running in a tab that isn't even
+// the active one, which would otherwise pop the finder open behind the
+// user's back. FocusOut must disable the double-shift detector.
+func TestDoubleShiftIgnoredWhenTerminalUnfocused(t *testing.T) {
+	a := &App{focus: &layout.FocusManager{}, global: map[string]func(){}, focused: false}
+	fired := false
+	a.SetDoubleShiftHandler(func() { fired = true })
+
+	shiftPress := layout.Key{Named: layout.KeyShift, EventType: layout.EventPress}
+	a.handleKey(shiftPress)
+	a.handleKey(shiftPress)
+	if fired {
+		t.Error("expected double-shift to be ignored while the terminal is unfocused")
+	}
+
+	a.focused = true
+	a.handleKey(shiftPress)
+	a.handleKey(shiftPress)
+	if !fired {
+		t.Error("expected double-shift to fire once the terminal regains focus")
+	}
+}
+
+// TestTranslateKeyKeepsShiftForNamedKeys is the flip side: Shift+Tab,
+// Shift+Left, etc. must keep ModShift, since there Shift changes the key's
+// meaning rather than being absorbed into a printed character.
+func TestTranslateKeyKeepsShiftForNamedKeys(t *testing.T) {
+	got := translateKey(vaxis.Key{Keycode: vaxis.KeyTab, Modifiers: vaxis.ModShift, EventType: vaxis.EventPress})
+	if got.Mods&layout.ModShift == 0 {
+		t.Errorf("expected ModShift to be preserved for a named key, got Mods=%v", got.Mods)
+	}
+	if got.String() != "Shift+Tab" {
+		t.Errorf("got String()=%q, want %q", got.String(), "Shift+Tab")
+	}
+}

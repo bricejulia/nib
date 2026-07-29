@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/bricejulia/kiwi/internal/debuglog"
@@ -15,14 +16,21 @@ import (
 	"github.com/bricejulia/kiwi/internal/ui/editor"
 	"github.com/bricejulia/kiwi/internal/ui/filetree"
 	"github.com/bricejulia/kiwi/internal/ui/finder"
+	"github.com/bricejulia/kiwi/internal/ui/help"
 	"github.com/bricejulia/kiwi/internal/ui/statusbar"
 	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
 	"github.com/bricejulia/kiwi/internal/vcs/watch"
+	"github.com/bricejulia/kiwi/internal/version"
 )
 
 // watchDebounce is the quiet period after the last observed filesystem
 // change before a refresh fires.
 const watchDebounce = 200 * time.Millisecond
+
+// mainShortcutsHint is the fixed reminder shown left-aligned in the status
+// bar — see internal/ui/help for the full keybinding reference (opened via
+// "?", included at the end here).
+const mainShortcutsHint = "Tab Switch pane  ·  Ctrl+P Finder  ·  Ctrl+D Debug  ·  ? Help  ·  Ctrl+C Quit"
 
 func main() {
 	if err := run(); err != nil {
@@ -44,7 +52,28 @@ func run() error {
 	treeView := filetree.New(absRoot)
 	editorView := editor.NewView()
 	statusBarView := statusbar.New()
-	statusBarView.TextFunc = editorView.StatusText
+
+	// gitBranch/gitSummary are refreshed by refreshGitStatus (on startup
+	// and whenever the watcher reports a git change) rather than shelled
+	// out to on every render, which would run `git` on every keystroke.
+	var gitBranch, gitSummary string
+
+	statusBarView.Hint = mainShortcutsHint
+	statusBarView.TextFunc = func() string {
+		parts := make([]string, 0, 3)
+		if cursor := editorView.StatusText(); cursor != "" {
+			parts = append(parts, cursor)
+		}
+		if gitBranch != "" {
+			branch := gitBranch
+			if gitSummary != "" {
+				branch += " " + gitSummary
+			}
+			parts = append(parts, branch)
+		}
+		parts = append(parts, "kiwi "+version.Version)
+		return strings.Join(parts, "   ")
+	}
 
 	fileTreeLeaf := &layout.LeafNode{ID: 1, View: treeView}
 	editorLeaf := &layout.LeafNode{ID: 2, View: editorView}
@@ -91,14 +120,20 @@ func run() error {
 	debugView.OnClose = app.CloseOverlay
 	openDebugLog := func() { app.ShowOverlay(debugView) }
 
+	helpView := help.New(version.Version)
+	helpView.OnClose = app.CloseOverlay
+	openHelp := func() { app.ShowOverlay(helpView) }
+
 	global := map[string]func(){
-		"Ctrl+c": app.Quit,
-		"Tab":    app.CycleFocus,
+		"Ctrl+c":    app.Quit,
+		"Tab":       app.CycleFocusNext,
+		"Shift+Tab": app.CycleFocusPrev,
 		// Double-tap Shift opens the same finder, but that only works on
 		// terminals reporting bare modifier keypresses (kitty keyboard
 		// protocol) — Ctrl+P is the conventional fallback everywhere else.
 		"Ctrl+p": openFinder,
 		"Ctrl+d": openDebugLog,
+		"?":      openHelp,
 	}
 	app.SetGlobalKeymap(global)
 
@@ -117,6 +152,10 @@ func run() error {
 		// map is the right (and precise) one for it.
 		treeView.ApplyStatus(gitstatus.Rollup(direct))
 		finderView.ApplyStatus(direct)
+		gitSummary = gitstatus.Summary(direct)
+		if branch, err := gitstatus.CurrentBranch(absRoot); err == nil {
+			gitBranch = branch
+		}
 	}
 	refreshGitStatus()
 

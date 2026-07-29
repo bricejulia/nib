@@ -76,3 +76,50 @@ func TestViewIsUnfocusableAndConsumesNoKeys(t *testing.T) {
 		t.Fatal("statusbar.View must never consume a key")
 	}
 }
+
+func TestViewRendersHintLeftAlignedAndTextRightAligned(t *testing.T) {
+	v := New()
+	v.Hint = "Ctrl+P Finder"
+	v.TextFunc = func() string { return "Ln 1, Col 1" }
+
+	w := newFakeWindow(40, 1)
+	v.Render(w)
+
+	line := w.lines[0]
+	if !strings.HasPrefix(line, "Ctrl+P Finder") {
+		t.Fatalf("expected hint left-aligned, got %q", line)
+	}
+	if !strings.HasSuffix(line, "Ln 1, Col 1") {
+		t.Fatalf("expected text right-aligned, got %q", line)
+	}
+	if len(line) != 40 {
+		t.Fatalf("expected the line padded to the full width (40), got len=%d: %q", len(line), line)
+	}
+}
+
+func TestViewHintAloneRendersEmptyRight(t *testing.T) {
+	v := New()
+	v.Hint = "Ctrl+P Finder"
+
+	w := newFakeWindow(20, 1)
+	v.Render(w)
+
+	if w.lines[0] != "Ctrl+P Finder       " {
+		t.Fatalf("got %q", w.lines[0])
+	}
+}
+
+func TestViewNarrowWindowDropsHintBeforeText(t *testing.T) {
+	v := New()
+	v.Hint = "Ctrl+P Finder"
+	v.TextFunc = func() string { return "Ln 100, Col 42" }
+
+	// Not enough room for both; the right-aligned text must still show
+	// in full and the hint must not corrupt it.
+	w := newFakeWindow(len("Ln 100, Col 42"), 1)
+	v.Render(w)
+
+	if w.lines[0] != "Ln 100, Col 42" {
+		t.Fatalf("expected text to win over hint on a narrow window, got %q", w.lines[0])
+	}
+}

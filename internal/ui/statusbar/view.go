@@ -4,16 +4,24 @@
 package statusbar
 
 import (
+	"strings"
+
 	"github.com/bricejulia/kiwi/internal/layout"
 )
 
-// View displays whatever TextFunc returns, right-aligned, re-evaluated on
-// every render. It never claims focus (see Unfocusable) and never
-// consumes a key, so Tab-cycling and all keyboard input skip straight past
-// it — it's display-only.
+// View displays a static left-aligned Hint (e.g. a shortcuts reminder)
+// and whatever TextFunc returns right-aligned, re-evaluated on every
+// render. It never claims focus (see Unfocusable) and never consumes a
+// key, so Tab-cycling and all keyboard input skip straight past it — it's
+// display-only.
 type View struct {
+	// Hint is shown left-aligned. It is static (set once, unlike
+	// TextFunc) since it's meant as a fixed shortcuts reminder rather
+	// than dynamic state.
+	Hint string
+
 	// TextFunc is called on every Render to get the current text to
-	// display. A nil TextFunc renders an empty bar.
+	// display right-aligned. A nil TextFunc renders no right-hand text.
 	TextFunc func() string
 }
 
@@ -29,27 +37,36 @@ func (v *View) HandleKey(layout.Key) bool { return false }
 
 func (v *View) Render(w layout.Window) {
 	w.Clear()
-	if v.TextFunc == nil {
-		return
-	}
-	text := v.TextFunc()
-	if text == "" {
-		return
-	}
-
 	cols, _ := w.Size()
-	pad := cols - len(text)
-	if pad < 0 {
-		pad = 0
-		if cols > 0 && len(text) > cols {
-			text = text[len(text)-cols:]
-		}
+	if cols <= 0 {
+		return
 	}
 
-	line := ""
-	for i := 0; i < pad; i++ {
-		line += " "
+	right := ""
+	if v.TextFunc != nil {
+		right = v.TextFunc()
 	}
-	line += text
+	if v.Hint == "" && right == "" {
+		return // nothing to show: leave the bar blank rather than a padded empty line
+	}
+	if len(right) > cols {
+		right = right[len(right)-cols:]
+	}
+
+	// The right side (cursor position, git status, ...) is the more
+	// load-bearing of the two, so on a narrow terminal it wins: the
+	// hint gets truncated first, then dropped entirely once there's no
+	// room left for it.
+	avail := cols - len(right)
+	left := v.Hint
+	if avail < 0 {
+		avail = 0
+	}
+	if len(left) > avail {
+		left = left[:avail]
+	}
+
+	pad := cols - len(left) - len(right)
+	line := left + strings.Repeat(" ", pad) + right
 	w.Println(0, layout.Segment{Text: line, Style: layout.Style{Attr: layout.AttrDim}})
 }

@@ -170,9 +170,9 @@ func formatRow(r Row) string {
 	icon := " "
 	if r.Node.IsDir {
 		if r.Node.Expanded {
-			icon = " 📂 "
-		} else {
 			icon = " ▼ "
+		} else {
+			icon = " ▶ "
 		}
 	}
 	return fmt.Sprintf("%s %s%s%s", gitstyle.Marker(r.Node.Status), indent, icon, r.Node.Name)

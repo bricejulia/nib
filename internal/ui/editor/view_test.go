@@ -468,6 +468,34 @@ func TestTabBarHighlightsActiveTab(t *testing.T) {
 	if !strings.Contains(w.lines[0], "editor_sample.txt") {
 		t.Errorf("expected the inactive tab to still be listed in the tab bar, got %q", w.lines[0])
 	}
+
+	var sawReverseActive, sawPlainInactive bool
+	for _, s := range w.segs[0] {
+		if strings.Contains(s.Text, "file.txt") && !strings.Contains(s.Text, "editor_sample") {
+			if s.Style.Attr&layout.AttrReverse != 0 {
+				sawReverseActive = true
+			}
+		}
+		if strings.Contains(s.Text, "editor_sample.txt") && s.Style.Attr&layout.AttrReverse == 0 {
+			sawPlainInactive = true
+		}
+	}
+	if !sawReverseActive {
+		t.Errorf("expected the active tab's segment to be styled AttrReverse, got %+v", w.segs[0])
+	}
+	if !sawPlainInactive {
+		t.Errorf("expected the inactive tab's segment to be unstyled, got %+v", w.segs[0])
+	}
+}
+
+func TestPlaceholderMessageIsDimmed(t *testing.T) {
+	v := NewView()
+	w := newFakeWindow(60, 10)
+	v.Render(w)
+
+	if len(w.segs[0]) != 1 || w.segs[0][0].Style.Attr&layout.AttrDim == 0 {
+		t.Errorf("expected the \"No file open\" placeholder to be dim-styled, got %+v", w.segs[0])
+	}
 }
 
 func TestBracketKeysSwitchTabsAndXClosesActiveTab(t *testing.T) {

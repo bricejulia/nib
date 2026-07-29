@@ -179,12 +179,11 @@ func (v *View) Render(w layout.Window) {
 
 	if len(v.tabs) == 0 {
 		msg := "No file open — select a file in the tree and press Enter"
-		row := 0
-		w.Println(row, layout.Segment{Text: msg})
+		w.Println(0, layout.Segment{Text: msg, Style: layout.Style{Attr: layout.AttrDim}})
 		return
 	}
 
-	w.Println(0, layout.Segment{Text: tabBarText(v.tabs, v.active, cols)})
+	w.Println(0, tabBarSegments(v.tabs, v.active, cols)...)
 
 	t := v.activeTab()
 	bodyRows := rows - 1
@@ -198,26 +197,30 @@ func (v *View) Render(w layout.Window) {
 	renderBody(w, t, v.tabWidth, cols, bodyRows, 1)
 }
 
-func tabBarText(tabs []*tab, active, cols int) string {
-	line := ""
+// tabBarSegments builds the tab bar as styled segments — the active tab is
+// reverse-video highlighted (the same "selected" convention the file tree
+// and finder use), not just bracket-punctuated — then truncated to cols
+// via the same wide-rune-safe helper used for the editor body, rather than
+// raw byte slicing.
+func tabBarSegments(tabs []*tab, active, cols int) []layout.Segment {
+	var segs []layout.Segment
 	for i, t := range tabs {
 		name := "[No Name]"
 		if t.path != "" {
 			name = filepath.Base(t.path)
 		}
+		text := " " + name + " "
+		style := layout.Style{}
 		if i == active {
-			line += "[" + name + "]"
-		} else {
-			line += " " + name + " "
+			text = "[" + name + "]"
+			style.Attr |= layout.AttrReverse
 		}
+		segs = append(segs, layout.Segment{Text: text, Style: style})
 		if i < len(tabs)-1 {
-			line += "|"
+			segs = append(segs, layout.Segment{Text: "|"})
 		}
 	}
-	if cols > 0 && len(line) > cols {
-		line = line[:cols]
-	}
-	return line
+	return textwidth.SliceSegmentsByDisplayColumn(segs, 0, cols)
 }
 
 func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int) {
