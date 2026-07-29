@@ -3,6 +3,7 @@ package editor
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/bricejulia/kiwi/internal/config"
 	"github.com/bricejulia/kiwi/internal/layout"
@@ -235,12 +236,10 @@ func (v *View) Render(w layout.Window) {
 // via the same wide-rune-safe helper used for the editor body, rather than
 // raw byte slicing.
 func tabBarSegments(tabs []*tab, active, cols int) []layout.Segment {
+	names := tabDisplayNames(tabs)
 	var segs []layout.Segment
-	for i, t := range tabs {
-		name := "[No Name]"
-		if t.path != "" {
-			name = filepath.Base(t.path)
-		}
+	for i := range tabs {
+		name := names[i]
 		text := " " + name + " "
 		style := layout.Style{}
 		if i == active {
@@ -253,6 +252,81 @@ func tabBarSegments(tabs []*tab, active, cols int) []layout.Segment {
 		}
 	}
 	return textwidth.SliceSegmentsByDisplayColumn(segs, 0, cols)
+}
+
+// tabDisplayNames returns, per tab, the name shown in the tab bar: just
+// the bare filename, unless another open tab shares that same filename
+// — in which case enough of each clashing tab's parent path is
+// prefixed to tell them apart (e.g. "editor/view.go" vs
+// "finder/view.go", or "a/x/foo.go" vs "b/x/foo.go" if one parent
+// folder's name isn't enough either).
+func tabDisplayNames(tabs []*tab) []string {
+	names := make([]string, len(tabs))
+	groups := map[string][]int{} // bare filename -> indices of tabs with that name
+	for i, t := range tabs {
+		if t.path == "" {
+			names[i] = "[No Name]"
+			continue
+		}
+		name := filepath.Base(t.path)
+		names[i] = name
+		groups[name] = append(groups[name], i)
+	}
+
+	for _, idxs := range groups {
+		if len(idxs) < 2 {
+			continue
+		}
+		paths := make([]string, len(idxs))
+		for j, i := range idxs {
+			paths[j] = tabs[i].path
+		}
+		disambiguated := disambiguatePaths(paths)
+		for j, i := range idxs {
+			names[i] = disambiguated[j]
+		}
+	}
+	return names
+}
+
+// disambiguatePaths returns, for each path, just enough trailing
+// path segments (filename plus however many parent directories are
+// needed) to make every result distinct. Since distinct tabs always
+// have distinct absolute paths (see activeTab/Open, which reuse a tab
+// rather than opening the same path twice), growing the segment count
+// far enough is always guaranteed to terminate in unique names.
+func disambiguatePaths(paths []string) []string {
+	segLists := make([][]string, len(paths))
+	for i, p := range paths {
+		segLists[i] = strings.Split(filepath.ToSlash(p), "/")
+	}
+
+	for n := 2; ; n++ {
+		result := make([]string, len(paths))
+		counts := map[string]int{}
+		fullyExpanded := true
+		for i, segs := range segLists {
+			take := n
+			if take >= len(segs) {
+				take = len(segs)
+			} else {
+				fullyExpanded = false
+			}
+			result[i] = strings.Join(segs[len(segs)-take:], "/")
+			counts[result[i]]++
+		}
+
+		unique := true
+		for _, c := range counts {
+			if c > 1 {
+				unique = false
+				break
+			}
+		}
+		if unique || fullyExpanded {
+			return result
+		}
+	}
 }
 
 func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int) {

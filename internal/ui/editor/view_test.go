@@ -516,6 +516,59 @@ func TestTabBarHighlightsActiveTab(t *testing.T) {
 	}
 }
 
+func TestTabBarPrefixesParentFolderWhenNamesClash(t *testing.T) {
+	v := NewView()
+	v.Open("/repo/internal/editor/view.go")
+	v.Open("/repo/internal/finder/view.go")
+
+	w := newFakeWindow(80, 10)
+	v.Render(w)
+
+	if !strings.Contains(w.lines[0], "editor/view.go") {
+		t.Errorf("expected the first clashing tab prefixed with its parent folder, got %q", w.lines[0])
+	}
+	if !strings.Contains(w.lines[0], "finder/view.go") {
+		t.Errorf("expected the second clashing tab prefixed with its parent folder, got %q", w.lines[0])
+	}
+	if strings.Contains(w.lines[0], "internal/editor/view.go") {
+		t.Errorf("expected only one parent segment, not the full path, got %q", w.lines[0])
+	}
+}
+
+func TestTabBarLeavesUniqueNamesAlone(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+	v.Open("/some/other/file.txt")
+
+	w := newFakeWindow(80, 10)
+	v.Render(w)
+
+	// Neither name clashes with the other, so no parent-folder prefix
+	// should appear for either.
+	if strings.Contains(w.lines[0], "/editor_sample.txt") {
+		t.Errorf("did not expect a parent-folder prefix on a unique name, got %q", w.lines[0])
+	}
+	if strings.Contains(w.lines[0], "other/file.txt") {
+		t.Errorf("did not expect a parent-folder prefix on a unique name, got %q", w.lines[0])
+	}
+}
+
+func TestTabBarAddsMoreParentsWhenOneLevelStillClashes(t *testing.T) {
+	v := NewView()
+	v.Open("/repo/a/x/foo.go")
+	v.Open("/repo/b/x/foo.go")
+
+	w := newFakeWindow(80, 10)
+	v.Render(w)
+
+	if !strings.Contains(w.lines[0], "a/x/foo.go") {
+		t.Errorf("expected enough parents to disambiguate a/x/foo.go, got %q", w.lines[0])
+	}
+	if !strings.Contains(w.lines[0], "b/x/foo.go") {
+		t.Errorf("expected enough parents to disambiguate b/x/foo.go, got %q", w.lines[0])
+	}
+}
+
 func TestPlaceholderMessageIsDimmed(t *testing.T) {
 	v := NewView()
 	w := newFakeWindow(60, 10)
