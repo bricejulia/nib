@@ -9,6 +9,7 @@ import (
 	"github.com/bricejulia/kiwi/internal/config"
 	"github.com/bricejulia/kiwi/internal/debuglog"
 	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/kiwi/internal/lsp"
 	"github.com/bricejulia/kiwi/internal/textwidth"
 	"github.com/bricejulia/kiwi/internal/ui/gitstyle"
 	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
@@ -57,6 +58,12 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "Ctrl+b", Action: "jump_back"},
 	{Trigger: "Ctrl+f", Action: "find_references"},
 	{Trigger: "Ctrl+Space", Action: "trigger_autocomplete"},
+	// "K" is vim's own "look up what's under the cursor", which is exactly
+	// this gesture — and being a letter, it works on any keyboard layout.
+	{Trigger: "K", Action: "show_diagnostics"},
+	{Trigger: "/", Action: "search_mode"},
+	{Trigger: "n", Action: "search_next"},
+	{Trigger: "N", Action: "search_prev"},
 }
 
 // editMode is the editor pane's modal-editing state: Normal (the pane's
@@ -70,6 +77,10 @@ const (
 	modeNormal editMode = iota
 	modeInsert
 	modeCommand
+	// modeSearch is the "/" prompt — structurally the same as modeCommand
+	// (type, Enter to commit, Esc to cancel) but it drives an in-file search
+	// rather than an ex-command; see search.go.
+	modeSearch
 )
 
 // maxUndoEntries bounds each tab's undo stack, the same way
@@ -84,7 +95,7 @@ const maxUndoEntries = 100
 // undo/redo), plus enough cursor state to restore it exactly. Taking a
 // whole-buffer snapshot once per Insert session (not per keystroke) is
 // cheap relative to the per-keystroke re-highlight this pane already does
-// (see reHighlight) — simple and correct, if not the most memory-frugal
+// (see onBufferEdited) — simple and correct, if not the most memory-frugal
 // possible approach. Deliberately does not capture Dirty — see
 // Buffer.Restore for why that has to be recomputed against Buffer.saved
 // instead of carried through a snapshot.
@@ -137,11 +148,14 @@ type tab struct {
 	// path has no git repo) means "draw no markers", same as an empty map.
 	lineStatus map[int]gitstatus.LineStatus
 
-	// jumpStack holds cursor positions saved by goToParent/goToDefinition
-	// (see navigate.go), popped by jumpBack (Ctrl+b) — per-pane navigation
-	// history, not buffer content, so it stays on tab like cursorLn/
-	// cursorCol rather than moving to Buffer alongside undo/redo.
-	jumpStack []jumpLocation
+	// diagnostics is this tab's language-server problems, keyed by the
+	// 0-based line each one starts on — set by ApplyDiagnostics, exactly
+	// as lineStatus is set by ApplyLineStatus (the View never talks to a
+	// server itself; results flow in from cmd/kiwi/main.go's event loop).
+	// The full Diagnostic is kept, not just its severity: the gutter only
+	// needs severity today, but the message is what a near-future "show
+	// the problem under the cursor" step needs.
+	diagnostics map[int][]lsp.Diagnostic
 }
 
 // View is the editor pane: zero or more open tabs, each with its own
@@ -188,10 +202,53 @@ type View struct {
 	// nil when none is showing — see completion.go.
 	completion *completionState
 
+	// showDiagnostics is true while the diagnostic details popup ("K") is
+	// up. Transient by design: the very next keypress dismisses it, so it
+	// reads like a tooltip rather than another mode to get stuck in.
+	showDiagnostics bool
+
+	// In-file search state (see search.go). searchBuf is what's typed at the
+	// "/" prompt; searchPattern is the last committed pattern, which n/N
+	// repeat and which stays highlighted. searchOrigin* remembers where the
+	// prompt was opened, so Esc can put the cursor back.
+	searchBuf                       string
+	searchPattern                   string
+	searchMatches                   []searchMatch
+	searchOriginLn, searchOriginCol int
+
+	// jumpStack holds positions saved by goToParent/goToDefinition (see
+	// navigate.go), popped by jumpBack (Ctrl+b). Per-pane, and each entry
+	// records a path as well as a position, because a go-to-definition can
+	// land in a different file — see pushJump.
+	jumpStack []jumpLocation
+
 	// store resolves Open's path to a *Buffer — see BufferStore. Defaults
 	// to a private store (below), so a View nobody explicitly shares one
 	// with behaves exactly as if buffers were never shared at all.
 	store *BufferStore
+
+	// lsp, when non-nil, provides real semantic features (diagnostics, go
+	// to definition) via language servers — see internal/lsp. Optional by
+	// design: nil (the default) means every LSP-backed feature falls back
+	// to its tree-sitter/local equivalent, which is also what happens for
+	// a file whose language has no server configured.
+	//
+	// Held as an interface (satisfied by *lsp.Manager) rather than the
+	// concrete type purely so this package's tests can substitute a fake
+	// instead of spawning real language server subprocesses.
+	lsp languageServer
+}
+
+// languageServer is the slice of lsp.Manager the editor pane actually uses
+// — see View.lsp for why it's an interface.
+type languageServer interface {
+	Ready(language string) bool
+	Status(language string) lsp.ServerStatus
+	Open(path, language, text string)
+	Change(path, text string)
+	Close(path string)
+	Definition(path, language string, line, character int, apply func(loc lsp.Location, ok bool)) bool
+	Completion(path, language string, line, character int, apply func(items []lsp.CompletionItem, ok bool)) bool
 }
 
 // NewView creates an empty editor pane with no tabs open; call Open to
@@ -207,6 +264,20 @@ func NewView() *View {
 // active when it was opened, and doesn't retroactively move.
 func (v *View) SetBufferStore(s *BufferStore) {
 	v.store = s
+}
+
+// SetLSPManager gives this pane a language-server manager, enabling
+// LSP-backed features for languages it has a server for. Every pane should
+// share ONE manager (see cmd/kiwi/main.go), so a file open in two split
+// panes is announced to the server once and its diagnostics reach both.
+// Call before opening any tabs — an already-open tab was never registered
+// with the server, so it won't retroactively be.
+func (v *View) SetLSPManager(m *lsp.Manager) {
+	if m == nil {
+		v.lsp = nil // avoid a non-nil interface wrapping a nil pointer
+		return
+	}
+	v.lsp = m
 }
 
 // SetKeymap merges the user config's "editor" scope overrides on top of
@@ -259,6 +330,24 @@ func (v *View) ApplyLineStatus(path string, lines map[int]gitstatus.LineStatus) 
 	}
 }
 
+// ApplyDiagnostics sets the language-server diagnostic gutter markers for
+// the open tab whose path matches path, redrawn on the next Render — the
+// diagnostics counterpart to ApplyLineStatus, and likewise a no-op if
+// path isn't open in this pane (each server notification is fanned out to
+// every pane, most of which won't have that file open).
+//
+// diags always REPLACES whatever this tab had, including with nil: LSP's
+// publishDiagnostics is a complete restatement per file, so an empty set
+// means "this file is clean now" rather than "nothing new to report".
+func (v *View) ApplyDiagnostics(path string, diags []lsp.Diagnostic) {
+	for _, t := range v.tabs {
+		if t.path == path {
+			t.diagnostics = diagnosticsByLine(diags)
+			return
+		}
+	}
+}
+
 // Open loads path into a tab. If path is already open, its existing tab is
 // simply activated (matching typical editor behavior — opening a file
 // that's already open switches to it rather than duplicating it) and its
@@ -281,6 +370,19 @@ func (v *View) Open(path string) {
 	}
 	v.tabs = append(v.tabs, t)
 	v.active = len(v.tabs) - 1
+
+	// Hand the buffer to the language server (spawning it on the first
+	// file of its language) so it can start analyzing and publishing
+	// diagnostics. Reference-counted inside the Manager, so the same file
+	// open in two panes registers once — mirroring BufferStore above.
+	if v.lsp != nil && buf != nil {
+		if lang := languageFor(path); lang != "" {
+			v.lsp.Open(path, lang, string(buf.Source))
+		}
+	}
+	// Instant parse-error markers, without waiting for (or needing) a
+	// language server — see refreshSyntaxDiagnostics.
+	v.refreshSyntaxDiagnostics(t)
 }
 
 // OpenAtLine is Open, followed by moving the cursor to line (1-based),
@@ -347,12 +449,17 @@ func (v *View) CloseAllTabs() {
 	v.notifyIfEmpty()
 }
 
-// releaseTab releases t's Buffer back to the store (if it successfully
-// loaded one — a failed load never registered a reference to release),
-// decrementing the shared reference count; see BufferStore.Release.
+// releaseTab releases t's Buffer back to the store and its language-server
+// registration (if it successfully loaded one — a failed load never
+// registered either), decrementing both reference counts; see
+// BufferStore.Release and lsp.Manager.Close.
 func (v *View) releaseTab(t *tab) {
-	if t.buf != nil {
-		v.store.Release(t.path)
+	if t.buf == nil {
+		return
+	}
+	v.store.Release(t.path)
+	if v.lsp != nil {
+		v.lsp.Close(t.path)
 	}
 }
 
@@ -377,11 +484,50 @@ func (v *View) StatusText() string {
 	if v.mode == modeCommand {
 		return ":" + v.commandBuf
 	}
+	if v.mode == modeSearch {
+		return "/" + v.searchBuf
+	}
 	prefix := ""
 	if v.mode == modeInsert {
 		prefix = "-- INSERT -- "
 	}
 	return fmt.Sprintf("%sLn %d, Col %d", prefix, t.cursorLn+1, t.cursorCol+1)
+}
+
+// Glyphs for the language-server indicator in LanguageStatus. A filled dot
+// reads as "on", a hollow one as "set up but not on", and no glyph at all
+// as "kiwi has no server for this language" — see lsp.ServerStatus for why
+// those last two are worth telling apart.
+const (
+	lspRunningGlyph    = "●"
+	lspNotRunningGlyph = "○"
+)
+
+// LanguageStatus is the active tab's detected language plus a compact
+// language-server indicator, for the status bar (see cmd/kiwi/main.go):
+// "go ●" when a server is running, "go ○" when one is configured but not
+// running, plain "go" when kiwi has no server for that language, and "" if
+// no file is open or no grammar recognizes it.
+func (v *View) LanguageStatus() string {
+	t := v.activeTab()
+	if t == nil || t.buf == nil {
+		return ""
+	}
+	lang := languageFor(t.path)
+	if lang == "" {
+		return ""
+	}
+	if v.lsp == nil {
+		return lang
+	}
+	switch v.lsp.Status(lang) {
+	case lsp.StatusRunning:
+		return lang + " " + lspRunningGlyph
+	case lsp.StatusNotRunning:
+		return lang + " " + lspNotRunningGlyph
+	default:
+		return lang
+	}
 }
 
 // CursorPosition implements layout.CursorProvider: it reports where, in
@@ -430,11 +576,19 @@ func (v *View) Render(w layout.Window) {
 	// tab bar; layout.Window has no sub-window primitive of its own (that
 	// lives one level down, on the real vaxis.Window), so the offset is
 	// applied directly to the row index passed to Println instead.
-	renderBody(w, t, v.tabWidth, cols, bodyRows, 1)
+	renderBody(w, t, v.tabWidth, cols, bodyRows, 1, v.searchMatches)
 
+	// Popups draw last so they sit on top of the file content. Only one can
+	// be up at a time: completion belongs to Insert mode, the diagnostic
+	// tooltip to Normal mode.
 	if v.completion != nil {
 		if col, row, ok := v.CursorPosition(); ok {
 			v.renderCompletionPopup(w, cols, rows, col, row)
+		}
+	} else if v.showDiagnostics && t != nil {
+		if col, row, ok := v.CursorPosition(); ok {
+			lines := diagnosticPopupLines(t.diagnostics[t.cursorLn], cols-col)
+			renderPopup(w, cols, rows, col, row, lines, -1)
 		}
 	}
 }
@@ -544,7 +698,7 @@ func disambiguatePaths(paths []string) []string {
 	}
 }
 
-func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int) {
+func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, searchMatches []searchMatch) {
 	if t == nil {
 		return
 	}
@@ -593,29 +747,42 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int) {
 		} else {
 			raw = highlightLine(t.buf.Lines[ln]) // heuristic fallback, also raw
 		}
+		// Search matches are overlaid while the segments are still raw,
+		// because that's the only stage where a rune index means the same
+		// thing to the highlighter, the cursor, and findMatches alike.
+		if ranges := matchRangesOnLine(searchMatches, ln); len(ranges) > 0 {
+			raw = applyHighlightRanges(raw, ranges, searchHighlightStyle)
+		}
 		expandedSegs := textwidth.ExpandTabsSegments(raw, tabWidth)
 		visible := textwidth.SliceSegmentsByDisplayColumn(expandedSegs, t.leftCol, contentWidth)
 
+		worst := worstSeverity(t.diagnostics[ln])
+		diagSeg := layout.Segment{
+			Text:  diagnosticMarker(worst),
+			Style: diagnosticStyle(worst),
+		}
 		diffSeg := layout.Segment{
 			Text:  gitstyle.LineMarker(t.lineStatus[ln]),
 			Style: gitstyle.LineStyle(t.lineStatus[ln]),
 		}
 		gutterSeg := layout.Segment{
-			Text:  fmt.Sprintf("%*d ", gutterWidth-2, ln+1),
+			Text:  fmt.Sprintf("%*d ", gutterWidth-3, ln+1),
 			Style: layout.Style{Attr: layout.AttrDim},
 		}
-		w.Println(rowOffset+i, append([]layout.Segment{diffSeg, gutterSeg}, visible...)...)
+		w.Println(rowOffset+i, append([]layout.Segment{diagSeg, diffSeg, gutterSeg}, visible...)...)
 	}
 }
 
-// gutterWidthFor is the line-number column's width: a leading git-diff
-// marker column (see ApplyLineStatus), the line-number digits, and 1
-// trailing space, derived from the buffer's line count.
+// gutterWidthFor is the width of everything left of a line's text: a
+// diagnostic marker column (see ApplyDiagnostics), a git-diff marker
+// column (see ApplyLineStatus), the line-number digits, and 1 trailing
+// space — so 3 fixed columns plus however many digits the buffer's line
+// count needs.
 func gutterWidthFor(t *tab) int {
 	if t.buf == nil {
-		return 2
+		return 3
 	}
-	return len(fmt.Sprintf("%d", len(t.buf.Lines))) + 2
+	return len(fmt.Sprintf("%d", len(t.buf.Lines))) + 3
 }
 
 // currentLineRunes returns the expanded (tabs-to-spaces) runes of t's
@@ -696,11 +863,19 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return false
 	}
 
+	// The diagnostic popup is a tooltip, not a mode: whatever you press next
+	// dismisses it and is then handled normally.
+	if v.showDiagnostics {
+		v.showDiagnostics = false
+	}
+
 	switch v.mode {
 	case modeInsert:
 		return v.handleInsertKey(k)
 	case modeCommand:
 		return v.handleCommandKey(k)
+	case modeSearch:
+		return v.handleSearchKey(k)
 	}
 
 	action, ok := v.keymap[k.String()]
@@ -742,6 +917,9 @@ func (v *View) HandleKey(k layout.Key) bool {
 			v.mode = modeCommand
 		}
 		return true
+	case "search_mode":
+		v.enterSearchMode()
+		return true
 	case "save":
 		v.saveActive()
 		return true
@@ -766,9 +944,16 @@ func (v *View) HandleKey(k layout.Key) bool {
 	case "go_to_definition":
 		v.goToDefinition(t)
 	case "jump_back":
-		v.jumpBack(t)
+		v.jumpBack()
 	case "find_references":
 		v.findReferences(t)
+	case "search_next":
+		v.searchNext()
+	case "search_prev":
+		v.searchPrev()
+	case "show_diagnostics":
+		// Only worth a popup if the line actually has something to say.
+		v.showDiagnostics = len(t.diagnostics[t.cursorLn]) > 0
 	default:
 		if !v.applyMovement(t, action) {
 			return false
@@ -1027,6 +1212,10 @@ func (v *View) exitInsertMode() {
 	snap := *t.insertSnapshot
 	t.insertSnapshot = nil
 	v.pushUndoIfChanged(t, snap)
+	// The typing is done, so the code should be parseable again — now is
+	// when syntax errors are worth showing (see onBufferEdited's note on
+	// why not during the session).
+	v.refreshSyntaxDiagnostics(t)
 }
 
 // ExitEditingModes returns the pane to Normal mode, discarding an
@@ -1087,7 +1276,7 @@ func (v *View) undo(t *tab) {
 	t.buf.undoStack = t.buf.undoStack[:len(t.buf.undoStack)-1]
 	t.buf.redoStack = append(t.buf.redoStack, snapshotTab(t))
 	applyUndoEntry(t, entry)
-	v.reHighlight(t)
+	v.onBufferEdited(t)
 }
 
 // redo re-applies the most recently undone change, pushing the current
@@ -1101,7 +1290,7 @@ func (v *View) redo(t *tab) {
 	t.buf.redoStack = t.buf.redoStack[:len(t.buf.redoStack)-1]
 	t.buf.undoStack = append(t.buf.undoStack, snapshotTab(t))
 	applyUndoEntry(t, entry)
-	v.reHighlight(t)
+	v.onBufferEdited(t)
 }
 
 // snapshotTab captures t's current buffer contents (copied, so later
@@ -1133,7 +1322,7 @@ func (v *View) insertText(s string) {
 	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
 	newRaw := t.buf.InsertText(t.cursorLn, raw, s)
 	t.cursorCol = expandedColForRawIndex(t.buf.Lines[t.cursorLn], newRaw, v.tabWidth)
-	v.reHighlight(t)
+	v.onBufferEdited(t)
 	v.clamp(t)
 }
 
@@ -1148,7 +1337,7 @@ func (v *View) insertNewline() {
 	t.buf.SplitLine(t.cursorLn, raw)
 	t.cursorLn++
 	t.cursorCol = 0
-	v.reHighlight(t)
+	v.onBufferEdited(t)
 	v.clamp(t)
 }
 
@@ -1164,7 +1353,7 @@ func (v *View) deleteBackward() {
 	newLn, newRaw := t.buf.DeleteBackward(t.cursorLn, raw)
 	t.cursorLn = newLn
 	t.cursorCol = expandedColForRawIndex(t.buf.Lines[newLn], newRaw, v.tabWidth)
-	v.reHighlight(t)
+	v.onBufferEdited(t)
 	v.clamp(t)
 }
 
@@ -1185,7 +1374,7 @@ func (v *View) deleteCharForward(t *tab) {
 	_, newRaw := t.buf.DeleteBackward(t.cursorLn, raw+1) // deletes exactly the rune at raw
 	t.cursorCol = expandedColForRawIndex(t.buf.Lines[t.cursorLn], newRaw, v.tabWidth)
 	v.pushUndoIfChanged(t, before)
-	v.reHighlight(t)
+	v.onBufferEdited(t)
 }
 
 // deleteCharBackward implements vim's "X": deletes the rune immediately
@@ -1202,7 +1391,7 @@ func (v *View) deleteCharBackward(t *tab) {
 	t.cursorLn = newLn
 	t.cursorCol = expandedColForRawIndex(t.buf.Lines[newLn], newRaw, v.tabWidth)
 	v.pushUndoIfChanged(t, before)
-	v.reHighlight(t)
+	v.onBufferEdited(t)
 }
 
 // openLineBelow implements vim's "o": inserts a new blank line below the
@@ -1218,18 +1407,53 @@ func (v *View) openLineBelow() {
 	t.buf.SplitLine(t.cursorLn, len([]rune(t.buf.Lines[t.cursorLn])))
 	t.cursorLn++
 	t.cursorCol = 0
-	v.reHighlight(t)
+	v.onBufferEdited(t)
 	v.clamp(t)
 }
 
-// reHighlight recomputes t.buf.highlighted after an edit — a full
-// re-parse, the same cost as Open's initial call; see the highlighted
-// field's doc comment for the incremental-parsing optimization this
-// defers.
-func (v *View) reHighlight(t *tab) {
-	if t.buf != nil {
-		t.buf.highlighted = highlightBuffer(t.buf)
+// onBufferEdited is the single funnel every buffer mutation runs through
+// once it's applied: it recomputes t.buf.highlighted (a full re-parse, the
+// same cost as Open's initial call — see the highlighted field's doc
+// comment for the incremental-parsing optimization this defers) and pushes
+// the new contents to the language server, if any, so its diagnostics and
+// definition answers reflect what's actually on screen.
+func (v *View) onBufferEdited(t *tab) {
+	if t.buf == nil {
+		return
 	}
+	t.buf.highlighted = highlightBuffer(t.buf)
+	if v.lsp != nil {
+		v.lsp.Change(t.path, string(t.buf.Source))
+	}
+	// Deliberately NOT while typing: mid-edit code is almost always
+	// momentarily unparseable, so refreshing here would flag an error under
+	// the cursor on nearly every keystroke. Normal-mode edits (x, X, undo,
+	// redo) are complete changes, so those do refresh; an Insert session
+	// refreshes once when it ends (see exitInsertMode).
+	if v.mode != modeInsert {
+		v.refreshSyntaxDiagnostics(t)
+	}
+}
+
+// refreshSyntaxDiagnostics recomputes t's parse-error markers from
+// tree-sitter (see syntaxDiagnostics) — but only when no language server is
+// running for the file, because a server reports syntax errors too (with
+// better messages), and showing both would double up every marker.
+//
+// The two sources share tab.diagnostics rather than being merged at render
+// time. That works because of this rule: whenever a server is live it owns
+// the field outright, and when it isn't, tree-sitter does. It also gives a
+// nice property on open — a cold server takes a second or two to start, so
+// tree-sitter's instant markers show first and are then replaced by the
+// server's richer ones once it warms up.
+func (v *View) refreshSyntaxDiagnostics(t *tab) {
+	if t.buf == nil {
+		return
+	}
+	if v.lsp != nil && v.lsp.Ready(languageFor(t.path)) {
+		return
+	}
+	t.diagnostics = diagnosticsByLine(syntaxDiagnostics(t.buf))
 }
 
 // saveActive writes the active tab's buffer back to disk. A failure is

@@ -17,7 +17,8 @@ type Scope struct {
 
 // Template renders a starting-point config file: every default
 // keybinding, commented out, grouped by scope, so the user can see
-// exactly what's bindable and uncomment/edit a line to override it.
+// exactly what's bindable and uncomment/edit a line to override it, plus
+// worked examples of the "lsp" directive.
 func Template(scopes []Scope) string {
 	var b strings.Builder
 	b.WriteString(`# kiwi config
@@ -34,11 +35,37 @@ func Template(scopes []Scope) string {
 # A trigger is a "+"-joined combination of modifiers (ctrl, alt, super,
 # shift) and a key — either a single character (x, ], ?) or a named key
 # (up, down, left, right, enter, tab, esc, pageup, pagedown, home, end,
-# backspace). Modifier names and named keys are case-insensitive; a
+# backspace, space). Modifier names and named keys are case-insensitive; a
 # single-character key is not (x and X are different keys).
 #
-# Restart kiwi after editing this file for keybinding changes to take
-# effect.
+# Restart kiwi after editing this file for changes to take effect.
+
+
+# --- language servers ---
+#
+# Register a language server for a language:
+#
+#   lsp = <language> = <command args...>
+#
+# The language name is the one kiwi's grammar detection reports, shown in
+# the status bar next to the file's LSP indicator:
+#
+#   go ●   server running
+#   go ○   server configured, but not running (binary missing? see Ctrl+D)
+#   go     no server configured for this language
+#
+# The command must be on your PATH and speak LSP over stdin/stdout. These
+# merge over kiwi's built-in defaults, so a line here wins.
+#
+# PHP — pick one (kiwi defaults to intelephense; uncomment to change):
+#   lsp = php = intelephense --stdio         # npm i -g intelephense
+#   lsp = php = phpactor language-server     # fully open source alternative
+#
+# Some other common servers:
+#   lsp = python     = pyright-langserver --stdio
+#   lsp = typescript = typescript-language-server --stdio
+#   lsp = rust       = rust-analyzer
+#   lsp = c          = clangd
 `)
 
 	for _, s := range scopes {

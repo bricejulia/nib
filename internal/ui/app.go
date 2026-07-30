@@ -69,16 +69,8 @@ func translateKey(k vaxis.Key) layout.Key {
 	}
 
 	named := namedKey(k.Keycode)
-	if named == "" && k.Text == " " {
-		// vaxis reports space as an ordinary printable rune, not a
-		// special sentinel like Enter/Tab/Esc, so namedKey (which only
-		// matches those) never catches it. Promoting it to a Named key
-		// gives triggers like "Ctrl+Space" a clean, typeable spelling —
-		// see layout.KeySpace's doc comment. Text stays " ", so a bare,
-		// unmodified Space still inserts a literal space exactly as
-		// before (handleInsertKey's printable-text fallback keys off
-		// Text, not Named).
-		named = layout.KeySpace
+	if named == "" {
+		named = namedSpace(k)
 	}
 	if named == "" && k.Text != "" {
 		// Shift's effect on a produced character (case for letters, the
@@ -142,6 +134,38 @@ func namedKey(keycode rune) string {
 		return layout.KeyBackspace
 	case vaxis.KeyLeftShift, vaxis.KeyRightShift:
 		return layout.KeyShift
+	default:
+		return ""
+	}
+}
+
+// namedSpace recognizes the space bar, which needs special handling because
+// — unlike Enter/Tab/Esc — it has no special sentinel keycode, and because
+// terminals encode it three incompatible ways depending on modifiers and
+// protocol. Returns "" for anything that isn't a space.
+//
+// Getting this wrong is not hypothetical: a "Ctrl+Space" binding silently
+// never fired on any terminal until all three forms below were handled.
+func namedSpace(k vaxis.Key) string {
+	switch {
+	case k.Text == " ":
+		// A plain (or shifted) space bar press: reported as ordinary
+		// printable text. Text is deliberately left intact by the caller,
+		// so an unmodified Space still inserts a literal space — only the
+		// portable Named spelling is added on top.
+		return layout.KeySpace
+	case k.Keycode == vaxis.KeySpace:
+		// Space with a modifier under the kitty keyboard protocol: a real
+		// 0x20 keycode, but no Text (the modifier suppresses it).
+		return layout.KeySpace
+	case k.Modifiers&vaxis.ModCtrl != 0 && k.Keycode == '@' && k.Text == "":
+		// Ctrl+Space on a legacy terminal, which is the common case
+		// (including inside tmux). It transmits the NUL byte, and vaxis
+		// decodes NUL as Ctrl+@ — the two are literally the same byte on
+		// the wire, so they cannot be told apart. Reporting it as Space is
+		// the useful reading: Ctrl+Space is a real binding people press,
+		// while Ctrl+@ is not something kiwi binds at all.
+		return layout.KeySpace
 	default:
 		return ""
 	}

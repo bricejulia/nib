@@ -13,6 +13,7 @@ import (
 	"github.com/bricejulia/kiwi/internal/config"
 	"github.com/bricejulia/kiwi/internal/debuglog"
 	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/kiwi/internal/lsp"
 	"github.com/bricejulia/kiwi/internal/ui"
 	"github.com/bricejulia/kiwi/internal/ui/debug"
 	"github.com/bricejulia/kiwi/internal/ui/editor"
@@ -83,6 +84,22 @@ func rebuildAndFocus(app *ui.App, id layout.LeafID) {
 	app.FocusLeaf(id)
 }
 
+// mergedLSPServers combines kiwi's built-in language-server registry with
+// any "lsp" lines from the user's config, with the config winning — so a
+// user can both add a language kiwi ships no default for and replace one
+// it does (e.g. swapping PHP's Intelephense for Phpactor).
+func mergedLSPServers(cfg *config.Config) map[string][]string {
+	servers := make(map[string][]string, len(lsp.DefaultServers))
+	for lang, command := range lsp.DefaultServers {
+		servers[lang] = command
+	}
+	for lang, command := range cfg.Servers() {
+		servers[lang] = command
+		debuglog.Info("lsp: %s server configured as %v", lang, command)
+	}
+	return servers
+}
+
 // configTemplateScopes is every scope's built-in keybindings, in the
 // order the generated template config file lists them — see
 // config.EnsureFile.
@@ -148,9 +165,20 @@ func run() error {
 	// keeping its own independent copy. See editor.BufferStore.
 	bufferStore := editor.NewBufferStore()
 
+	// lspManager is likewise shared by every editor pane: one language
+	// server per language for the whole session, with each open file
+	// announced to it exactly once no matter how many panes show it. Servers
+	// are spawned lazily on the first file of their language, and a language
+	// with no configured server (or a missing binary) just means the editor
+	// keeps using its tree-sitter features there. See internal/lsp.
+	lspManager := lsp.NewManager(absRoot)
+	lspManager.SetServers(mergedLSPServers(cfg))
+	defer lspManager.Shutdown()
+
 	editorView := editor.NewView()
 	editorView.SetKeymap(cfg.Overrides("editor"))
 	editorView.SetBufferStore(bufferStore)
+	editorView.SetLSPManager(lspManager)
 	statusBarView := statusbar.New()
 	statusBarView.Hint = mainShortcutsHint
 
@@ -206,9 +234,14 @@ func run() error {
 	}
 
 	statusBarView.TextFunc = func() string {
-		parts := make([]string, 0, 3)
+		parts := make([]string, 0, 4)
 		if cursor := activeEditorPane.view.StatusText(); cursor != "" {
 			parts = append(parts, cursor)
+		}
+		// The active file's language plus whether a language server is
+		// running for it — see editor.View.LanguageStatus.
+		if lang := activeEditorPane.view.LanguageStatus(); lang != "" {
+			parts = append(parts, lang)
 		}
 		if gitBranch != "" {
 			branch := gitBranch
@@ -241,6 +274,12 @@ func run() error {
 		return err
 	}
 	defer app.Close()
+
+	// Language servers answer on their own goroutines, so everything they
+	// produce (diagnostics, definition responses) has to be marshaled onto
+	// the UI event loop before it touches any View — the same discipline
+	// the filesystem watcher and the finder's content search already use.
+	lspManager.Post = app.Post
 
 	// lastFocusedLeaf is only used to know which editor pane (if any) just
 	// LOST focus, immediately below — activeEditorPane (which pane last
@@ -357,6 +396,7 @@ func run() error {
 		newView := editor.NewView()
 		newView.SetKeymap(cfg.Overrides("editor"))
 		newView.SetBufferStore(bufferStore)
+		newView.SetLSPManager(lspManager)
 		newView.OnAllTabsClosed = func() { app.FocusLeaf(fileTreeLeaf.ID) }
 		newView.OnFindReferences = func(word string) {
 			finderView.OpenWithQuery(word)
@@ -465,6 +505,20 @@ func run() error {
 			}
 		case finder.SearchResult:
 			finderView.ApplyContentResult(e)
+		case lsp.DiagnosticsEvent:
+			// Fanned out to every pane, exactly like refreshLineStatusFor
+			// does for git line status: ApplyDiagnostics is a no-op in panes
+			// that don't have this file open, and a file open in two panes
+			// needs the markers in both.
+			for _, p := range editorPanes {
+				p.view.ApplyDiagnostics(e.Path, e.Diagnostics)
+			}
+		case lsp.AsyncResult:
+			// One generic case covers every request/response LSP feature:
+			// the closure was built by whoever issued the request and
+			// already knows what to do with the answer, so there's no
+			// per-feature routing to keep in sync here.
+			e.Apply()
 		}
 	})
 

@@ -69,6 +69,9 @@ var sections = []section{
 			{"Ctrl+b", "Jump back"},
 			{"Ctrl+f", "Find references (opens the finder)"},
 			{"Ctrl+Space", "Trigger autocomplete (Insert mode)"},
+			{"K", "Show error/warning details for this line"},
+			{"/", "Search in this file: type, Enter to jump, Esc to cancel"},
+			{"n N", "Next / previous search match"},
 		},
 	},
 	{

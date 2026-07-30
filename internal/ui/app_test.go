@@ -55,10 +55,51 @@ func TestTranslateKeySpaceIsPromotedToNamedButKeepsText(t *testing.T) {
 	}
 }
 
-func TestTranslateKeyCtrlSpaceProducesCleanTrigger(t *testing.T) {
-	got := translateKey(vaxis.Key{Text: " ", Keycode: ' ', Modifiers: vaxis.ModCtrl, EventType: vaxis.EventPress})
-	if got.String() != "Ctrl+Space" {
-		t.Errorf("String() = %q, want %q", got.String(), "Ctrl+Space")
+// TestTranslateKeyCtrlSpaceAcrossTerminalEncodings is a regression test for a
+// real bug: "Ctrl+Space" was registered as an editor binding but silently
+// never fired, because terminals encode it in ways that produced "Ctrl+@" or
+// "Ctrl+ " instead. Every form a terminal actually sends has to normalize to
+// the one trigger string bindings are written against.
+func TestTranslateKeyCtrlSpaceAcrossTerminalEncodings(t *testing.T) {
+	cases := []struct {
+		name string
+		in   vaxis.Key
+	}{
+		{
+			// Legacy terminals (including inside tmux) send the NUL byte,
+			// which vaxis decodes as Ctrl+@. This is the common case, and
+			// the one that was broken.
+			name: "legacy NUL byte",
+			in:   vaxis.Key{Keycode: '@', Modifiers: vaxis.ModCtrl},
+		},
+		{
+			name: "kitty protocol, keycode only",
+			in:   vaxis.Key{Keycode: vaxis.KeySpace, Modifiers: vaxis.ModCtrl},
+		},
+		{
+			name: "keycode with text",
+			in:   vaxis.Key{Keycode: vaxis.KeySpace, Text: " ", Modifiers: vaxis.ModCtrl},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			c.in.EventType = vaxis.EventPress
+			if got := translateKey(c.in).String(); got != "Ctrl+Space" {
+				t.Errorf("String() = %q, want %q", got, "Ctrl+Space")
+			}
+		})
+	}
+}
+
+func TestTranslateKeyPlainSpaceIsNotConfusedWithCtrlSpace(t *testing.T) {
+	// A bare space must stay insertable text and must NOT look like the
+	// Ctrl+Space trigger.
+	got := translateKey(vaxis.Key{Text: " ", Keycode: ' ', EventType: vaxis.EventPress})
+	if got.String() == "Ctrl+Space" {
+		t.Fatal("a bare Space must not match the Ctrl+Space trigger")
+	}
+	if got.Text != " " {
+		t.Errorf("Text = %q, want a literal space to remain insertable", got.Text)
 	}
 }
 

@@ -87,11 +87,11 @@ func TestGoToParentMovesToAnAncestorAndPushesAJump(t *testing.T) {
 	if tb.cursorLn == startLn && tb.cursorCol == startCol {
 		t.Fatal("expected the cursor to move to a parent node")
 	}
-	if len(tb.jumpStack) != 1 {
-		t.Fatalf("expected one jump pushed, got %d", len(tb.jumpStack))
+	if len(v.jumpStack) != 1 {
+		t.Fatalf("expected one jump pushed, got %d", len(v.jumpStack))
 	}
-	if tb.jumpStack[0].ln != startLn || tb.jumpStack[0].col != startCol {
-		t.Fatalf("pushed jump = %+v, want (%d,%d)", tb.jumpStack[0], startLn, startCol)
+	if v.jumpStack[0].ln != startLn || v.jumpStack[0].col != startCol {
+		t.Fatalf("pushed jump = %+v, want (%d,%d)", v.jumpStack[0], startLn, startCol)
 	}
 }
 
@@ -108,8 +108,8 @@ func TestGoToParentRepeatedPressesClimbFurther(t *testing.T) {
 	if tb.cursorLn == afterOne && tb.cursorCol == oneCol {
 		t.Fatal("expected a second Ctrl+g to climb further, cursor did not move")
 	}
-	if len(tb.jumpStack) != 2 {
-		t.Fatalf("expected two jumps pushed, got %d", len(tb.jumpStack))
+	if len(v.jumpStack) != 2 {
+		t.Fatalf("expected two jumps pushed, got %d", len(v.jumpStack))
 	}
 }
 
@@ -176,8 +176,8 @@ func TestJumpBackReturnsToPriorPosition(t *testing.T) {
 	if tb.cursorLn != startLn || tb.cursorCol != startCol {
 		t.Fatalf("cursor = (%d,%d), want (%d,%d)", tb.cursorLn, tb.cursorCol, startLn, startCol)
 	}
-	if len(tb.jumpStack) != 0 {
-		t.Fatalf("expected the jump stack to be drained, got %d entries", len(tb.jumpStack))
+	if len(v.jumpStack) != 0 {
+		t.Fatalf("expected the jump stack to be drained, got %d entries", len(v.jumpStack))
 	}
 }
 
@@ -229,8 +229,8 @@ func TestGoToDefinitionJumpsToDeclaration(t *testing.T) {
 	if tb.cursorLn != 2 { // "func helper() {" is line 3 (0-indexed 2)
 		t.Fatalf("cursorLn = %d, want 2 (the \"func helper()\" declaration)", tb.cursorLn)
 	}
-	if len(tb.jumpStack) != 1 {
-		t.Fatalf("expected one jump pushed, got %d", len(tb.jumpStack))
+	if len(v.jumpStack) != 1 {
+		t.Fatalf("expected one jump pushed, got %d", len(v.jumpStack))
 	}
 }
 
@@ -245,7 +245,7 @@ func TestGoToDefinitionNoMatchIsNoop(t *testing.T) {
 	if tb.cursorLn != startLn || tb.cursorCol != startCol {
 		t.Fatalf("expected no movement, got (%d,%d)", tb.cursorLn, tb.cursorCol)
 	}
-	if len(tb.jumpStack) != 0 {
+	if len(v.jumpStack) != 0 {
 		t.Fatal("expected no jump pushed when nothing matched")
 	}
 }

@@ -51,7 +51,7 @@ type Buffer struct {
 	// shown in more than one pane (see BufferStore), a per-tab cache would
 	// go stale in every OTHER tab the moment just one of them re-highlights
 	// after an edit. Computed on first Open and recomputed in full after
-	// every edit (see View.reHighlight) — not incremental, but simple and
+	// every edit (see View.onBufferEdited) — not incremental, but simple and
 	// correct; caching a tree-sitter *Tree and re-parsing incrementally is
 	// the natural next optimization, once something needs the Tree anyway
 	// (e.g. real go-to-definition/find-references built on the same parse).

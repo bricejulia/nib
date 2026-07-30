@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/kiwi/internal/lsp"
 )
 
 // maxCompletionCandidates caps how many autocomplete candidates are kept
@@ -76,16 +77,19 @@ func wordBeforeCursor(t *tab, tabWidth int) (string, int) {
 }
 
 // computeCompletionCandidates builds a fresh completionState for t's
-// current cursor position, or nil if there's no buffer, no partial word
-// before the cursor, or nothing matches it.
+// current cursor position from buffer words, or nil if there's no buffer or
+// nothing matches.
+//
+// An empty prefix is allowed and means "offer everything in the buffer"
+// (capped like any other result set) — the same thing vim's own Ctrl+n does
+// with nothing typed. Rejecting it would make Ctrl+Space silently do
+// nothing right after a "." or an opening paren, which is exactly where
+// people reach for it.
 func computeCompletionCandidates(t *tab, tabWidth int) *completionState {
 	if t == nil || t.buf == nil {
 		return nil
 	}
 	prefix, prefixLen := wordBeforeCursor(t, tabWidth)
-	if prefix == "" {
-		return nil
-	}
 
 	var candidates []string
 	for _, w := range bufferWords(t.buf) {
@@ -102,10 +106,84 @@ func computeCompletionCandidates(t *tab, tabWidth int) *completionState {
 	return &completionState{candidates: candidates, prefixLen: prefixLen}
 }
 
-// triggerAutocomplete implements Ctrl+Space: opens the popup for the
-// partial word before the cursor, if any and if it matches something.
+// triggerAutocomplete implements Ctrl+Space, preferring the language
+// server's suggestions and falling back to buffer words when no server is
+// running for this file.
+//
+// The distinction matters most for member access: after "myObject." only
+// the server knows what type myObject is and therefore what may follow.
+// Scanning the buffer for identifiers cannot answer that question, no
+// matter how it's filtered.
 func (v *View) triggerAutocomplete() {
-	v.completion = computeCompletionCandidates(v.activeTab(), v.tabWidth)
+	t := v.activeTab()
+	if t == nil || t.buf == nil {
+		return
+	}
+	if v.lsp != nil {
+		if lang := languageFor(t.path); lang != "" && v.lsp.Ready(lang) {
+			if v.requestLSPCompletion(t, lang) {
+				return
+			}
+		}
+	}
+	v.completion = computeCompletionCandidates(t, v.tabWidth)
+}
+
+// requestLSPCompletion asks the server for candidates at the cursor,
+// returning true if the request was dispatched (false means "fall back").
+// The popup appears when the answer arrives, a moment later — normal for
+// server-backed completion.
+//
+// If the server returns nothing usable, this falls back to buffer words
+// rather than leaving the user with no popup at all: a server declining to
+// answer shouldn't be worse than having no server.
+func (v *View) requestLSPCompletion(t *tab, lang string) bool {
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	_, prefixLen := wordBeforeCursor(t, v.tabWidth)
+
+	return v.lsp.Completion(t.path, lang, t.cursorLn, raw, func(items []lsp.CompletionItem, ok bool) {
+		if v.activeTab() != t {
+			return // the user moved on while the server was thinking
+		}
+		if candidates := completionLabels(items, prefixLen, t, v.tabWidth); ok && len(candidates) > 0 {
+			v.completion = &completionState{candidates: candidates, prefixLen: prefixLen}
+			return
+		}
+		v.completion = computeCompletionCandidates(t, v.tabWidth)
+	})
+}
+
+// completionLabels turns a server's items into the popup's flat candidate
+// strings: filtered by whatever partial word is already typed, ordered by
+// the server's own ranking (see lsp.CompletionItem.Order), and capped.
+//
+// Servers routinely return hundreds of items and expect the client to do
+// this filtering — asking at "myObj.fo" may still yield every member of
+// myObj, not just the ones starting "fo".
+func completionLabels(items []lsp.CompletionItem, prefixLen int, t *tab, tabWidth int) []string {
+	prefix, _ := wordBeforeCursor(t, tabWidth)
+
+	matching := make([]lsp.CompletionItem, 0, len(items))
+	for _, it := range items {
+		text := it.Text()
+		if text == "" || text == prefix {
+			continue
+		}
+		if prefix != "" && !strings.HasPrefix(text, prefix) {
+			continue
+		}
+		matching = append(matching, it)
+	}
+	sort.SliceStable(matching, func(i, j int) bool { return matching[i].Order() < matching[j].Order() })
+
+	candidates := make([]string, 0, maxCompletionCandidates)
+	for _, it := range matching {
+		if len(candidates) >= maxCompletionCandidates {
+			break
+		}
+		candidates = append(candidates, it.Text())
+	}
+	return candidates
 }
 
 // refilterCompletion re-runs the candidate filter after a keystroke while
@@ -162,60 +240,8 @@ func (v *View) handleCompletionKey(k layout.Key) bool {
 	return false
 }
 
-// renderCompletionPopup draws the open popup as extra rows directly below
-// the cursor's current screen position (cursorCol, cursorRow, in this
-// View's own window coordinates — see CursorPosition), one candidate per
-// row with the selected one reverse-video highlighted. Clamped to however
-// many rows actually fit before the pane's bottom edge (fewer candidates
-// shown if it doesn't fit; no flip-above-cursor if there's no room below,
-// a deferred nicety). Every row is padded to the window's full width:
-// vaxis's Println only writes the cells its segments cover, so anything
-// short of that would otherwise leave stale glyphs from the body content
-// already drawn underneath. Assumes ASCII candidate text (true for
-// virtually all real identifiers), so byte length doubles as display
-// width here rather than using the rune-width-aware helpers the rest of
-// this package is careful to use elsewhere.
+// renderCompletionPopup draws the candidate menu below the cursor, with the
+// selected entry highlighted — see renderPopup for the layout mechanics.
 func (v *View) renderCompletionPopup(w layout.Window, cols, rows, cursorCol, cursorRow int) {
-	comp := v.completion
-	maxRows := rows - cursorRow - 1
-	if maxRows <= 0 {
-		return
-	}
-	n := len(comp.candidates)
-	if n > maxRows {
-		n = maxRows
-	}
-
-	width := 0
-	for _, c := range comp.candidates[:n] {
-		if len(c) > width {
-			width = len(c)
-		}
-	}
-	if avail := cols - cursorCol; width > avail {
-		width = avail
-	}
-	if width <= 0 {
-		return
-	}
-
-	for i := 0; i < n; i++ {
-		text := comp.candidates[i]
-		if len(text) > width {
-			text = text[:width]
-		}
-		style := layout.Style{}
-		if i == comp.selected {
-			style.Attr |= layout.AttrReverse
-		}
-
-		segs := []layout.Segment{
-			{Text: strings.Repeat(" ", cursorCol)},
-			{Text: text + strings.Repeat(" ", width-len(text)), Style: style},
-		}
-		if trailing := cols - cursorCol - width; trailing > 0 {
-			segs = append(segs, layout.Segment{Text: strings.Repeat(" ", trailing)})
-		}
-		w.Println(cursorRow+1+i, segs...)
-	}
+	renderPopup(w, cols, rows, cursorCol, cursorRow, v.completion.candidates, v.completion.selected)
 }

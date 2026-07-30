@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/kiwi/internal/textwidth"
 )
 
 // View displays a static left-aligned Hint (e.g. a shortcuts reminder)
@@ -49,24 +50,34 @@ func (v *View) Render(w layout.Window) {
 	if v.Hint == "" && right == "" {
 		return // nothing to show: leave the bar blank rather than a padded empty line
 	}
-	if len(right) > cols {
-		right = right[len(right)-cols:]
+	// All the arithmetic below is in DISPLAY COLUMNS, not bytes. Both
+	// strings routinely contain multi-byte glyphs — the hint's "·"
+	// separators, and markers like the editor's language-server "●" — and
+	// byte-slicing those cuts a UTF-8 sequence in half, which the terminal
+	// renders as a replacement character. See internal/textwidth.
+	rightWidth := textwidth.DisplayWidth(right)
+	if rightWidth > cols {
+		right = textwidth.SliceByDisplayColumn(right, rightWidth-cols, cols)
+		rightWidth = textwidth.DisplayWidth(right)
 	}
 
 	// The right side (cursor position, git status, ...) is the more
 	// load-bearing of the two, so on a narrow terminal it wins: the
 	// hint gets truncated first, then dropped entirely once there's no
 	// room left for it.
-	avail := cols - len(right)
-	left := v.Hint
+	avail := cols - rightWidth
 	if avail < 0 {
 		avail = 0
 	}
-	if len(left) > avail {
-		left = left[:avail]
+	left := v.Hint
+	if textwidth.DisplayWidth(left) > avail {
+		left = textwidth.SliceByDisplayColumn(left, 0, avail)
 	}
 
-	pad := cols - len(left) - len(right)
+	pad := cols - textwidth.DisplayWidth(left) - rightWidth
+	if pad < 0 {
+		pad = 0
+	}
 	line := left + strings.Repeat(" ", pad) + right
 	w.Println(0, layout.Segment{Text: line, Style: layout.Style{Attr: layout.AttrDim}})
 }

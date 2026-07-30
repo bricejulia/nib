@@ -157,8 +157,8 @@ func TestViewApplyLineStatusIgnoresUnknownPath(t *testing.T) {
 
 	w := newFakeWindow(40, 10)
 	v.Render(w)
-	if strings.Contains(w.segs[1][0].Text, "+") {
-		t.Errorf("row 1's gutter marker should be untouched, got %q", w.segs[1][0].Text)
+	if strings.Contains(w.segs[1][gitMarkerSeg].Text, "+") {
+		t.Errorf("row 1's gutter marker should be untouched, got %q", w.segs[1][gitMarkerSeg].Text)
 	}
 }
 
@@ -175,18 +175,26 @@ func TestViewRenderShowsLineStatusMarkerInGutter(t *testing.T) {
 	v.Render(w)
 
 	// Row 0 is the tab bar; buffer line 0 renders on row 1, line 1 on row
-	// 2. The marker is the gutter's leading segment (see renderBody).
-	if got := w.segs[1][0]; got.Text != gitstyle.LineMarker(gitstatus.LineAdded) || got.Style != gitstyle.LineStyle(gitstatus.LineAdded) {
+	// 2. The git marker is the gutter's SECOND segment — the diagnostic
+	// marker (see ApplyDiagnostics) precedes it (see renderBody).
+	if got := w.segs[1][gitMarkerSeg]; got.Text != gitstyle.LineMarker(gitstatus.LineAdded) || got.Style != gitstyle.LineStyle(gitstatus.LineAdded) {
 		t.Errorf("row 1 marker = %+v, want text %q style %+v", got, gitstyle.LineMarker(gitstatus.LineAdded), gitstyle.LineStyle(gitstatus.LineAdded))
 	}
-	if got := w.segs[2][0]; got.Text != gitstyle.LineMarker(gitstatus.LineModified) || got.Style != gitstyle.LineStyle(gitstatus.LineModified) {
+	if got := w.segs[2][gitMarkerSeg]; got.Text != gitstyle.LineMarker(gitstatus.LineModified) || got.Style != gitstyle.LineStyle(gitstatus.LineModified) {
 		t.Errorf("row 2 marker = %+v, want text %q style %+v", got, gitstyle.LineMarker(gitstatus.LineModified), gitstyle.LineStyle(gitstatus.LineModified))
 	}
 	// Line 2 has no entry in the map: unchanged, so a blank marker.
-	if got := w.segs[3][0]; got.Text != " " {
+	if got := w.segs[3][gitMarkerSeg]; got.Text != " " {
 		t.Errorf("row 3 marker = %+v, want a blank (unchanged) marker", got)
 	}
 }
+
+// Gutter segment indices within a rendered body row, in renderBody's order:
+// diagnostic marker, git-diff marker, then the line number.
+const (
+	diagMarkerSeg = 0
+	gitMarkerSeg  = 1
+)
 
 func TestActivePathReflectsOpenTab(t *testing.T) {
 	v := NewView()

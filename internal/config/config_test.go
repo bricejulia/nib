@@ -97,3 +97,46 @@ func TestOverridesOnNilConfig(t *testing.T) {
 		t.Errorf("expected nil overrides from a nil *Config, got %v", got)
 	}
 }
+
+func TestParseLSPDirective(t *testing.T) {
+	src := `
+lsp = php = intelephense --stdio
+lsp = rust = rust-analyzer
+keybind = editor:ctrl+t = go_to_definition
+`
+	cfg := Parse(strings.NewReader(src))
+	servers := cfg.Servers()
+
+	php, ok := servers["php"]
+	if !ok {
+		t.Fatalf("no php entry in %v", servers)
+	}
+	if len(php) != 2 || php[0] != "intelephense" || php[1] != "--stdio" {
+		t.Errorf("php = %q, want [intelephense --stdio] (args split into argv)", php)
+	}
+	if rust := servers["rust"]; len(rust) != 1 || rust[0] != "rust-analyzer" {
+		t.Errorf("rust = %q, want [rust-analyzer]", rust)
+	}
+	// The two directives share a parser; neither may swallow the other.
+	if got := cfg.Overrides("editor")["Ctrl+t"]; got != "go_to_definition" {
+		t.Errorf("keybind parsing broke alongside lsp: got %q", got)
+	}
+}
+
+func TestParseLSPSkipsMalformedLines(t *testing.T) {
+	src := `
+lsp = php
+lsp = = intelephense
+lsp = python =
+`
+	if servers := Parse(strings.NewReader(src)).Servers(); len(servers) != 0 {
+		t.Errorf("expected no servers from malformed input, got %v", servers)
+	}
+}
+
+func TestServersOnNilConfig(t *testing.T) {
+	var cfg *Config
+	if got := cfg.Servers(); got != nil {
+		t.Errorf("expected nil servers from a nil *Config, got %v", got)
+	}
+}

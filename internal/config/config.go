@@ -1,11 +1,18 @@
 // Package config parses kiwi's user config file: a flat, hand-editable
-// text format (in the spirit of Ghostty's config, not TOML/YAML) whose
-// only current directive is "keybind", letting the user override any of
-// kiwi's default keybindings without recompiling.
+// text format (in the spirit of Ghostty's config, not TOML/YAML), letting
+// the user override kiwi's defaults without recompiling.
 //
-// A line looks like:
+// Two directives, sharing one three-field shape:
 //
 //	keybind = <scope>:<trigger> = <action>
+//	lsp     = <language>        = <command args...>
+//
+// The "lsp" directive registers a language server, e.g.
+//
+//	lsp = php = intelephense --stdio
+//
+// which is how a language kiwi doesn't ship a default for gets one. See
+// internal/lsp.DefaultServers for the built-ins these merge over.
 //
 // scope is one of "global" (or omitted, e.g. "keybind = ctrl+p = ..."),
 // "editor", "filetree", "finder", "debug", "help" — see each package's
@@ -48,11 +55,23 @@ func (d Defaults) Resolve(overrides map[string]string) map[string]string {
 	return m
 }
 
-// Config holds parsed per-scope keybinding overrides from the user's
-// config file. The zero value (and a nil *Config) is a valid empty
-// config — every scope simply falls back to its built-in Defaults.
+// Config holds the parsed user config: per-scope keybinding overrides and
+// language-server commands. The zero value (and a nil *Config) is a valid
+// empty config — every scope falls back to its built-in Defaults and no
+// extra language servers are registered.
 type Config struct {
 	keybinds map[string]map[string]string // scope -> trigger -> action
+	servers  map[string][]string          // language -> argv
+}
+
+// Servers returns the language->command entries parsed from "lsp" lines,
+// for the caller to merge over internal/lsp's built-in registry. Safe to
+// call on a nil *Config.
+func (c *Config) Servers() map[string][]string {
+	if c == nil {
+		return nil
+	}
+	return c.servers
 }
 
 // Overrides returns the parsed trigger->action overrides for scope, or
@@ -69,7 +88,10 @@ func (c *Config) Overrides(scope string) map[string]string {
 // shouldn't prevent kiwi from starting (worst case, that one override is
 // just ignored).
 func Parse(r io.Reader) *Config {
-	cfg := &Config{keybinds: map[string]map[string]string{}}
+	cfg := &Config{
+		keybinds: map[string]map[string]string{},
+		servers:  map[string][]string{},
+	}
 
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
@@ -78,25 +100,44 @@ func Parse(r io.Reader) *Config {
 			continue
 		}
 
-		// "keybind = <scope>:<trigger> = <action>" — a keybind line has
-		// exactly two "=", so SplitN(3) either yields exactly the three
-		// fields we want or the line is malformed.
+		// Both directives share the same three-field shape:
+		//   keybind = <scope>:<trigger> = <action>
+		//   lsp     = <language>        = <command args...>
+		// so SplitN(3) either yields exactly the three fields wanted or the
+		// line is malformed.
 		fields := strings.SplitN(line, "=", 3)
-		if len(fields) != 3 || strings.TrimSpace(fields[0]) != "keybind" {
+		if len(fields) != 3 {
+			continue
+		}
+		directive := strings.TrimSpace(fields[0])
+		key := strings.TrimSpace(fields[1])
+		value := strings.TrimSpace(fields[2])
+		if key == "" || value == "" {
 			continue
 		}
 
-		scope, trigger := splitScope(strings.TrimSpace(fields[1]))
-		trigger = Normalize(trigger)
-		action := strings.TrimSpace(fields[2])
-		if trigger == "" || action == "" {
-			continue
-		}
+		switch directive {
+		case "keybind":
+			scope, trigger := splitScope(key)
+			if trigger = Normalize(trigger); trigger == "" {
+				continue
+			}
+			if cfg.keybinds[scope] == nil {
+				cfg.keybinds[scope] = map[string]string{}
+			}
+			cfg.keybinds[scope][trigger] = value
 
-		if cfg.keybinds[scope] == nil {
-			cfg.keybinds[scope] = map[string]string{}
+		case "lsp":
+			// Split the command on whitespace into argv. Quoting isn't
+			// supported — a path with spaces needs a wrapper script — which
+			// keeps this consistent with the rest of the format's
+			// deliberately unclever parsing.
+			argv := strings.Fields(value)
+			if len(argv) == 0 {
+				continue
+			}
+			cfg.servers[key] = argv
 		}
-		cfg.keybinds[scope][trigger] = action
 	}
 
 	return cfg

@@ -10,6 +10,20 @@ import (
 	"github.com/bricejulia/kiwi/internal/layout"
 )
 
+// languageFor returns the language name for path, or "" if no grammar
+// recognizes it. The single source of truth for "what language is this
+// file" — shared by syntax highlighting, the on-demand parse used by
+// go-to-parent/definition, and the LSP server registry (see
+// internal/lsp.DefaultServers, keyed on exactly these names), so those
+// three can never disagree about a file's language.
+func languageFor(path string) string {
+	entry := grammars.DetectLanguage(path)
+	if entry == nil {
+		return ""
+	}
+	return entry.Name
+}
+
 // highlighterCache holds one compiled *gotreesitter.Highlighter per
 // language name — constructing one compiles a tree-sitter Query, so it's
 // built once and reused across every tab/Open() of the same language, not
@@ -22,7 +36,7 @@ var highlighterCache = map[string]*gotreesitter.Highlighter{}
 // buf's entire contents, or nil if no grammar matches buf.Path or the
 // highlighter fails to construct — callers fall back to the heuristic
 // highlightLine in that case. Computed once in Open and recomputed after
-// every edit (see View.reHighlight); the result is cached on
+// every edit (see View.onBufferEdited); the result is cached on
 // Buffer.highlighted, not per-tab — see its doc comment for why.
 func highlightBuffer(buf *Buffer) [][]layout.Segment {
 	if buf == nil {
@@ -61,7 +75,7 @@ var parserCache = map[string]*gotreesitter.Parser{}
 // parsing fails.
 //
 // Deliberately not cached on Buffer: unlike highlighting, which is
-// recomputed on every keystroke via reHighlight, these actions only ever
+// recomputed on every keystroke via onBufferEdited, these actions only ever
 // fire on an explicit keypress, so a fresh parse each time is cheap and
 // needs no invalidation — notably simpler now that a Buffer can be shown
 // in more than one pane at once (see BufferStore), where a cached *Tree

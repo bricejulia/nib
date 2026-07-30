@@ -58,7 +58,12 @@ func TestCtrlSpaceOpensPopupFilteredByPrefix(t *testing.T) {
 	}
 }
 
-func TestCtrlSpaceWithNoPrefixIsNoop(t *testing.T) {
+// TestCtrlSpaceWithNoPrefixStillOffersBufferWords covers a reported gap:
+// autocomplete used to require at least one typed character, so pressing
+// Ctrl+Space right after a "." or on a blank line silently did nothing.
+// With no prefix, every buffer word is a candidate — the same thing vim's
+// own Ctrl+n does.
+func TestCtrlSpaceWithNoPrefixStillOffersBufferWords(t *testing.T) {
 	v := NewView()
 	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"format", ""}}}}
 	v.active = 0
@@ -66,8 +71,28 @@ func TestCtrlSpaceWithNoPrefixIsNoop(t *testing.T) {
 	v.HandleKey(layout.Key{Text: "i"})
 
 	v.HandleKey(ctrlSpace())
+
+	if v.completion == nil {
+		t.Fatal("expected a popup even with nothing typed before the cursor")
+	}
+	if len(v.completion.candidates) == 0 {
+		t.Fatal("expected at least one candidate from the buffer")
+	}
+	if v.completion.prefixLen != 0 {
+		t.Errorf("prefixLen = %d, want 0 so accepting doesn't delete anything", v.completion.prefixLen)
+	}
+}
+
+func TestCtrlSpaceOnEmptyBufferIsNoop(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{""}}}}
+	v.active = 0
+	v.HandleKey(layout.Key{Text: "i"})
+
+	v.HandleKey(ctrlSpace())
+
 	if v.completion != nil {
-		t.Fatal("expected no popup with nothing typed before the cursor")
+		t.Fatal("expected no popup when the buffer has no words to offer")
 	}
 }
 

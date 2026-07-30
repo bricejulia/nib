@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/kiwi/internal/textwidth"
 )
 
 type fakeWindow struct {
@@ -64,6 +65,44 @@ func TestViewTruncatesTextWiderThanWindow(t *testing.T) {
 	v.Render(w) // must not panic
 	if len(w.lines[0]) > 10 {
 		t.Fatalf("expected truncation to window width, got len=%d", len(w.lines[0]))
+	}
+}
+
+// TestViewTruncationDoesNotSplitMultiByteGlyphs is a regression test: the
+// bar used to do its arithmetic in bytes, so truncating a hint containing
+// "·" (2 bytes, 1 column) sliced a UTF-8 sequence in half and the terminal
+// drew a replacement character. Multi-byte glyphs are routine here — the
+// hint's separators, and the editor's language-server "●" marker.
+func TestViewTruncationDoesNotSplitMultiByteGlyphs(t *testing.T) {
+	v := New()
+	v.Hint = "Tab Switch · Ctrl+P Finder · Ctrl+D Debug · ? Help"
+	v.TextFunc = func() string { return "Ln 1, Col 1   go ●   kiwi dev" }
+
+	// Sweep widths so the truncation point lands inside a multi-byte glyph
+	// at some of them.
+	for cols := 4; cols <= 60; cols++ {
+		w := newFakeWindow(cols, 1)
+		v.Render(w)
+		if strings.ContainsRune(w.lines[0], '�') {
+			t.Fatalf("width %d produced a replacement character: %q", cols, w.lines[0])
+		}
+		if got := textwidth.DisplayWidth(w.lines[0]); got > cols {
+			t.Fatalf("width %d rendered %d display columns: %q", cols, got, w.lines[0])
+		}
+	}
+}
+
+func TestViewKeepsRightTextWhenHintMustBeDropped(t *testing.T) {
+	// The right side is the load-bearing one, so it survives a narrow bar.
+	v := New()
+	v.Hint = "a very long hint that cannot possibly fit"
+	v.TextFunc = func() string { return "go ●" }
+
+	w := newFakeWindow(6, 1)
+	v.Render(w)
+
+	if !strings.Contains(w.lines[0], "●") {
+		t.Errorf("expected the right-hand text preserved, got %q", w.lines[0])
 	}
 }
 
