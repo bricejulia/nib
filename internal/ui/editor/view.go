@@ -12,6 +12,7 @@ import (
 	"github.com/bricejulia/kiwi/internal/lsp"
 	"github.com/bricejulia/kiwi/internal/textwidth"
 	"github.com/bricejulia/kiwi/internal/ui/gitstyle"
+	"github.com/bricejulia/kiwi/internal/vcs/gitblame"
 	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
 )
 
@@ -61,6 +62,13 @@ var DefaultKeybinds = config.Defaults{
 	// "K" is vim's own "look up what's under the cursor", which is exactly
 	// this gesture — and being a letter, it works on any keyboard layout.
 	{Trigger: "K", Action: "show_diagnostics"},
+	// The three git gestures, all shifted letters for the same
+	// works-on-any-layout reason as "K", and all free of vim's own
+	// meanings for those keys (kiwi binds no operator-pending "d", and
+	// implements neither H/M/L screen motions nor "B").
+	{Trigger: "B", Action: "show_blame"},
+	{Trigger: "D", Action: "show_file_diff"},
+	{Trigger: "H", Action: "show_line_diff"},
 	{Trigger: "/", Action: "search_mode"},
 	{Trigger: "n", Action: "search_next"},
 	{Trigger: "N", Action: "search_prev"},
@@ -206,6 +214,36 @@ type View struct {
 	// up. Transient by design: the very next keypress dismisses it, so it
 	// reads like a tooltip rather than another mode to get stuck in.
 	showDiagnostics bool
+
+	// gitPopup holds the rows of the git blame ("B") or current-line diff
+	// ("H") tooltip, nil when neither is up. Unlike showDiagnostics — whose
+	// content is re-derived from t.diagnostics on every Render — these are
+	// captured once, when the key is pressed: they come from a git query
+	// made at that moment (see BlameFunc/HunkFunc), and re-running git on
+	// every frame to redraw the same tooltip would put a subprocess in the
+	// render path. Dismissed by the next keypress, exactly like
+	// showDiagnostics.
+	gitPopup []popupLine
+
+	// BlameFunc, if set, resolves who last changed path's 1-based line —
+	// enabling the "B" blame tooltip. Left nil (the default), "B" does
+	// nothing, the same way a language-server-less pane simply has no LSP
+	// features. Provided as a callback rather than called directly because
+	// this View never talks to git itself; see ApplyLineStatus.
+	BlameFunc func(path string, line int) (gitblame.Info, error)
+
+	// HunkFunc, if set, resolves the diff hunk covering path's 0-based line
+	// index — enabling the "H" current-line diff tooltip. ok is false when
+	// that line is unchanged. Same callback rationale as BlameFunc.
+	HunkFunc func(path string, line int) (hunk gitstatus.Hunk, ok bool, err error)
+
+	// OnShowFileDiff, if set, is called with the active tab's path when "D"
+	// fires — set by cmd/kiwi/main.go to open the diff overlay (see
+	// internal/ui/diffview). A whole-file diff is a scrollable document
+	// rather than a tooltip, so it belongs in an overlay the app owns, not
+	// in a popup this pane draws. Same plain-callback pattern as
+	// OnFindReferences.
+	OnShowFileDiff func(path string)
 
 	// In-file search state (see search.go). searchBuf is what's typed at the
 	// "/" prompt; searchPattern is the last committed pattern, which n/N
@@ -579,8 +617,8 @@ func (v *View) Render(w layout.Window) {
 	renderBody(w, t, v.tabWidth, cols, bodyRows, 1, v.searchMatches)
 
 	// Popups draw last so they sit on top of the file content. Only one can
-	// be up at a time: completion belongs to Insert mode, the diagnostic
-	// tooltip to Normal mode.
+	// be up at a time: completion belongs to Insert mode, the diagnostic and
+	// git tooltips to Normal mode.
 	if v.completion != nil {
 		if col, row, ok := v.CursorPosition(); ok {
 			v.renderCompletionPopup(w, cols, rows, col, row)
@@ -589,6 +627,10 @@ func (v *View) Render(w layout.Window) {
 		if col, row, ok := v.CursorPosition(); ok {
 			lines := diagnosticPopupLines(t.diagnostics[t.cursorLn], cols-col)
 			renderPopup(w, cols, rows, col, row, lines, -1)
+		}
+	} else if v.gitPopup != nil {
+		if col, row, ok := v.CursorPosition(); ok {
+			renderStyledPopup(w, cols, rows, col, row, v.gitPopup, -1)
 		}
 	}
 }
@@ -863,11 +905,12 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return false
 	}
 
-	// The diagnostic popup is a tooltip, not a mode: whatever you press next
-	// dismisses it and is then handled normally.
+	// The diagnostic and git popups are tooltips, not modes: whatever you
+	// press next dismisses them and is then handled normally.
 	if v.showDiagnostics {
 		v.showDiagnostics = false
 	}
+	v.gitPopup = nil
 
 	switch v.mode {
 	case modeInsert:
@@ -954,6 +997,14 @@ func (v *View) HandleKey(k layout.Key) bool {
 	case "show_diagnostics":
 		// Only worth a popup if the line actually has something to say.
 		v.showDiagnostics = len(t.diagnostics[t.cursorLn]) > 0
+	case "show_blame":
+		v.showBlame(t)
+	case "show_line_diff":
+		v.showLineDiff(t)
+	case "show_file_diff":
+		if v.OnShowFileDiff != nil && t.path != "" {
+			v.OnShowFileDiff(t.path)
+		}
 	default:
 		if !v.applyMovement(t, action) {
 			return false

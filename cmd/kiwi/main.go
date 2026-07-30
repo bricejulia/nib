@@ -16,11 +16,13 @@ import (
 	"github.com/bricejulia/kiwi/internal/lsp"
 	"github.com/bricejulia/kiwi/internal/ui"
 	"github.com/bricejulia/kiwi/internal/ui/debug"
+	"github.com/bricejulia/kiwi/internal/ui/diffview"
 	"github.com/bricejulia/kiwi/internal/ui/editor"
 	"github.com/bricejulia/kiwi/internal/ui/filetree"
 	"github.com/bricejulia/kiwi/internal/ui/finder"
 	"github.com/bricejulia/kiwi/internal/ui/help"
 	"github.com/bricejulia/kiwi/internal/ui/statusbar"
+	"github.com/bricejulia/kiwi/internal/vcs/gitblame"
 	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
 	"github.com/bricejulia/kiwi/internal/vcs/watch"
 	"github.com/bricejulia/kiwi/internal/version"
@@ -109,6 +111,7 @@ var configTemplateScopes = []config.Scope{
 	{Name: "filetree", Defaults: filetree.DefaultKeybinds},
 	{Name: "finder", Defaults: finder.DefaultKeybinds},
 	{Name: "debug", Defaults: debug.DefaultKeybinds},
+	{Name: "diff", Defaults: diffview.DefaultKeybinds},
 	{Name: "help", Defaults: help.DefaultKeybinds},
 }
 
@@ -308,13 +311,6 @@ func run() error {
 		}
 	})
 
-	// Closing an editor pane's last tab (via ":q"/":qa"/etc.) leaves it
-	// showing the "No file open" placeholder with nothing left to do in
-	// it, so hand focus back to the file tree — for every editor pane,
-	// not just this initial one (see trySplit below for split-created
-	// panes getting the same wiring).
-	editorView.OnAllTabsClosed = func() { app.FocusLeaf(fileTreeLeaf.ID) }
-
 	finderView := finder.New(absRoot)
 	finderView.SetKeymap(cfg.Overrides("finder"))
 	finderView.OnClose = app.CloseOverlay
@@ -333,16 +329,6 @@ func run() error {
 	}
 	app.SetDoubleShiftHandler(openFinder)
 
-	// "Find references" (Ctrl+f) reuses the finder's own content-search
-	// overlay, pre-seeded with the identifier under the cursor, rather
-	// than a separate results picker — see finder.View.OpenWithQuery.
-	// Wired for the initial pane here; trySplit below wires the same for
-	// every split-created pane.
-	editorView.OnFindReferences = func(word string) {
-		finderView.OpenWithQuery(word)
-		app.ShowOverlay(finderView)
-	}
-
 	debugView := debug.New()
 	debugView.SetKeymap(cfg.Overrides("debug"))
 	debugView.OnClose = app.CloseOverlay
@@ -352,6 +338,60 @@ func run() error {
 	helpView.SetKeymap(cfg.Overrides("help"))
 	helpView.OnClose = app.CloseOverlay
 	openHelp := func() { app.ShowOverlay(helpView) }
+
+	// The whole-file diff ("D" in an editor pane) is a scrollable document,
+	// so it gets the same modal-overlay treatment as the finder and debug
+	// log rather than an in-pane popup — see internal/ui/diffview.
+	diffView := diffview.New()
+	diffView.SetKeymap(cfg.Overrides("diff"))
+	diffView.OnClose = app.CloseOverlay
+	openFileDiff := func(path string) {
+		title := path
+		if rel, err := filepath.Rel(absRoot, path); err == nil {
+			title = rel
+		}
+		lines, err := gitstatus.FileDiff(absRoot, path)
+		if err != nil {
+			// Untracked files are already handled inside FileDiff, so
+			// reaching here means git itself couldn't answer: no repository,
+			// or no git. Say so in the overlay rather than opening an empty
+			// one that would read as "no changes".
+			debuglog.Warn("diff %s: %v", path, err)
+			lines = []string{"(diff unavailable — not a git repository, or git failed; see Ctrl+D)"}
+		}
+		diffView.Show(title, lines)
+		app.ShowOverlay(diffView)
+	}
+
+	// wireEditorPane attaches every callback an editor pane needs to reach
+	// the rest of the application. Called for the initial pane below and for
+	// each pane trySplit creates, so a new split is never quietly missing a
+	// feature — which is exactly what a third hand-maintained copy of this
+	// list would eventually do.
+	wireEditorPane := func(v *editor.View) {
+		// Closing a pane's last tab (via ":q"/":qa"/etc.) leaves it showing
+		// the "No file open" placeholder with nothing left to do in it, so
+		// hand focus back to the file tree.
+		v.OnAllTabsClosed = func() { app.FocusLeaf(fileTreeLeaf.ID) }
+		// "Find references" (Ctrl+f) reuses the finder's own content-search
+		// overlay, pre-seeded with the identifier under the cursor, rather
+		// than a separate results picker — see finder.View.OpenWithQuery.
+		v.OnFindReferences = func(word string) {
+			finderView.OpenWithQuery(word)
+			app.ShowOverlay(finderView)
+		}
+		// The git tooltips ("B" blame, "H" current-line diff): the editor
+		// pane never shells out to git itself, so it asks through these,
+		// exactly as its gutter markers arrive via ApplyLineStatus.
+		v.BlameFunc = func(path string, line int) (gitblame.Info, error) {
+			return gitblame.Line(absRoot, path, line)
+		}
+		v.HunkFunc = func(path string, line int) (gitstatus.Hunk, bool, error) {
+			return gitstatus.FileHunkAt(absRoot, path, line)
+		}
+		v.OnShowFileDiff = openFileDiff
+	}
+	wireEditorPane(editorView)
 
 	// open_config shells out to the user's editor, so it needs the real
 	// terminal to itself — see ui.App.SuspendAndRun. Keybinding changes
@@ -397,11 +437,7 @@ func run() error {
 		newView.SetKeymap(cfg.Overrides("editor"))
 		newView.SetBufferStore(bufferStore)
 		newView.SetLSPManager(lspManager)
-		newView.OnAllTabsClosed = func() { app.FocusLeaf(fileTreeLeaf.ID) }
-		newView.OnFindReferences = func(word string) {
-			finderView.OpenWithQuery(word)
-			app.ShowOverlay(finderView)
-		}
+		wireEditorPane(newView)
 		newLeaf := &layout.LeafNode{ID: nextLeafID, View: newView}
 		if !layout.Split(tree, target.leaf, dir, newLeaf) {
 			return
@@ -491,17 +527,19 @@ func run() error {
 		switch e := ev.(type) {
 		case watch.RefreshEvent:
 			debuglog.Debug("fsnotify refresh: gitChanged=%v fsChanged=%v", e.GitChanged, e.FSChanged)
-			if e.GitChanged {
-				refreshGitStatus()
-			}
 			if e.FSChanged {
 				treeView.Refresh()
-				// A plain unstaged edit (including this app's own Save)
-				// never touches .git/index or HEAD, so it's only ever
-				// reported as FSChanged, not GitChanged — but it can
-				// still change a file's line-level diff, so it has to be
-				// recomputed here too, not just in refreshGitStatus.
-				refreshAllLineStatus()
+			}
+			// A plain unstaged edit (including this app's own Save) never
+			// touches .git/index or HEAD, so it's only ever reported as
+			// FSChanged, not GitChanged — but it still changes both the
+			// file's porcelain status (clean -> modified, i.e. the marker
+			// the file tree and finder show) and its line-level diff, so a
+			// bare FSChanged has to re-run the same refresh a GitChanged
+			// does. refreshGitStatus ends by calling refreshAllLineStatus,
+			// so the line-level gutters are covered by this too.
+			if e.GitChanged || e.FSChanged {
+				refreshGitStatus()
 			}
 		case finder.SearchResult:
 			finderView.ApplyContentResult(e)

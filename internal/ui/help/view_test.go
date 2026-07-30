@@ -37,7 +37,7 @@ func (w *fakeWindow) Clear() {
 
 func TestRenderShowsVersionAndBindings(t *testing.T) {
 	v := New("1.2.3")
-	w := newFakeWindow(60, 60) // tall enough for every section's bindings to render unscrolled
+	w := newFakeWindow(60, 100) // tall enough for every section's bindings to render unscrolled
 	v.Render(w)
 
 	joined := strings.Join(w.lines, "\n")

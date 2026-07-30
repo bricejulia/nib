@@ -462,11 +462,18 @@ func (v *View) moveCursor(delta int) {
 // prefix so the matched text itself stands out, matching the file-mode
 // rows' git-status coloring convention of styling metadata separately from
 // the path/text a user actually reads.
+//
+// Both modes lead with the same git-status marker column, so a row lines up
+// with the other whichever mode you're in — and so "is this match in
+// something I've already touched?" is answerable while searching content,
+// not only while searching filenames.
 func (v *View) rowSegments(idx int) []layout.Segment {
 	if v.mode == modeContent {
 		m := v.contentMatches[idx]
+		status := v.status[m.path]
 		prefix := fmt.Sprintf("%s:%d: ", m.path, m.line)
 		return []layout.Segment{
+			{Text: gitstyle.Marker(status) + " ", Style: gitstyle.Style(status)},
 			{Text: prefix, Style: layout.Style{Attr: layout.AttrDim}},
 			{Text: m.text},
 		}

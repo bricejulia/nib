@@ -83,7 +83,7 @@ func wordBeforeCursor(t *tab, tabWidth int) (string, int) {
 // An empty prefix is allowed and means "offer everything in the buffer"
 // (capped like any other result set) — the same thing vim's own Ctrl+n does
 // with nothing typed. Rejecting it would make Ctrl+Space silently do
-// nothing right after a "." or an opening paren, which is exactly where
+// nothing right after a "." or an opening parent, which is exactly where
 // people reach for it.
 func computeCompletionCandidates(t *tab, tabWidth int) *completionState {
 	if t == nil || t.buf == nil {

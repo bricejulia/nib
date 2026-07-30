@@ -24,6 +24,25 @@ import (
 // If there isn't room below the anchor, fewer rows are drawn (no
 // flip-above-anchor, a deferred nicety).
 func renderPopup(w layout.Window, cols, rows, anchorCol, anchorRow int, lines []string, selected int) {
+	styled := make([]popupLine, len(lines))
+	for i, l := range lines {
+		styled[i] = popupLine{Text: l}
+	}
+	renderStyledPopup(w, cols, rows, anchorCol, anchorRow, styled, selected)
+}
+
+// popupLine is one row of popup content with the style to draw it in — for
+// popups whose rows don't all look alike, such as the git-hunk popup's
+// red removals and green additions (see gitpopup.go). A zero Style renders
+// exactly as the plain []string form does.
+type popupLine struct {
+	Text  string
+	Style layout.Style
+}
+
+// renderStyledPopup is renderPopup with a per-row style. It carries all the
+// actual logic; renderPopup is the unstyled convenience wrapper over it.
+func renderStyledPopup(w layout.Window, cols, rows, anchorCol, anchorRow int, lines []popupLine, selected int) {
 	maxRows := rows - anchorRow - 1
 	if maxRows <= 0 || len(lines) == 0 {
 		return
@@ -37,7 +56,7 @@ func renderPopup(w layout.Window, cols, rows, anchorCol, anchorRow int, lines []
 	// anything, including non-ASCII.
 	width := 0
 	for _, l := range lines[:n] {
-		if dw := textwidth.DisplayWidth(l); dw > width {
+		if dw := textwidth.DisplayWidth(l.Text); dw > width {
 			width = dw
 		}
 	}
@@ -49,13 +68,13 @@ func renderPopup(w layout.Window, cols, rows, anchorCol, anchorRow int, lines []
 	}
 
 	for i := 0; i < n; i++ {
-		text := clampToWidth(lines[i], width)
+		text := clampToWidth(lines[i].Text, width)
 		pad := width - textwidth.DisplayWidth(text)
 		if pad < 0 {
 			pad = 0
 		}
 
-		style := layout.Style{}
+		style := lines[i].Style
 		if i == selected {
 			style.Attr |= layout.AttrReverse
 		}

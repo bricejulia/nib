@@ -75,6 +75,14 @@ var sections = []section{
 		},
 	},
 	{
+		Title: "Editor — git",
+		Bindings: []binding{
+			{"B", "Blame: who last changed this line"},
+			{"H", "Show the diff hunk this line belongs to"},
+			{"D", "Show this file's full diff against HEAD"},
+		},
+	},
+	{
 		Title: "File Tree",
 		Bindings: []binding{
 			{"j k, arrows", "Move cursor"},
@@ -99,6 +107,16 @@ var sections = []section{
 			{"Tab", "Cycle minimum severity filter"},
 			{"Up Down PageUp PageDown", "Scroll"},
 			{"Home End", "Oldest / newest entry"},
+			{"Esc", "Close"},
+		},
+	},
+	{
+		Title: "Diff",
+		Bindings: []binding{
+			{"j k, arrows", "Scroll"},
+			{"PageUp PageDown", "Scroll by a page"},
+			{"Home End", "First / last line"},
+			{"Left Right", "Peek a long line"},
 			{"Esc", "Close"},
 		},
 	},

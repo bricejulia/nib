@@ -208,6 +208,14 @@ Press `?` in kiwi for this list at runtime. Every binding is rebindable
 | `Ctrl+Space` | Autocomplete (LSP members, else buffer words) |
 | `K` | Show error/warning details for this line |
 
+### Editor — git
+
+| Key | Action |
+| --- | --- |
+| `B` | Blame: who last changed this line, and why |
+| `H` | Show the diff hunk this line belongs to |
+| `D` | Show this file's full diff against `HEAD` (scrollable; `Esc` closes) |
+
 ### Editor — search and ex-commands
 
 | Key | Action |
@@ -232,6 +240,14 @@ Press `?` in kiwi for this list at runtime. Every binding is rebindable
 
 `Tab` switches between filename and content search · `Enter` opens ·
 `↑`/`↓` selects · `←`/`→` peeks at a long line · `Esc` closes
+
+Both modes show each file's git status marker in the leftmost column, colored
+the same way the file tree colors it.
+
+### Diff
+
+`j`/`k` and arrows scroll · `PageUp`/`PageDown` by a page · `Home`/`End` jump
+to the ends · `←`/`→` peeks at a long line · `Esc` closes
 
 ## Configuration
 

@@ -434,6 +434,9 @@ func TestViewContentModeSearchesFileContentsViaGitGrep(t *testing.T) {
 	}
 }
 
+// Asserted against rowSegments rather than the rendered window, because
+// fakeWindow only records each row's FIRST segment style — and a
+// content-mode row leads with the git-status marker, not the prefix.
 func TestViewContentModeDimsThePathLinePrefix(t *testing.T) {
 	dir := newContentSearchRepo(t)
 	v := New(dir)
@@ -441,12 +444,48 @@ func TestViewContentModeDimsThePathLinePrefix(t *testing.T) {
 	for _, r := range "needle" {
 		v.HandleKey(layout.Key{Text: string(r)})
 	}
+	if v.resultCount() == 0 {
+		t.Fatal("expected at least one content match")
+	}
 
-	w := newFakeWindow(80, 10)
-	v.Render(w)
+	segs := v.rowSegments(0)
+	prefix := -1
+	for i, s := range segs {
+		if strings.Contains(s.Text, ":2: ") {
+			prefix = i
+		}
+	}
+	if prefix < 0 {
+		t.Fatalf("expected a path:line: prefix segment, got %+v", segs)
+	}
+	if segs[prefix].Style.Attr&layout.AttrDim == 0 {
+		t.Errorf("expected the path:line: prefix to be dim-styled, got %+v", segs[prefix].Style)
+	}
+}
 
-	if w.styles[1].Attr&layout.AttrDim == 0 {
-		t.Errorf("expected the path:line: prefix to be dim-styled, got %+v", w.styles[1])
+func TestViewContentModeShowsGitStatusMarker(t *testing.T) {
+	dir := newContentSearchRepo(t)
+	v := New(dir)
+	v.HandleKey(layout.Key{Named: layout.KeyTab}) // content mode
+	for _, r := range "needle" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	if v.resultCount() == 0 {
+		t.Fatal("expected at least one content match")
+	}
+	v.ApplyStatus(map[string]gitstatus.Status{
+		v.contentMatches[0].path: gitstatus.Modified,
+	})
+
+	segs := v.rowSegments(0)
+	if len(segs) == 0 {
+		t.Fatal("expected segments for the first content row")
+	}
+	if !strings.HasPrefix(segs[0].Text, "M") {
+		t.Errorf("expected the row to lead with the \"M\" marker, got %q", segs[0].Text)
+	}
+	if segs[0].Style.Foreground != layout.ColorYellow {
+		t.Errorf("expected the marker styled yellow (modified), got %+v", segs[0].Style)
 	}
 }
 

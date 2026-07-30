@@ -11,6 +11,10 @@ all: build
 build:
 	$(GO) build -o $(BINARY) cmd/kiwi/main.go
 
+## installl: install the binary
+install:
+	$(GO) install ./cmd/kiwi
+
 ## run: run the server (loads env from .env)
 run:
 	$(GO) run cmd/kiwi/main.go
@@ -43,4 +47,3 @@ clean:
 ## lint-install: install golangci-lint to GOPATH/bin
 lint-install:
 	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $$($(GO) env GOPATH)/bin v1.64.8
-
