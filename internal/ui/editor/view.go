@@ -23,6 +23,14 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "[", Action: "prev_tab"},
 	{Trigger: "x", Action: "delete_char_forward"},
 	{Trigger: "X", Action: "delete_char_backward"},
+	// "d" and "y" are vim's doubled linewise operators, "dd" and "yy": the
+	// first press only arms the action, the second runs it (see
+	// pendingAction). Bound as one trigger each rather than as a literal
+	// two-key sequence because a trigger is a single key by construction —
+	// see config.Normalize.
+	{Trigger: "d", Action: "delete_line"},
+	{Trigger: "y", Action: "yank_line"},
+	{Trigger: "p", Action: "put_after"},
 	{Trigger: "Down", Action: "move_down"},
 	{Trigger: "j", Action: "move_down"},
 	{Trigger: "Up", Action: "move_up"},
@@ -34,7 +42,9 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "PageDown", Action: "page_down"},
 	{Trigger: "PageUp", Action: "page_up"},
 	{Trigger: "Home", Action: "line_start"},
+	{Trigger: "0", Action: "line_start"},
 	{Trigger: "End", Action: "line_end"},
+	{Trigger: "$", Action: "line_end"},
 	{Trigger: "g", Action: "first_line"},
 	{Trigger: "G", Action: "last_line"},
 	{Trigger: "i", Action: "insert_mode"},
@@ -192,6 +202,18 @@ type View struct {
 	// vim's, not per-tab.
 	commandBuf string
 
+	// pendingAction is the doubled operator waiting for its second press —
+	// "delete_line" after the first "d" of a "dd", "yank_line" after the
+	// first "y" of a "yy" — and "" the rest of the time. Deliberately holds
+	// the ACTION, not the key: what makes "dd" fire is the same action
+	// arriving twice in a row, so a user who rebinds delete_line to some
+	// other key gets the doubling on that key instead, for free. Any other
+	// key clears it, so a mistyped "dx" deletes nothing (see HandleKey).
+	//
+	// This is not vim's full operator-pending state: there are no motions to
+	// combine ("dw", "d$") and no counts, only the doubled form.
+	pendingAction string
+
 	// OnAllTabsClosed, if set, is called whenever CloseTab/CloseAllTabs
 	// (directly, or via the ":q"/":qa" family — see closeActiveTab/
 	// closeAllTabsCmd) leaves this pane with zero open tabs. Set by
@@ -265,6 +287,11 @@ type View struct {
 	// with behaves exactly as if buffers were never shared at all.
 	store *BufferStore
 
+	// register is the "dd"/"yy"/"p" clipboard — see Register and
+	// SetRegister. Defaults to a private one, on the same rationale as
+	// store above.
+	register *Register
+
 	// lsp, when non-nil, provides real semantic features (diagnostics, go
 	// to definition) via language servers — see internal/lsp. Optional by
 	// design: nil (the default) means every LSP-backed feature falls back
@@ -292,7 +319,7 @@ type languageServer interface {
 // NewView creates an empty editor pane with no tabs open; call Open to
 // load a file into it.
 func NewView() *View {
-	return &View{tabWidth: 4, keymap: DefaultKeybinds.Resolve(nil), store: NewBufferStore()}
+	return &View{tabWidth: 4, keymap: DefaultKeybinds.Resolve(nil), store: NewBufferStore(), register: NewRegister()}
 }
 
 // SetBufferStore replaces this pane's BufferStore, so it shares loaded
@@ -302,6 +329,18 @@ func NewView() *View {
 // active when it was opened, and doesn't retroactively move.
 func (v *View) SetBufferStore(s *BufferStore) {
 	v.store = s
+}
+
+// SetRegister replaces this pane's yank/delete register, so "dd"/"yy" in one
+// pane and "p" in another share one clipboard — vim's own registers-are-
+// global behavior. Every pane should be given the SAME register (see
+// cmd/kiwi/main.go); a nil argument is ignored rather than leaving the pane
+// with no register to put from.
+func (v *View) SetRegister(r *Register) {
+	if r == nil {
+		return
+	}
+	v.register = r
 }
 
 // SetLSPManager gives this pane a language-server manager, enabling
@@ -922,6 +961,12 @@ func (v *View) HandleKey(k layout.Key) bool {
 	}
 
 	action, ok := v.keymap[k.String()]
+	// Every Normal-mode key resolves the armed operator ("d" of a "dd") and
+	// disarms it in the same breath, so anything other than an immediate
+	// second press of the same operator aborts it — including a key bound to
+	// nothing at all, which returns below.
+	pending := v.pendingAction
+	v.pendingAction = ""
 	if !ok {
 		return false
 	}
@@ -982,6 +1027,21 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.deleteCharForward(t)
 	case "delete_char_backward":
 		v.deleteCharBackward(t)
+	case "delete_line", "yank_line":
+		// The doubled operators: a first press only arms, and consumes the
+		// key without touching the buffer or the cursor (hence the early
+		// return, skipping the clamp below).
+		if pending != action {
+			v.pendingAction = action
+			return true
+		}
+		if action == "delete_line" {
+			v.deleteLine(t)
+		} else {
+			v.yankLine(t)
+		}
+	case "put_after":
+		v.putAfter(t)
 	case "go_to_parent":
 		v.goToParent(t)
 	case "go_to_definition":
@@ -1175,6 +1235,9 @@ func (v *View) commitCommand() {
 		v.closeAllTabsCmd(true)
 	case "w":
 		v.saveActive()
+	case "x":
+		v.saveActive()
+		v.closeActiveTab(false)
 	case "wq":
 		v.saveActive()
 		v.closeActiveTab(false) // if the save failed, Dirty is still true and this correctly still refuses
@@ -1282,6 +1345,10 @@ func (v *View) exitInsertMode() {
 // buffer would scramble whose pending snapshot ends up committed to its
 // undo history; this guarantees at most one pane ever is.
 func (v *View) ExitEditingModes() {
+	// A half-typed "dd" is discarded for the same reason: the pane is losing
+	// focus, so its next key would otherwise complete an operator armed
+	// arbitrarily long ago.
+	v.pendingAction = ""
 	switch v.mode {
 	case modeInsert:
 		v.exitInsertMode()

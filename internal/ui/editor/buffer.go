@@ -146,6 +146,52 @@ func (b *Buffer) DeleteBackward(ln, col int) (newLn, newCol int) {
 	return ln - 1, joinCol
 }
 
+// DeleteLine removes line ln entirely — the linewise counterpart to
+// DeleteBackward's single rune, used by vim's "dd". It returns the removed
+// line's text, so the caller can put it in a register. Deleting the only
+// line leaves the buffer holding one empty line rather than none, since
+// every other method here (and Load itself) relies on Lines never being
+// empty. Out-of-range ln is a no-op returning "".
+func (b *Buffer) DeleteLine(ln int) string {
+	if ln < 0 || ln >= len(b.Lines) {
+		return ""
+	}
+	removed := b.Lines[ln]
+	if len(b.Lines) == 1 {
+		b.Lines[0] = ""
+	} else {
+		b.Lines = append(b.Lines[:ln], b.Lines[ln+1:]...)
+	}
+	b.resync()
+	return removed
+}
+
+// InsertLines splices lines into the buffer so that the first of them lands
+// at index at, shifting whatever was there down — used by vim's linewise
+// "p". at is clamped into [0, len(Lines)], so at == len(Lines) appends.
+// Rebuilt as a fresh slice for the same reason SplitLine is: the
+// insert-in-the-middle bookkeeping stays obviously correct, and the
+// caller's slice can't end up aliased by the buffer.
+func (b *Buffer) InsertLines(at int, lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	if at < 0 {
+		at = 0
+	}
+	if at > len(b.Lines) {
+		at = len(b.Lines)
+	}
+
+	merged := make([]string, 0, len(b.Lines)+len(lines))
+	merged = append(merged, b.Lines[:at]...)
+	merged = append(merged, lines...)
+	merged = append(merged, b.Lines[at:]...)
+	b.Lines = merged
+
+	b.resync()
+}
+
 // resync re-derives Source from Lines — the same join Load's initial split
 // is the inverse of — and recomputes Dirty by comparing Lines against
 // saved, so tree-sitter re-highlighting and Save both see the current

@@ -74,7 +74,7 @@ func TestRealGoplsPublishesDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newClient: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	source, err := os.ReadFile(bad)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestRealGoplsCompletesStructMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newClient: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if err := c.didOpen(mainPath, "go", main, 1); err != nil {
 		t.Fatalf("didOpen: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestRealGoplsDefinitionFindsCrossFileTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newClient: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// Open both files so gopls has the package loaded.
 	for _, p := range []string{mainPath, helperPath} {

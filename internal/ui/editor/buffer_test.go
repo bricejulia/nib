@@ -134,6 +134,93 @@ func TestDeleteBackwardAtBufferStartIsNoop(t *testing.T) {
 	}
 }
 
+func TestDeleteLineRemovesItAndReturnsItsText(t *testing.T) {
+	b := &Buffer{Lines: []string{"one", "two", "three"}}
+	got := b.DeleteLine(1)
+	if got != "two" {
+		t.Fatalf("DeleteLine returned %q, want %q", got, "two")
+	}
+	if strings.Join(b.Lines, "|") != "one|three" {
+		t.Fatalf("Lines = %+v, want [one three]", b.Lines)
+	}
+	if string(b.Source) != "one\nthree" {
+		t.Fatalf("Source = %q, want %q", b.Source, "one\nthree")
+	}
+	if !b.Dirty {
+		t.Fatal("expected Dirty after DeleteLine")
+	}
+}
+
+func TestDeleteLineOnTheOnlyLineLeavesItEmptyRatherThanNoLines(t *testing.T) {
+	b := &Buffer{Lines: []string{"only"}}
+	if got := b.DeleteLine(0); got != "only" {
+		t.Fatalf("DeleteLine returned %q, want %q", got, "only")
+	}
+	if len(b.Lines) != 1 || b.Lines[0] != "" {
+		t.Fatalf("Lines = %+v, want exactly one empty line", b.Lines)
+	}
+}
+
+func TestDeleteLineOutOfRangeIsNoop(t *testing.T) {
+	b := &Buffer{Lines: []string{"one"}}
+	if got := b.DeleteLine(5); got != "" {
+		t.Fatalf("DeleteLine returned %q, want \"\"", got)
+	}
+	if got := b.DeleteLine(-1); got != "" {
+		t.Fatalf("DeleteLine returned %q, want \"\"", got)
+	}
+	if len(b.Lines) != 1 || b.Lines[0] != "one" {
+		t.Fatalf("Lines = %+v, want unchanged", b.Lines)
+	}
+	if b.Dirty {
+		t.Fatal("expected Dirty to stay false for an out-of-range delete")
+	}
+}
+
+func TestInsertLinesSplicesAtIndexAndAppendsAtEnd(t *testing.T) {
+	b := &Buffer{Lines: []string{"one", "four"}}
+	b.InsertLines(1, []string{"two", "three"})
+	if got := strings.Join(b.Lines, "|"); got != "one|two|three|four" {
+		t.Fatalf("Lines = %q, want %q", got, "one|two|three|four")
+	}
+	if string(b.Source) != "one\ntwo\nthree\nfour" {
+		t.Fatalf("Source = %q", b.Source)
+	}
+
+	b.InsertLines(len(b.Lines), []string{"five"})
+	if got := b.Lines[len(b.Lines)-1]; got != "five" {
+		t.Fatalf("last line = %q, want %q", got, "five")
+	}
+}
+
+func TestInsertLinesClampsIndexAndIgnoresNothingToInsert(t *testing.T) {
+	b := &Buffer{Lines: []string{"one"}}
+	b.InsertLines(99, []string{"beyond"})
+	if got := strings.Join(b.Lines, "|"); got != "one|beyond" {
+		t.Fatalf("Lines = %q, want the insert clamped to the end", got)
+	}
+	b.InsertLines(-5, []string{"before"})
+	if got := strings.Join(b.Lines, "|"); got != "before|one|beyond" {
+		t.Fatalf("Lines = %q, want the insert clamped to the start", got)
+	}
+
+	b = &Buffer{Lines: []string{"one"}}
+	b.InsertLines(0, nil)
+	if len(b.Lines) != 1 || b.Dirty {
+		t.Fatalf("Lines = %+v, Dirty = %v; want an empty insert to change nothing", b.Lines, b.Dirty)
+	}
+}
+
+func TestInsertLinesDoesNotAliasTheCallersSlice(t *testing.T) {
+	b := &Buffer{Lines: []string{"one"}}
+	src := []string{"two"}
+	b.InsertLines(1, src)
+	b.InsertText(1, 0, "X") // edit the inserted line in the buffer
+	if src[0] != "two" {
+		t.Fatalf("caller's slice = %q, want %q — the buffer must not alias it", src[0], "two")
+	}
+}
+
 func TestSaveWritesSourceAndClearsDirty(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "out.txt")

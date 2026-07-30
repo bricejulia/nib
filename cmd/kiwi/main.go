@@ -168,6 +168,11 @@ func run() error {
 	// keeping its own independent copy. See editor.BufferStore.
 	bufferStore := editor.NewBufferStore()
 
+	// yankRegister is likewise shared by every editor pane, so a line cut
+	// with "dd" in one pane can be put with "p" in another — vim's registers
+	// are global to the session, not per-window. See editor.Register.
+	yankRegister := editor.NewRegister()
+
 	// lspManager is likewise shared by every editor pane: one language
 	// server per language for the whole session, with each open file
 	// announced to it exactly once no matter how many panes show it. Servers
@@ -181,6 +186,7 @@ func run() error {
 	editorView := editor.NewView()
 	editorView.SetKeymap(cfg.Overrides("editor"))
 	editorView.SetBufferStore(bufferStore)
+	editorView.SetRegister(yankRegister)
 	editorView.SetLSPManager(lspManager)
 	statusBarView := statusbar.New()
 	statusBarView.Hint = mainShortcutsHint
@@ -436,6 +442,7 @@ func run() error {
 		newView := editor.NewView()
 		newView.SetKeymap(cfg.Overrides("editor"))
 		newView.SetBufferStore(bufferStore)
+		newView.SetRegister(yankRegister)
 		newView.SetLSPManager(lspManager)
 		wireEditorPane(newView)
 		newLeaf := &layout.LeafNode{ID: nextLeafID, View: newView}

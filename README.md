@@ -179,7 +179,7 @@ Press `?` in kiwi for this list at runtime. Every binding is rebindable
 | --- | --- |
 | `h` `j` `k` `l`, arrows | Move cursor (arrows also work in Insert mode) |
 | `PageUp` / `PageDown` | Move by a page |
-| `Home` / `End` | Start / end of line |
+| `Home` / `End`, `0` / `$` | Start / end of line |
 | `g` / `G` | First / last line |
 | `:<N>` | Go to line N |
 | `]` / `[` | Next / previous tab |
@@ -193,6 +193,8 @@ Press `?` in kiwi for this list at runtime. Every binding is rebindable
 | `o` | Open a line below and insert |
 | `Esc` | Back to Normal mode |
 | `x` / `X` | Delete the character under / before the cursor |
+| `dd` / `yy` | Delete (cut) / yank (copy) this line |
+| `p` | Put (paste) the yanked line after this one |
 | `Enter`, `Backspace`, `Tab` | Newline, delete back, insert a tab (Insert mode) |
 | `u` / `Ctrl+R` | Undo / redo |
 | `Ctrl+S` | Save |
