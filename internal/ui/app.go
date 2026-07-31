@@ -258,6 +258,38 @@ func contentRect(r layout.Rect) layout.Rect {
 	return layout.Rect{X: r.X + 1, Y: r.Y + 1, W: r.W - 2, H: r.H - 2}
 }
 
+// scrollbarActive reports whether v currently has a scrollbar reserved:
+// true only when v implements layout.Scrollable AND presently has content
+// (state.Total > 0, e.g. a file is actually open). Shared by the render
+// helpers (to decide whether to narrow the View's window by one column)
+// and handleMouse (to decide whether the rightmost column is chrome rather
+// than pane content), so the two can never disagree about whether the
+// column exists — the same discipline contentRect enforces for the border.
+func scrollbarActive(v layout.View) (layout.ScrollState, bool) {
+	sv, ok := v.(layout.Scrollable)
+	if !ok {
+		return layout.ScrollState{}, false
+	}
+	state := sv.ScrollState()
+	if state.Total <= 0 {
+		return layout.ScrollState{}, false
+	}
+	return state, true
+}
+
+// scrollbarRect returns the 1-cell-wide screen column a leaf's scrollbar
+// occupies — the rightmost column of its content rect — or ok=false if the
+// content rect is too narrow to spare one (mirroring contentRect's own
+// too-small bail-out). Pure, like contentRect, for the same reason: mouse
+// hit-testing must not depend on a frame having been rendered first.
+func scrollbarRect(r layout.Rect) (bar layout.Rect, ok bool) {
+	content := contentRect(r)
+	if content.W < 2 {
+		return layout.Rect{}, false
+	}
+	return layout.Rect{X: content.X + content.W - 1, Y: content.Y, W: 1, H: content.H}, true
+}
+
 // App owns the vaxis terminal, the window tree, and the focus manager. It
 // is the only place a vaxis event is translated into the layout package's
 // terminal-independent Key type, and the only place layout.Compute's
@@ -291,6 +323,19 @@ type App struct {
 	// out-of-bounds row and decide to auto-scroll.
 	mouseCapture    layout.LeafID
 	hasMouseCapture bool
+
+	// scrollCapture is set alongside mouseCapture/hasMouseCapture for the
+	// duration of a scrollbar click-or-drag (see beginScrollDrag), so
+	// motion and release events for that same capture are routed to the
+	// scrollbar logic in continueScrollDrag rather than to the pane's own
+	// MouseHandler or the wheel fallback — a drag started on the bar must
+	// never also feed the editor's text-selection drag underneath it.
+	// scrollDragOffset is the row, within the thumb, where the drag was
+	// grabbed (see beginScrollDrag), so subsequent motion drags the thumb
+	// from that same relative point rather than snapping its top edge to
+	// the pointer.
+	scrollCapture    bool
+	scrollDragOffset int
 
 	// lastPress tracks the previous mouse press so consecutive presses in
 	// the same cell within multiClickWindow can be reported as a double or
@@ -564,6 +609,17 @@ func (a *App) handleMouse(m vaxis.Mouse) {
 		}
 	}
 
+	// A scrollbar drag in progress claims every event for its own capture,
+	// same as a text-selection drag would, but routed to different logic
+	// (see scrollCapture's doc comment).
+	if a.scrollCapture {
+		a.continueScrollDrag(id, m, ev)
+		return
+	}
+	if ev.EventType == layout.EventPress && ev.Button == layout.MouseLeft && a.beginScrollDrag(id, m) {
+		return
+	}
+
 	switch ev.EventType {
 	case layout.EventPress:
 		if ev.Button == layout.MouseLeft {
@@ -610,6 +666,119 @@ func (a *App) handleMouse(m vaxis.Mouse) {
 			view.HandleKey(key)
 		}
 	}
+}
+
+// beginScrollDrag checks whether a left press at screen (m.Col, m.Row)
+// lands on leaf id's scrollbar column, and if so starts a drag: a press on
+// the track outside the thumb pages once, then the drag is anchored at
+// whatever offset within the thumb the press ended up at (recomputed after
+// paging, if it paged) — unifying "click to page" and "then keep dragging"
+// into one mental model, since every subsequent motion is relative to that
+// anchor. Returns false, having done nothing, if id isn't both Scrollable
+// and ScrollTarget, has no scrollbar reserved right now, or the press
+// missed the bar.
+func (a *App) beginScrollDrag(id layout.LeafID, m vaxis.Mouse) bool {
+	view := a.focus.ViewAt(id)
+	if view == nil {
+		return false
+	}
+	target, ok := view.(layout.ScrollTarget)
+	if !ok {
+		return false
+	}
+	state, hasBar := scrollbarActive(view)
+	if !hasBar {
+		return false
+	}
+	bar, ok := scrollbarRect(a.rects[id])
+	if !ok || m.Col != bar.X || m.Row < bar.Y || m.Row >= bar.Y+bar.H {
+		return false
+	}
+
+	track := state.Viewport
+	pressRow := m.Row - bar.Y - state.RowOffset
+	if pressRow < 0 || pressRow >= track {
+		// The press landed on the bar's own column but over the pane's
+		// header rows (e.g. above the editor's tab-bar row) — not part of
+		// the scrollable track at all.
+		return false
+	}
+
+	start, size, show := layout.ThumbBounds(state, track)
+	if show && (pressRow < start || pressRow >= start+size) {
+		// Track click: page once toward it, then re-derive the thumb so the
+		// drag anchor below reflects where it actually ended up.
+		if pressRow < start {
+			target.ScrollTo(state.Top - state.Viewport)
+		} else {
+			target.ScrollTo(state.Top + state.Viewport)
+		}
+		state, _ = scrollbarActive(view)
+		start, size, show = layout.ThumbBounds(state, track)
+	}
+
+	offset := 0
+	if show {
+		offset = pressRow - start
+		if offset < 0 {
+			offset = 0
+		}
+		if offset >= size {
+			offset = size - 1
+		}
+	}
+
+	// Claimed regardless of `show`: a click on the bar is chrome, not pane
+	// content, so it must not fall through to the view underneath it even
+	// when there's nothing to scroll yet.
+	a.mouseCapture, a.hasMouseCapture, a.scrollCapture = id, true, true
+	a.scrollDragOffset = offset
+	return true
+}
+
+// continueScrollDrag routes a motion/release belonging to an in-progress
+// scrollbar drag (see beginScrollDrag). Release just ends it; motion
+// recomputes the thumb's desired top row from the drag offset captured at
+// press time and asks the pane to scroll there.
+func (a *App) continueScrollDrag(id layout.LeafID, m vaxis.Mouse, ev layout.Mouse) {
+	if ev.EventType == layout.EventRelease {
+		a.mouseCapture, a.hasMouseCapture, a.scrollCapture = 0, false, false
+		return
+	}
+	if ev.EventType != layout.EventMotion {
+		return
+	}
+
+	view := a.focus.ViewAt(id)
+	if view == nil {
+		return
+	}
+	target, ok := view.(layout.ScrollTarget)
+	if !ok {
+		return
+	}
+	state, hasBar := scrollbarActive(view)
+	if !hasBar {
+		return
+	}
+	bar, ok := scrollbarRect(a.rects[id])
+	if !ok {
+		return
+	}
+
+	track := state.Viewport
+	_, size, show := layout.ThumbBounds(state, track)
+	if !show {
+		return
+	}
+	thumbStart := m.Row - bar.Y - state.RowOffset - a.scrollDragOffset
+	if maxStart := track - size; thumbStart > maxStart {
+		thumbStart = maxStart
+	}
+	if thumbStart < 0 {
+		thumbStart = 0
+	}
+	target.ScrollTo(layout.ScrollTopForThumbStart(state, track, thumbStart))
 }
 
 // isWheel reports whether b is a wheel direction rather than a real button.
@@ -698,11 +867,15 @@ func (a *App) renderOverlay(full vaxis.Window, cols, rows int) bool {
 	modalWin.Fill(vaxis.Cell{Character: vaxis.Character{Grapheme: " ", Width: 1}})
 
 	bordered := drawBorder(modalWin, true, a.overlay.Title())
-	content := modalWin
+	localX, localY, cw, ch := 0, 0, w, h
 	if bordered {
-		content = modalWin.New(1, 1, w-2, h-2)
+		localX, localY, cw, ch = 1, 1, w-2, h-2
 	}
-	a.overlay.Render(vaxisWindow{content})
+	// A scrollbar renders here too (an overlay pane can implement
+	// Scrollable), but it is never clickable: overlays receive no mouse
+	// events at all today (see the vaxis.Mouse case in Run), and wiring
+	// that up is a separate, larger change than adding the bar itself.
+	content := renderScrollable(modalWin, localX, localY, cw, ch, a.overlay)
 
 	if cp, ok := a.overlay.(layout.CursorProvider); ok {
 		if col, row, show := cp.CursorPosition(); show {
@@ -733,12 +906,13 @@ func (a *App) renderNode(n layout.Node, full vaxis.Window) bool {
 		// again here, so that the region drawn into and the region mouse
 		// coordinates are measured against can never drift apart. cr is in
 		// screen space; leafWin.New wants an offset within the leaf.
-		content := leafWin
+		cr := r
+		localX, localY := 0, 0
 		if bordered {
-			cr := contentRect(r)
-			content = leafWin.New(cr.X-r.X, cr.Y-r.Y, cr.W, cr.H)
+			cr = contentRect(r)
+			localX, localY = cr.X-r.X, cr.Y-r.Y
 		}
-		v.View.Render(vaxisWindow{content})
+		content := renderScrollable(leafWin, localX, localY, cr.W, cr.H, v.View)
 
 		// Only the focused pane's cursor is shown — there is only one
 		// hardware cursor for the whole terminal, and showing it for
@@ -762,6 +936,91 @@ func (a *App) renderNode(n layout.Node, full vaxis.Window) bool {
 		return shown
 	}
 	return false
+}
+
+// renderScrollable renders v into a content area (w by h cells, at
+// (localX, localY) within win) and, if v implements layout.Scrollable and
+// currently has content, reserves and draws its rightmost column as a
+// scrollbar instead of handing that column to v. Shared by renderNode (a
+// tree leaf) and renderOverlay (a modal), which differ only in how their
+// outer geometry is computed — both need the identical "narrow before
+// Render, draw after" sequencing so a pane's own width math (gutters,
+// popup clamps, tab-bar clipping) is never computed against a width wider
+// than what it actually got to draw into.
+//
+// Returns the window v was actually given, for the caller's own
+// CursorProvider handling — narrower than win when a scrollbar was drawn,
+// which is why this can't be split into "compute rect" then "render"
+// separately without the caller re-deriving the same width twice.
+func renderScrollable(win vaxis.Window, localX, localY, w, h int, v layout.View) vaxis.Window {
+	state, hasBar := scrollbarActive(v)
+	textWidth := w
+	if hasBar && w >= 2 {
+		textWidth = w - 1
+	} else {
+		hasBar = false
+	}
+
+	content := win.New(localX, localY, textWidth, h)
+	v.Render(vaxisWindow{content})
+
+	if hasBar {
+		drawScrollbar(win, localX+textWidth, localY, h, v, state)
+	}
+	return content
+}
+
+// scrollbarTrackStyle/scrollbarThumbStyle are the bar's bare-track and
+// thumb appearance. The thumb reuses AttrReverse, the same "this is the
+// selected/current thing" convention already used for the tab bar, the
+// file tree's selected row, and popup selections — so it reads as
+// consistent chrome rather than a new visual language.
+var (
+	scrollbarTrackStyle = vaxis.Style{Attribute: vaxis.AttrDim}
+	scrollbarThumbStyle = vaxis.Style{Attribute: vaxis.AttrReverse}
+)
+
+// drawScrollbar paints v's scrollbar into the 1-cell-wide, h-tall column at
+// (localCol, localRow) within win. state.RowOffset rows at the top of that
+// column are left untouched (e.g. the editor's tab-bar row), so the track
+// lines up with the scrollable text it represents rather than the pane's
+// header.
+//
+// A track cell defaults to a dim vertical line, is overridden by a
+// ScrollMarker's mark color where BucketMarks places one, and is finally
+// overridden by the thumb wherever the two overlap: a single column has no
+// room to show both without one obscuring the other, and losing track of
+// "what changed here" for the couple of rows currently under the thumb is
+// a smaller loss than losing "where am I" would be.
+func drawScrollbar(win vaxis.Window, localCol, localRow, h int, v layout.View, state layout.ScrollState) {
+	track := state.Viewport
+	barRows := h - state.RowOffset
+	if barRows > track {
+		barRows = track
+	}
+	if barRows <= 0 {
+		return
+	}
+
+	var marks map[int]layout.ScrollMark
+	if mk, ok := v.(layout.ScrollMarker); ok {
+		marks = layout.BucketMarks(mk.ScrollMarks(), state.Total, track)
+	}
+	start, size, showThumb := layout.ThumbBounds(state, track)
+
+	for row := 0; row < barRows; row++ {
+		style, glyph := scrollbarTrackStyle, "│"
+		if m, ok := marks[row]; ok {
+			style, glyph = translateStyle(m.Style), "┃"
+		}
+		if showThumb && row >= start && row < start+size {
+			style, glyph = scrollbarThumbStyle, "█"
+		}
+		win.SetCell(localCol, localRow+state.RowOffset+row, vaxis.Cell{
+			Character: vaxis.Character{Grapheme: glyph, Width: 1},
+			Style:     style,
+		})
+	}
 }
 
 // drawBorder draws a one-cell box around win with title in the top edge,

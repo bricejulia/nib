@@ -92,6 +92,12 @@ type View struct {
 	scrollTop int
 	hScroll   int // display columns; how far the selected row is peeked right
 
+	// lastListRows is the last Render's visible result-row count (listRows
+	// there is otherwise local to Render), kept for ScrollState/ScrollTo —
+	// the same "last Render's row count" field every other pane already
+	// stores under some name (lastRows, lastHeight).
+	lastListRows int
+
 	searching     bool
 	searchGen     int // bumped on every state change that invalidates in-flight searches
 	debounceTimer *time.Timer
@@ -320,6 +326,7 @@ func (v *View) Render(w layout.Window) {
 	if listRows < 0 {
 		listRows = 0
 	}
+	v.lastListRows = listRows
 	if listRows == 0 {
 		return
 	}
@@ -430,6 +437,47 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.refilter()
 	}
 	return true
+}
+
+// ScrollState implements layout.Scrollable.
+func (v *View) ScrollState() layout.ScrollState {
+	return layout.ScrollState{Top: v.scrollTop, Viewport: v.lastListRows, Total: v.resultCount()}
+}
+
+// ScrollTo implements layout.ScrollTarget. Like the editor and file tree,
+// scrollTop is re-derived from the cursor on every Render ("if v.cursor <
+// v.scrollTop ...", "if v.cursor >= v.scrollTop+listRows ..."), so a scroll
+// that leaves the cursor outside the new viewport has to move the cursor
+// too, or the next Render would silently undo it.
+func (v *View) ScrollTo(top int) {
+	viewport := v.lastListRows
+	total := v.resultCount()
+	maxTop := total - viewport
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	if top < 0 {
+		top = 0
+	}
+	if top > maxTop {
+		top = maxTop
+	}
+	v.scrollTop = top
+
+	if viewport > 0 {
+		if v.cursor < top {
+			v.cursor = top
+		} else if v.cursor >= top+viewport {
+			v.cursor = top + viewport - 1
+		}
+	}
+	if v.cursor < 0 {
+		v.cursor = 0
+	}
+	if v.cursor >= total {
+		v.cursor = total - 1
+	}
+	v.hScroll = 0 // peeking is per-row: start from the left on the new selection, same as moveCursor
 }
 
 func (v *View) selectCurrent() {

@@ -176,6 +176,58 @@ func (v *View) HandleKey(k layout.Key) bool {
 // everything. Changing the filter resets the scroll position to the
 // bottom — the old offset was counted against a different set of rows and
 // no longer means anything meaningful.
+// ScrollState implements layout.Scrollable. offsetFromBottom counts entries
+// hidden below the viewport (0 = pinned to newest), the opposite sense
+// from Top (which counts from the start) — this is the pure conversion
+// between the two, mirroring exactly what Render computes `start` from.
+func (v *View) ScrollState() layout.ScrollState {
+	total := len(v.visibleEntries())
+	viewport := v.lastRows
+	if viewport < 0 {
+		viewport = 0
+	}
+	maxOffset := total - viewport
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	offset := v.offsetFromBottom
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	top := total - viewport - offset
+	if top < 0 {
+		top = 0
+	}
+	return layout.ScrollState{Top: top, Viewport: viewport, Total: total}
+}
+
+// ScrollTo implements layout.ScrollTarget: the inverse conversion of
+// ScrollState, converting a desired Top back into offsetFromBottom without
+// changing what offsetFromBottom actually means anywhere else in this
+// pane.
+func (v *View) ScrollTo(top int) {
+	total := len(v.visibleEntries())
+	viewport := v.lastRows
+	if viewport < 0 {
+		viewport = 0
+	}
+	maxTop := total - viewport
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	if top < 0 {
+		top = 0
+	}
+	if top > maxTop {
+		top = maxTop
+	}
+	offset := total - viewport - top
+	if offset < 0 {
+		offset = 0
+	}
+	v.offsetFromBottom = offset
+}
+
 func (v *View) cycleMinLevel() {
 	for i, l := range minLevels {
 		if l == v.minLevel {

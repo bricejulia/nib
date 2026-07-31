@@ -528,3 +528,249 @@ func TestTranslateStyleDefaultBackgroundStaysDefault(t *testing.T) {
 		t.Errorf("Background = %v, want ColorDefault", got.Background)
 	}
 }
+
+func TestScrollbarRectIsTheRightmostContentColumn(t *testing.T) {
+	got, ok := scrollbarRect(layout.Rect{X: 10, Y: 5, W: 30, H: 20})
+	if !ok {
+		t.Fatal("expected a scrollbar rect")
+	}
+	// contentRect insets to {11, 6, 28, 18}; the bar is that rect's last column.
+	want := layout.Rect{X: 38, Y: 6, W: 1, H: 18}
+	if got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestScrollbarRectTooNarrowReturnsFalse(t *testing.T) {
+	// contentRect of a 2-wide bordered pane is 0-wide — no room for a bar.
+	if _, ok := scrollbarRect(layout.Rect{X: 0, Y: 0, W: 2, H: 20}); ok {
+		t.Error("expected no scrollbar rect when the content is too narrow")
+	}
+}
+
+func TestScrollbarActiveRequiresPositiveTotal(t *testing.T) {
+	view := &scrollStubView{state: layout.ScrollState{Viewport: 10, Total: 0}}
+	if _, ok := scrollbarActive(view); ok {
+		t.Error("expected no active scrollbar when Total is 0 (e.g. no file open)")
+	}
+	view.state.Total = 50
+	if _, ok := scrollbarActive(view); !ok {
+		t.Error("expected an active scrollbar once Total > 0")
+	}
+}
+
+func TestScrollbarActiveFalseForNonScrollableView(t *testing.T) {
+	if _, ok := scrollbarActive(stubView{}); ok {
+		t.Error("expected no active scrollbar for a View that isn't Scrollable")
+	}
+}
+
+// scrollStubView is a layout.View that also implements Scrollable and
+// ScrollTarget, for exercising beginScrollDrag/continueScrollDrag without a
+// real pane.
+type scrollStubView struct {
+	stubView
+	state      layout.ScrollState
+	scrolledTo []int // every ScrollTo call, in order
+}
+
+func (v *scrollStubView) ScrollState() layout.ScrollState { return v.state }
+func (v *scrollStubView) ScrollTo(top int) {
+	v.scrolledTo = append(v.scrolledTo, top)
+	v.state.Top = top
+}
+
+// mouseAppScroll is mouseApp, but for a scrollStubView — kept separate
+// since mouseApp's signature takes a layout.View, which would lose the
+// concrete type's ScrollTo calls need to be inspected on.
+func mouseAppScroll(view *scrollStubView, area layout.Rect) *App {
+	leaf := &layout.LeafNode{ID: 1, View: view}
+	fm := &layout.FocusManager{}
+	fm.Rebuild(leaf)
+	return &App{
+		root:  leaf,
+		focus: fm,
+		rects: map[layout.LeafID]layout.Rect{1: area},
+	}
+}
+
+func TestBeginScrollDragClickOutsideBarColumnFallsThrough(t *testing.T) {
+	view := &scrollStubView{state: layout.ScrollState{Viewport: 18, Total: 100}}
+	a := mouseAppScroll(view, layout.Rect{X: 0, Y: 0, W: 40, H: 20})
+
+	// Bar column is 38 (see TestScrollbarRectIsTheRightmostContentColumn's
+	// math); this click is well inside the text area instead.
+	a.handleMouse(vaxis.Mouse{Col: 5, Row: 2, Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress})
+
+	if a.scrollCapture {
+		t.Error("a click off the scrollbar column must not start a scroll drag")
+	}
+	if len(view.scrolledTo) != 0 {
+		t.Errorf("expected no ScrollTo calls, got %v", view.scrolledTo)
+	}
+}
+
+func TestBeginScrollDragOnThumbGrabsWithoutMoving(t *testing.T) {
+	state := layout.ScrollState{Top: 0, Viewport: 18, Total: 100}
+	view := &scrollStubView{state: state}
+	area := layout.Rect{X: 0, Y: 0, W: 40, H: 20}
+	a := mouseAppScroll(view, area)
+
+	bar, ok := scrollbarRect(area)
+	if !ok {
+		t.Fatal("expected a scrollbar rect")
+	}
+	start, _, show := layout.ThumbBounds(state, state.Viewport)
+	if !show {
+		t.Fatal("expected a thumb")
+	}
+	pressRow := bar.Y + start // the thumb's very first row
+
+	a.handleMouse(vaxis.Mouse{Col: bar.X, Row: pressRow, Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress})
+
+	if !a.scrollCapture || !a.hasMouseCapture {
+		t.Fatal("expected a scroll drag to be captured")
+	}
+	if len(view.scrolledTo) != 0 {
+		t.Errorf("clicking directly on the thumb should not page/move it, got ScrollTo calls %v", view.scrolledTo)
+	}
+	if a.scrollDragOffset != 0 {
+		t.Errorf("grabbing the thumb's first row should record offset 0, got %d", a.scrollDragOffset)
+	}
+}
+
+func TestBeginScrollDragOnTrackPagesOnce(t *testing.T) {
+	state := layout.ScrollState{Top: 0, Viewport: 18, Total: 100}
+	view := &scrollStubView{state: state}
+	area := layout.Rect{X: 0, Y: 0, W: 40, H: 20}
+	a := mouseAppScroll(view, area)
+
+	bar, _ := scrollbarRect(area)
+	start, size, _ := layout.ThumbBounds(state, state.Viewport)
+	// A press well below the thumb, still inside the track.
+	pressRow := bar.Y + start + size + 2
+
+	a.handleMouse(vaxis.Mouse{Col: bar.X, Row: pressRow, Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress})
+
+	if len(view.scrolledTo) != 1 || view.scrolledTo[0] != state.Top+state.Viewport {
+		t.Fatalf("expected one page-down ScrollTo(%d), got %v", state.Top+state.Viewport, view.scrolledTo)
+	}
+	if !a.scrollCapture {
+		t.Error("expected the drag to continue being captured after the page")
+	}
+}
+
+func TestBeginScrollDragOnTrackAboveThumbPagesUp(t *testing.T) {
+	state := layout.ScrollState{Top: 40, Viewport: 18, Total: 100}
+	view := &scrollStubView{state: state}
+	area := layout.Rect{X: 0, Y: 0, W: 40, H: 20}
+	a := mouseAppScroll(view, area)
+
+	bar, _ := scrollbarRect(area)
+	start, _, show := layout.ThumbBounds(state, state.Viewport)
+	if !show || start == 0 {
+		t.Fatal("expected a thumb not already at the top, so there's room above it to click")
+	}
+	pressRow := bar.Y // the track's very first row, above the thumb
+
+	a.handleMouse(vaxis.Mouse{Col: bar.X, Row: pressRow, Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress})
+
+	if len(view.scrolledTo) != 1 || view.scrolledTo[0] != state.Top-state.Viewport {
+		t.Fatalf("expected one page-up ScrollTo(%d), got %v", state.Top-state.Viewport, view.scrolledTo)
+	}
+}
+
+func TestScrollDragMotionScrollsProportionally(t *testing.T) {
+	// Total = 2x Viewport, so the thumb spans exactly half the track and
+	// top tracks thumbStart with a clean 2x relationship.
+	state := layout.ScrollState{Top: 0, Viewport: 10, Total: 20}
+	view := &scrollStubView{state: state}
+	area := layout.Rect{X: 0, Y: 0, W: 40, H: 12} // content rect: H=10, matching Viewport
+	a := mouseAppScroll(view, area)
+
+	bar, ok := scrollbarRect(area)
+	if !ok {
+		t.Fatal("expected a scrollbar rect")
+	}
+	start, _, show := layout.ThumbBounds(state, state.Viewport)
+	if !show {
+		t.Fatal("expected a thumb")
+	}
+
+	// Grab the thumb at its first row (offset 0), then drag it down by 2
+	// track rows.
+	a.handleMouse(vaxis.Mouse{Col: bar.X, Row: bar.Y + start, Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress})
+	if len(view.scrolledTo) != 0 {
+		t.Fatalf("grabbing the thumb should not itself scroll, got %v", view.scrolledTo)
+	}
+
+	a.handleMouse(vaxis.Mouse{Col: bar.X, Row: bar.Y + start + 2, Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion})
+
+	if len(view.scrolledTo) != 1 {
+		t.Fatalf("expected exactly one ScrollTo from the drag motion, got %v", view.scrolledTo)
+	}
+	want := layout.ScrollTopForThumbStart(state, state.Viewport, start+2)
+	if view.scrolledTo[0] != want {
+		t.Errorf("ScrollTo(%d), want %d", view.scrolledTo[0], want)
+	}
+}
+
+func TestScrollDragReleaseEndsCaptureWithoutMovingWhereReleased(t *testing.T) {
+	state := layout.ScrollState{Top: 0, Viewport: 18, Total: 100}
+	view := &scrollStubView{state: state}
+	area := layout.Rect{X: 0, Y: 0, W: 40, H: 20}
+	a := mouseAppScroll(view, area)
+
+	bar, _ := scrollbarRect(area)
+	start, _, _ := layout.ThumbBounds(state, state.Viewport)
+
+	a.handleMouse(vaxis.Mouse{Col: bar.X, Row: bar.Y + start, Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress})
+	a.handleMouse(vaxis.Mouse{Col: bar.X, Row: bar.Y + start, Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease})
+
+	if a.scrollCapture || a.hasMouseCapture {
+		t.Error("release should end both the scroll capture and the mouse capture")
+	}
+}
+
+// mouseAndScrollView implements both layout.MouseHandler and
+// Scrollable/ScrollTarget (via the embedded *scrollStubView, so its
+// pointer-receiver ScrollTo/ScrollState methods are promoted regardless of
+// how this type itself is addressed), for
+// TestScrollDragNeverReachesTheViewsMouseHandler below.
+type mouseAndScrollView struct {
+	*scrollStubView
+	got []layout.Mouse
+}
+
+func (v *mouseAndScrollView) HandleMouse(m layout.Mouse) bool {
+	v.got = append(v.got, m)
+	return true
+}
+
+// TestScrollDragNeverReachesTheViewsMouseHandler guards the core reason
+// scrollCapture exists as a separate flag from mouseCapture: a drag begun
+// on the scrollbar must never also feed the pane's own MouseHandler (e.g.
+// the editor's text-selection drag) underneath it.
+func TestScrollDragNeverReachesTheViewsMouseHandler(t *testing.T) {
+	view := &mouseAndScrollView{
+		scrollStubView: &scrollStubView{state: layout.ScrollState{Viewport: 18, Total: 100}},
+	}
+	area := layout.Rect{X: 0, Y: 0, W: 40, H: 20}
+	leaf := &layout.LeafNode{ID: 1, View: view}
+	fm := &layout.FocusManager{}
+	fm.Rebuild(leaf)
+	a := &App{root: leaf, focus: fm, rects: map[layout.LeafID]layout.Rect{1: area}}
+
+	bar, ok := scrollbarRect(area)
+	if !ok {
+		t.Fatal("expected a scrollbar rect")
+	}
+
+	a.handleMouse(vaxis.Mouse{Col: bar.X, Row: bar.Y, Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress})
+	a.handleMouse(vaxis.Mouse{Col: bar.X, Row: bar.Y + 3, Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion})
+	a.handleMouse(vaxis.Mouse{Col: bar.X, Row: bar.Y + 3, Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease})
+
+	if len(view.got) != 0 {
+		t.Errorf("expected the View's own MouseHandler to see nothing during a scrollbar drag, got %+v", view.got)
+	}
+}

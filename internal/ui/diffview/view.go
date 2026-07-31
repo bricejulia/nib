@@ -198,6 +198,28 @@ func (v *View) HandleKey(k layout.Key) bool {
 	return true
 }
 
+// ScrollState implements layout.Scrollable.
+func (v *View) ScrollState() layout.ScrollState {
+	return layout.ScrollState{Top: v.top, Viewport: v.lastRows, Total: len(v.lines)}
+}
+
+// ScrollTo implements layout.ScrollTarget. Unlike the editor/file tree,
+// v.top is never re-derived from anything else — Render only clamps it
+// (see the comment there) — so this is a direct, no-followup assignment.
+func (v *View) ScrollTo(top int) {
+	maxTop := len(v.lines) - v.lastRows
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	if top < 0 {
+		top = 0
+	}
+	if top > maxTop {
+		top = maxTop
+	}
+	v.top = top
+}
+
 func (v *View) scroll(delta int) {
 	v.top += delta
 	if v.top < 0 {

@@ -92,6 +92,28 @@ func (v *View) Render(w layout.Window) {
 	}
 }
 
+// ScrollState implements layout.Scrollable.
+func (v *View) ScrollState() layout.ScrollState {
+	return layout.ScrollState{Top: v.topLine, Viewport: v.lastRows, Total: len(v.lines)}
+}
+
+// ScrollTo implements layout.ScrollTarget — a direct, no-followup
+// assignment, exactly like diffview's: v.topLine is only ever clamped in
+// Render, never re-derived from anything else.
+func (v *View) ScrollTo(top int) {
+	maxTop := len(v.lines) - v.lastRows
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	if top < 0 {
+		top = 0
+	}
+	if top > maxTop {
+		top = maxTop
+	}
+	v.topLine = top
+}
+
 // HandleKey always reports the key consumed: a modal should never leak
 // input through to whatever is behind it.
 func (v *View) HandleKey(k layout.Key) bool {

@@ -272,6 +272,62 @@ func formatRow(r Row) string {
 	return fmt.Sprintf("%s %s%s%s", gitstyle.Marker(r.Node.Status), indent, icon, r.Node.Name)
 }
 
+// treeRows is how many rows the tree itself gets to render into — the
+// pane's full height, minus one if a create/rename/delete prompt is
+// currently occupying the bottom row. Shared by Render's own clamp and by
+// ScrollState/ScrollTo, so a scrollbar interaction while a prompt is open
+// can't disagree with what's actually on screen.
+func (v *View) treeRows() int {
+	rows := v.lastHeight
+	if v.prompt != promptNone {
+		rows--
+	}
+	if rows < 0 {
+		rows = 0
+	}
+	return rows
+}
+
+// ScrollState implements layout.Scrollable.
+func (v *View) ScrollState() layout.ScrollState {
+	return layout.ScrollState{Top: v.scrollTop, Viewport: v.treeRows(), Total: len(v.rows)}
+}
+
+// ScrollTo implements layout.ScrollTarget. Like the editor's ScrollTo, this
+// also has to move the cursor: Render re-derives scrollTop from cursor on
+// every frame ("if v.cursor < v.scrollTop ...", "if v.cursor >=
+// v.scrollTop+treeRows ..."), so a bare assignment to scrollTop would be
+// undone on the very next frame if the cursor were left outside it.
+func (v *View) ScrollTo(top int) {
+	viewport := v.treeRows()
+	maxTop := len(v.rows) - viewport
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	if top < 0 {
+		top = 0
+	}
+	if top > maxTop {
+		top = maxTop
+	}
+	v.scrollTop = top
+
+	if viewport > 0 {
+		if v.cursor < top {
+			v.cursor = top
+		} else if v.cursor >= top+viewport {
+			v.cursor = top + viewport - 1
+		}
+	}
+	if v.cursor < 0 {
+		v.cursor = 0
+	}
+	if v.cursor >= len(v.rows) {
+		v.cursor = len(v.rows) - 1
+	}
+	v.hScroll = 0 // peeking is per-row: start from the left on the new selection, same as moveCursor
+}
+
 func (v *View) HandleKey(k layout.Key) bool {
 	if k.EventType == layout.EventRelease {
 		return false
