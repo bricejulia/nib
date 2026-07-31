@@ -330,6 +330,14 @@ type View struct {
 	// mouse, not a document: a drag cannot survive a tab switch.
 	dragging bool
 
+	// dragMoved records whether the pointer actually moved while dragging,
+	// which is what tells a drag apart from the press/release pair a plain
+	// double- or triple-click also produces. Only a drag that moved copies on
+	// release; without this, every double-click would copy twice (once in
+	// mousePress, once on the release right behind it) and spawn two clipboard
+	// helper processes for one gesture. See HandleMouse.
+	dragMoved bool
+
 	// highlights, when non-nil, computes tree-sitter highlighting off the
 	// UI goroutine — see Highlighter and submitHighlight. Every pane should
 	// share ONE (like store and register), since results land on the shared

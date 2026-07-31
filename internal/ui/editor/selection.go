@@ -123,14 +123,14 @@ func lineAt(t *tab, ln int) string {
 
 // copySelection copies the selection to both the yank register (so "p" puts
 // it back inside kiwi) and, if wired, the system clipboard. Reports whether
-// there was anything to copy.
+// there was anything to copy. This is the explicit "y" gesture.
 //
-// Both, not either: OSC 52 is silently unsupported on some terminals and in
-// tmux without "set -g set-clipboard on" (see App.CopyToClipboard), so
-// relying on it alone would make "p" mysteriously fail for some users; and
-// the register alone would make the copy useless outside kiwi, which is
-// usually the point of selecting with the mouse. Marked charwise, since a
-// selection is a fragment — unlike "yy", which is whole lines.
+// Both, not either: a clipboard write can fail invisibly (see
+// internal/clipboard), so relying on it alone would make "p" mysteriously
+// fail for some users; and the register alone would make the copy useless
+// outside kiwi, which is usually the point of selecting with the mouse.
+// Marked charwise, since a selection is a fragment — unlike "yy", which is
+// whole lines.
 func (v *View) copySelection(t *tab) bool {
 	lines := v.selectionText(t)
 	if len(lines) == 0 {
@@ -141,6 +141,39 @@ func (v *View) copySelection(t *tab) bool {
 		v.CopyFunc(strings.Join(lines, "\n"))
 	}
 	return true
+}
+
+// copySelectionToClipboard copies the selection to the system clipboard and
+// DELIBERATELY LEAVES THE YANK REGISTER ALONE. It is what the mouse gestures
+// use, on the reasoning that selecting with the mouse is a clipboard gesture
+// while the register is vim state: if every drag overwrote the register, a
+// stray selection would destroy a line just put there by "yy" and about to be
+// put back with "p". Pressing "y" is how you ask for both (see
+// copySelection).
+//
+// A no-op with no CopyFunc wired, which is the case in tests and would be the
+// case for any caller that hasn't opted into OS integration.
+func (v *View) copySelectionToClipboard(t *tab) bool {
+	if v.CopyFunc == nil {
+		return false
+	}
+	text := v.selectionString(t)
+	if text == "" {
+		return false
+	}
+	v.CopyFunc(text)
+	return true
+}
+
+// selectionString is the selection as a single string, "" when empty — the
+// form the clipboard takes, as opposed to the per-line slice the register
+// holds.
+func (v *View) selectionString(t *tab) string {
+	lines := v.selectionText(t)
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
 }
 
 // HandleMouse implements layout.MouseHandler: click to place the cursor,
@@ -183,14 +216,25 @@ func (v *View) HandleMouse(m layout.Mouse) bool {
 			return false
 		}
 		v.extendSelectionTo(t, m)
+		v.dragMoved = true
 		return true
 	case layout.EventRelease:
 		if !v.dragging {
 			return false
 		}
-		// The selection survives the release — that's what makes it
-		// available to copy afterwards.
+		// The selection survives the release — that's what leaves it on
+		// screen, and available to "y", after the button comes back up.
 		v.dragging = false
+		// Finishing a drag copies, the way selecting in a terminal does.
+		// Guarded on the pointer having actually MOVED: a double- or
+		// triple-click is a press (which already copied, in mousePress)
+		// immediately followed by a release, so without this every one of
+		// them would copy twice and spawn two clipboard helpers for one
+		// gesture.
+		if v.dragMoved {
+			v.copySelectionToClipboard(t)
+			v.dragMoved = false
+		}
 		return true
 	}
 	return false
@@ -217,16 +261,25 @@ func (v *View) mousePress(t *tab, m layout.Mouse) bool {
 	switch m.Clicks {
 	case 2:
 		v.selectWordAt(t)
+		// A double- or triple-click is a COMPLETE gesture: there is nothing
+		// further to wait for, so it copies here rather than on the release
+		// that follows. (The release still arrives; dragMoved is what stops it
+		// copying a second time.)
+		v.copySelectionToClipboard(t)
 	case 3:
 		v.selectLineAt(t)
+		v.copySelectionToClipboard(t)
 	default:
 		// A bare click just repositions the cursor and drops any previous
 		// selection; the anchor is planted so that a drag out of this press
-		// has something to extend from.
+		// has something to extend from. Nothing is copied — there is no
+		// selection, and clearing the clipboard because someone clicked would
+		// be actively unhelpful.
 		t.selAnchor = position{ln: t.cursorLn, col: t.cursorCol}
 		t.hasSel = false
 	}
 	v.dragging = true
+	v.dragMoved = false
 	return true
 }
 

@@ -828,3 +828,205 @@ func TestSelectMultiLineStringLiteralAcrossRows(t *testing.T) {
 		}
 	}
 }
+
+// copyRecorder wires a View's CopyFunc to a slice, so a test can assert not
+// only WHAT was copied but HOW MANY TIMES — the double-copy that the
+// dragMoved guard exists to prevent is invisible to a test that only checks
+// the last value.
+func copyRecorder(v *View) *[]string {
+	var got []string
+	v.CopyFunc = func(s string) { got = append(got, s) }
+	return &got
+}
+
+func TestDoubleClickCopiesWithNoKeypress(t *testing.T) {
+	// The original bug report: selecting a word by double-clicking put
+	// nothing on the clipboard, because only "y" ever copied.
+	v, tb := selectionView("alpha beta gamma")
+	got := copyRecorder(v)
+	g := gutterFor(tb)
+
+	v.HandleMouse(press(g+7, 1, 2)) // inside "beta"
+	v.HandleMouse(release(g+7, 1))
+
+	if len(*got) != 1 {
+		t.Fatalf("copied %d times, want exactly 1: %q", len(*got), *got)
+	}
+	if (*got)[0] != "beta" {
+		t.Errorf("copied %q, want %q", (*got)[0], "beta")
+	}
+}
+
+func TestTripleClickCopiesWithNoKeypress(t *testing.T) {
+	v, tb := selectionView("one", "two", "three")
+	got := copyRecorder(v)
+	g := gutterFor(tb)
+
+	v.HandleMouse(press(g+1, 2, 3)) // on "two"
+	v.HandleMouse(release(g+1, 2))
+
+	if len(*got) != 1 {
+		t.Fatalf("copied %d times, want exactly 1: %q", len(*got), *got)
+	}
+	if (*got)[0] != "two\n" {
+		t.Errorf("copied %q, want %q (the line plus its break)", (*got)[0], "two\n")
+	}
+}
+
+func TestDragReleaseCopiesExactlyOnce(t *testing.T) {
+	// Motion arrives continuously during a drag; only the release copies, or
+	// a drag across a long line would spawn a clipboard helper per cell.
+	v, tb := selectionView("hello world")
+	got := copyRecorder(v)
+	g := gutterFor(tb)
+
+	v.HandleMouse(press(g, 1, 1))
+	v.HandleMouse(motion(g+2, 1))
+	v.HandleMouse(motion(g+4, 1))
+	v.HandleMouse(motion(g+5, 1))
+	if len(*got) != 0 {
+		t.Fatalf("copied %d times mid-drag, want 0: %q", len(*got), *got)
+	}
+
+	v.HandleMouse(release(g+5, 1))
+	if len(*got) != 1 {
+		t.Fatalf("copied %d times, want exactly 1: %q", len(*got), *got)
+	}
+	if (*got)[0] != "hello" {
+		t.Errorf("copied %q, want %q", (*got)[0], "hello")
+	}
+}
+
+func TestBareClickCopiesNothing(t *testing.T) {
+	// Clearing the clipboard because someone clicked to move the cursor would
+	// be actively hostile.
+	v, tb := selectionView("hello world")
+	got := copyRecorder(v)
+	g := gutterFor(tb)
+
+	v.HandleMouse(press(g+3, 1, 1))
+	v.HandleMouse(release(g+3, 1))
+
+	if len(*got) != 0 {
+		t.Errorf("copied %q, want nothing for a plain click", *got)
+	}
+}
+
+func TestShiftClickDoesNotAutoCopy(t *testing.T) {
+	// Extending a selection step by step shouldn't rewrite the clipboard at
+	// every step; "y" is how you take an extended selection.
+	v, tb := selectionView("hello world")
+	g := gutterFor(tb)
+
+	v.HandleMouse(press(g, 1, 1))
+	v.HandleMouse(motion(g+5, 1))
+	v.HandleMouse(release(g+5, 1))
+
+	// Start recording only now, so the drag's own copy isn't counted.
+	got := copyRecorder(v)
+	ext := press(g+11, 1, 1)
+	ext.Mods = layout.ModShift
+	v.HandleMouse(ext)
+	v.HandleMouse(release(g+11, 1))
+
+	if len(*got) != 0 {
+		t.Errorf("Shift+click copied %q, want nothing", *got)
+	}
+}
+
+func TestDoubleClickThenDragCopiesOncePerGesture(t *testing.T) {
+	// A double-click that turns into a drag: one copy for the double-click
+	// itself, one for the drag it became — not three.
+	v, tb := selectionView("alpha beta gamma")
+	got := copyRecorder(v)
+	g := gutterFor(tb)
+
+	v.HandleMouse(press(g+7, 1, 2))
+	v.HandleMouse(motion(g+12, 1))
+	v.HandleMouse(release(g+12, 1))
+
+	if len(*got) != 2 {
+		t.Fatalf("copied %d times, want 2 (the double-click, then the drag): %q", len(*got), *got)
+	}
+}
+
+func TestAutoCopyLeavesTheYankRegisterAlone(t *testing.T) {
+	// The decision this feature turns on: a mouse selection is a clipboard
+	// gesture, so an idle drag must not destroy what "yy" put in the register
+	// and "p" is about to put back.
+	v, tb := selectionView("first line", "second line")
+	copyRecorder(v)
+	g := gutterFor(tb)
+
+	// Yank line 0 with "yy".
+	v.HandleKey(layout.Key{Text: "y"})
+	v.HandleKey(layout.Key{Text: "y"})
+	if got := strings.Join(v.register.Lines(), "\n"); got != "first line" {
+		t.Fatalf("register = %q, want %q after yy", got, "first line")
+	}
+
+	// Now auto-copy something else entirely with the mouse.
+	v.HandleMouse(press(g, 2, 1))
+	v.HandleMouse(motion(g+6, 2))
+	v.HandleMouse(release(g+6, 2))
+
+	if got := strings.Join(v.register.Lines(), "\n"); got != "first line" {
+		t.Errorf("register = %q, want it untouched by the mouse selection", got)
+	}
+	if v.register.Charwise() {
+		t.Error("the register should still hold the linewise yy, not a charwise selection")
+	}
+}
+
+func TestExplicitYankStillFillsBothRegisterAndClipboard(t *testing.T) {
+	// Auto-copy is clipboard-only; "y" is how you ask for both.
+	v, tb := selectionView("hello world")
+	got := copyRecorder(v)
+	g := gutterFor(tb)
+
+	v.HandleMouse(press(g, 1, 1))
+	v.HandleMouse(motion(g+5, 1))
+	v.HandleMouse(release(g+5, 1))
+	v.HandleKey(layout.Key{Text: "y"})
+
+	// Two clipboard writes: the drag's auto-copy, then the explicit yank.
+	if len(*got) != 2 {
+		t.Fatalf("clipboard written %d times, want 2: %q", len(*got), *got)
+	}
+	if joined := strings.Join(v.register.Lines(), "\n"); joined != "hello" {
+		t.Errorf("register = %q, want %q", joined, "hello")
+	}
+	if !v.register.Charwise() {
+		t.Error("an explicit selection yank should be charwise")
+	}
+}
+
+func TestAutoCopyWithNoCopyFuncIsHarmless(t *testing.T) {
+	// CopyFunc is optional; a View with no OS integration must still select.
+	v, tb := selectionView("hello world")
+	g := gutterFor(tb)
+
+	v.HandleMouse(press(g, 1, 1))
+	v.HandleMouse(motion(g+5, 1))
+	v.HandleMouse(release(g+5, 1))
+
+	if !tb.hasSel {
+		t.Error("the selection should exist regardless of CopyFunc")
+	}
+}
+
+func TestDragThatSelectsNothingCopiesNothing(t *testing.T) {
+	// A press-and-release in the same cell reports motion but ends up with an
+	// empty range; copying "" would clear the clipboard.
+	v, tb := selectionView("hello world")
+	got := copyRecorder(v)
+	g := gutterFor(tb)
+
+	v.HandleMouse(press(g+3, 1, 1))
+	v.HandleMouse(motion(g+3, 1)) // moved, but to the same column
+	v.HandleMouse(release(g+3, 1))
+
+	if len(*got) != 0 {
+		t.Errorf("copied %q, want nothing for an empty range", *got)
+	}
+}

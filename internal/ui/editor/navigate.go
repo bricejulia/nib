@@ -308,10 +308,13 @@ func (v *View) goToDefinitionTreeSitter(t *tab) {
 // cmd/kiwi/main.go, which wires this to the finder overlay's
 // content-search — see finder.View.OpenWithQuery).
 func (v *View) findReferences(t *tab) {
-	if t.buf == nil || v.OnFindReferences == nil {
+	/*if t.buf == nil || v.OnFindReferences == nil {
 		return
-	}
+	}*/
 	if word := wordUnderCursor(t, v.tabWidth); word != "" {
 		v.OnFindReferences(word)
+		return
 	}
+
+	v.OnFindReferences("")
 }

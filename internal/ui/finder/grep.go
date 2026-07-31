@@ -55,7 +55,7 @@ func searchContent(root, query string) ([]contentMatch, error) {
 		matches = append(matches, contentMatch{
 			path: parts[0],
 			line: lineno,
-			text: strings.TrimSpace(parts[2]),
+			text: parts[2],
 		})
 	}
 	return matches, nil

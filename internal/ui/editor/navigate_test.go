@@ -267,7 +267,7 @@ func TestFindReferencesFiresCallbackWithWordUnderCursor(t *testing.T) {
 	}
 }
 
-func TestFindReferencesNoWordUnderCursorDoesNotFire(t *testing.T) {
+func TestFindReferencesNoWordUnderCursorDoesFire(t *testing.T) {
 	v := NewView()
 	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"a  b"}}}}
 	v.active = 0
@@ -277,7 +277,7 @@ func TestFindReferencesNoWordUnderCursorDoesNotFire(t *testing.T) {
 	v.OnFindReferences = func(string) { calls++ }
 	v.HandleKey(ctrlKey("f"))
 
-	if calls != 0 {
+	if calls != 1 {
 		t.Fatalf("expected OnFindReferences not to fire, got %d calls", calls)
 	}
 }

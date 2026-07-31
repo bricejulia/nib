@@ -32,11 +32,14 @@ servers — in a codebase small enough to read in an afternoon.
 - **Split panes** that share buffers: the same file open twice is *one*
   document, so edits, dirty state, and undo history are shared.
 - **Fuzzy file finder** and project-wide content search (`git grep`).
+- **Find & Replace in Path** — literal, project-wide search with a
+  per-occurrence checklist; replace one match or every checked one, in open
+  buffers or on disk.
 - **Git integration** — file status in the tree, per-line diff markers in the
   gutter, branch and dirty summary in the status bar.
 - **In-file search** — `/` with `n`/`N`, all matches highlighted.
 - **Mouse text selection** — click, drag, double-click a word, triple-click a
-  line; `y` copies to the system clipboard (OSC 52) and to the yank register.
+  line; finishing a selection copies it to the system clipboard automatically.
 - **Everything rebindable** through a plain-text config file.
 
 ## Getting started
@@ -169,6 +172,7 @@ Press `?` in kiwi for this list at runtime. Every binding is rebindable
 | `Ctrl+C` | Quit |
 | `Tab` / `Shift+Tab` | Focus next / previous pane |
 | `Ctrl+P` | File finder (also: double-tap `Shift`) |
+| `Ctrl+Shift+R` | Find & replace in path |
 | `Ctrl+D` | Debug log |
 | `?` | Help |
 | `Ctrl+O` | Open the config file in `$EDITOR` |
@@ -206,18 +210,30 @@ Press `?` in kiwi for this list at runtime. Every binding is rebindable
 | Gesture | Action |
 | --- | --- |
 | Click | Place the cursor |
-| Drag | Select text — drag past the pane's edge to scroll |
-| Double-click | Select the word |
-| Triple-click | Select the line, including its line break |
-| `Shift`+click | Extend the selection |
-| `y` | Copy the selection; `Esc` or any cursor movement dismisses it |
+| Drag | Select text and copy it — drag past the pane's edge to scroll |
+| Double-click | Select the word and copy it |
+| Triple-click | Select the line (including its break) and copy it |
+| `Shift`+click | Extend the selection — copy it with `y` |
+| `y` | Copy the selection to the clipboard **and** the yank register |
+| `Esc` | Dismiss the selection, as does any cursor movement |
 | Wheel | Scroll whichever pane the pointer is over, focused or not |
 
-A selection copy goes to the system clipboard **and** to kiwi's own yank
-register, so `p` puts it back regardless. The clipboard half uses OSC 52,
-which the terminal forwards to whatever machine it is running on (so it works
-over ssh) — but support is not universal: tmux needs `set -g set-clipboard on`,
-and some terminals disable it deliberately.
+**Finishing a selection copies it**, the way selecting in a terminal does — no
+keypress needed. That auto-copy writes the system clipboard only, deliberately
+leaving the yank register alone, so a stray drag can't destroy a line you just
+took with `yy` and were about to `p`. Pressing `y` is how you ask for both.
+(`Shift`+click is excluded so that building a selection up in steps doesn't
+rewrite the clipboard at each one.)
+
+Copying prefers a native helper — `pbcopy`, `wl-copy`, `xclip`, `xsel`, or
+`clip` — and falls back to the OSC 52 escape sequence when kiwi is running over
+ssh or no helper is installed. Two mechanisms because neither works everywhere:
+OSC 52 is the only one that can reach the clipboard of the machine you're
+actually sitting at, but it is widely blocked (tmux ignores it from
+applications unless `set -g set-clipboard on`, and some terminals disable it
+outright since it lets a remote program write your clipboard), while a helper
+is reliable but sets the clipboard of whatever machine kiwi runs on. `Ctrl+D`
+shows which one was chosen, and warns if a copy failed.
 
 Note that kiwi asks the terminal for mouse reporting, which means the
 terminal's *own* click-drag selection doesn't apply inside kiwi. Most
@@ -290,6 +306,32 @@ the same way the file tree colors it.
 
 `j`/`k` and arrows scroll · `PageUp`/`PageDown` by a page · `Home`/`End` jump
 to the ends · `←`/`→` peeks at a long line · `Esc` closes
+
+### Find & Replace
+
+| Key | Action |
+| --- | --- |
+| `Tab` | Switch between Find, Replace, and the results list |
+| `Up` / `Down` | Move selection (results list) |
+| `Space` | Toggle an occurrence, or a whole file's occurrences |
+| `Enter` | Replace just the occurrence under the cursor |
+| `a` | Replace every checked occurrence |
+| `Esc` | Close |
+
+A literal (non-regex), case-insensitive search across the project — the same
+`git grep` finder's own content search uses — grouped by file, with one row
+per occurrence rather than per line: a line matching twice gets two
+independently-checkable rows. Everything found starts checked; toggling a
+file's row toggles every occurrence under it, and vice versa. Replacing a
+file that's open in an editor pane goes through its buffer (one undo entry
+for the whole file, gutter and language-server diagnostics update the same
+as any other edit), left unsaved like any other edit; a file with no open
+pane is rewritten on disk directly, preserving its permissions.
+
+`Ctrl+Shift+R` needs a terminal that reports the Shift modifier on Ctrl
+combos (the kitty keyboard protocol) to be distinguished from plain `Ctrl+R`
+(redo, while an editor pane is focused) — remap it via `Ctrl+O` to any free
+`Ctrl+`letter combo if it doesn't fire on your terminal.
 
 ## Configuration
 

@@ -8,6 +8,8 @@ import (
 
 	"go.rockorager.dev/vaxis"
 
+	"github.com/bricejulia/kiwi/internal/clipboard"
+	"github.com/bricejulia/kiwi/internal/debuglog"
 	"github.com/bricejulia/kiwi/internal/layout"
 )
 
@@ -308,6 +310,10 @@ type App struct {
 	// until closed — see ShowOverlay/CloseOverlay.
 	overlay layout.View
 
+	// clip writes to the system clipboard, by a mechanism resolved once in
+	// NewApp — see internal/clipboard for why it isn't simply OSC 52.
+	clip *clipboard.Writer
+
 	onDoubleShift  func()
 	lastShiftPress time.Time
 
@@ -377,12 +383,17 @@ func NewApp(root layout.Node, global map[string]func()) (*App, error) {
 	}
 	fm := &layout.FocusManager{}
 	fm.Rebuild(root)
+	// Resolved once here rather than per copy, so a copy is a single exec and
+	// never a PATH scan. Logged because which mechanism is in play decides
+	// whether a failed copy can even be detected — see clipboard.Writer.Copy.
+	clip := clipboard.New(vx.ClipboardPush)
+	debuglog.Info("clipboard: using %s", clip.Mechanism())
 	// Assumed focused until told otherwise: a terminal that doesn't
 	// support focus reporting at all will simply never send FocusOut, and
 	// starting out unfocused would otherwise leave a non-reporting
 	// terminal's session permanently unresponsive to the double-shift
 	// detector.
-	return &App{vx: vx, root: root, focus: fm, global: global, focused: true}, nil
+	return &App{vx: vx, root: root, focus: fm, global: global, focused: true, clip: clip}, nil
 }
 
 // Close tears down the terminal. Callers must defer this after NewApp
@@ -483,20 +494,23 @@ func (a *App) SuspendAndRun(fn func() error) error {
 	return fn()
 }
 
-// CopyToClipboard puts s on the system clipboard via OSC 52, the escape
-// sequence a terminal application uses to set the clipboard of whatever
-// machine the terminal itself is running on — which is why it works over
-// ssh, where shelling out to pbcopy would set the wrong machine's clipboard.
+// CopyToClipboard puts s on the system clipboard, by whichever mechanism
+// internal/clipboard resolved at startup — a native helper (pbcopy and
+// friends) when kiwi is local, OSC 52 when it is not. See that package for
+// why neither works everywhere on its own.
 //
-// Fire-and-forget by design: OSC 52 has no reply, and support is not
-// universal (tmux needs "set -g set-clipboard on", and some terminals
-// disable it deliberately because it lets a remote program write the local
-// clipboard). There is nothing to report back, so callers must not treat a
-// copy as guaranteed — kiwi's own yank register is what makes an internal
-// put reliable regardless. Panes reach this through a func field wired in
-// cmd/kiwi/main.go, never by importing this package.
+// This used to call vaxis's ClipboardPush directly, i.e. OSC 52
+// unconditionally, and that silently did nothing under tmux's default
+// set-clipboard=external, which ignores the sequence when an application
+// sends it. A copy that fails invisibly is the worst possible outcome, hence
+// both the helper preference and the warning below.
+//
+// Panes reach this through a func field wired in cmd/kiwi/main.go, never by
+// importing this package.
 func (a *App) CopyToClipboard(s string) {
-	a.vx.ClipboardPush(s)
+	if err := a.clip.Copy(s); err != nil {
+		debuglog.Warn("clipboard: %v", err)
+	}
 }
 
 // Rebuild recomputes focus traversal order after the tree's leaves change

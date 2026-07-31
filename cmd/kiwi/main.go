@@ -35,7 +35,7 @@ const watchDebounce = 200 * time.Millisecond
 // mainShortcutsHint is the fixed reminder shown left-aligned in the status
 // bar — see internal/ui/help for the full keybinding reference (opened via
 // "?", included at the end here).
-const mainShortcutsHint = "Tab Switch pane  ·  Ctrl+P Finder  ·  Ctrl+D Debug  ·  ? Help  ·  Ctrl+C Quit  ·  Ctrl+O Config"
+const mainShortcutsHint = "Tab Switch pane  ·  Ctrl+P Finder  ·  Ctrl+Shift+R Replace  ·  Ctrl+D Debug  ·  ? Help  ·  Ctrl+C Quit  ·  Ctrl+O Config"
 
 // globalDefaultKeybinds are kiwi's built-in global keybindings,
 // overridable via the user config's "global" scope (see internal/config).
@@ -50,6 +50,17 @@ var globalDefaultKeybinds = config.Defaults{
 	// terminals reporting bare modifier keypresses (kitty keyboard
 	// protocol) — Ctrl+P is the conventional fallback everywhere else.
 	{Trigger: "Ctrl+p", Action: "open_finder"},
+	// Ctrl+Shift+<letter> is only reliably distinguishable from plain
+	// Ctrl+<letter> on terminals reporting the kitty keyboard protocol's
+	// full modifier state — on everything else this arrives indistinguishable
+	// from "Ctrl+r", which editor's own keymap already claims for redo
+	// whenever an editor pane has focus (layout.Dispatch tries the focused
+	// View before ever falling back to this global map). Trivially remapped
+	// via the user's own config (Ctrl+O) to any Ctrl+<letter> combo that
+	// isn't already claimed by editor's keymap, the same class of
+	// terminal-portability caveat Ctrl+Space and Shift+? already carry
+	// elsewhere in this file/package.
+	{Trigger: "Ctrl+Shift+r", Action: "open_replace"},
 	{Trigger: "Ctrl+d", Action: "open_debug"},
 	{Trigger: "?", Action: "open_help"},
 	// Not Ctrl+, (a common "settings" mnemonic elsewhere): outside the
@@ -110,6 +121,7 @@ var configTemplateScopes = []config.Scope{
 	{Name: "editor", Defaults: editor.DefaultKeybinds},
 	{Name: "filetree", Defaults: filetree.DefaultKeybinds},
 	{Name: "finder", Defaults: finder.DefaultKeybinds},
+	{Name: "replace", Defaults: finder.ReplaceDefaultKeybinds},
 	{Name: "debug", Defaults: debug.DefaultKeybinds},
 	{Name: "diff", Defaults: diffview.DefaultKeybinds},
 	{Name: "help", Defaults: help.DefaultKeybinds},
@@ -506,35 +518,6 @@ func run() error {
 		rebuildAndFocus(app, layout.Leaves(survivor)[0].ID)
 	}
 
-	actions := map[string]func(){
-		"quit":        app.Quit,
-		"focus_next":  app.CycleFocusNext,
-		"focus_prev":  app.CycleFocusPrev,
-		"open_finder": openFinder,
-		"open_debug":  openDebugLog,
-		"open_help":   openHelp,
-		"open_config": openConfig,
-		"split_right": func() { trySplit(layout.Horizontal) },
-		"split_down":  func() { trySplit(layout.Vertical) },
-		"close_pane":  closeFocusedPane,
-	}
-	global := map[string]func(){}
-	for trigger, action := range globalDefaultKeybinds.Resolve(cfg.Overrides("global")) {
-		fn, ok := actions[action]
-		if !ok {
-			debuglog.Warn("config: unknown global action %q bound to %q", action, trigger)
-			continue
-		}
-		global[trigger] = fn
-	}
-	app.SetGlobalKeymap(global)
-
-	treeView.OnOpen = func(path string) {
-		activeEditorPane.view.Open(path)
-		app.FocusLeaf(activeEditorPane.leaf.ID)
-		refreshLineStatusFor(path)
-	}
-
 	refreshGitStatus := func() {
 		direct, err := gitstatus.RunPorcelain(absRoot)
 		if err != nil {
@@ -552,6 +535,77 @@ func run() error {
 		refreshAllLineStatus()
 	}
 	refreshGitStatus()
+
+	// findPane answers "is absPath open in some editor pane, and which
+	// one" for editor.Apply, without that package needing to know about
+	// panes, leaves, or the window tree at all — the same fan-out idiom
+	// refreshLineStatusFor/refreshAllLineStatus already use (looping
+	// editorPanes + OpenPaths), just stopping at the first match instead
+	// of visiting every pane, since editor.View.ReplaceLines mutates the
+	// buffer's own shared Lines rather than per-tab display state (see its
+	// doc comment) and so must only ever be called once per path.
+	findPane := func(absPath string) (*editor.View, bool) {
+		for _, p := range editorPanes {
+			for _, path := range p.view.OpenPaths() {
+				if path == absPath {
+					return p.view, true
+				}
+			}
+		}
+		return nil, false
+	}
+
+	replaceView := finder.NewReplaceView(absRoot)
+	replaceView.SetKeymap(cfg.Overrides("replace"))
+	replaceView.OnClose = app.CloseOverlay
+	// Reuses the same async plumbing finderView.Post already relies on —
+	// see finder.ReplaceView.refilter.
+	replaceView.Post = app.Post
+	replaceView.OnReplaceAll = func(search, replacement string, occs []editor.Occurrence) {
+		res := editor.Apply(search, replacement, occs, findPane)
+		for path, err := range res.Failed {
+			debuglog.Error("replace in path %s: %v", path, err)
+		}
+		// Same call treeView.OnMutated already makes: a direct,
+		// kiwi-initiated file mutation updates the tree/finder status
+		// markers immediately rather than waiting on fsnotify's debounce.
+		refreshGitStatus()
+		replaceView.ShowResult(res)
+	}
+	openReplace := func() {
+		replaceView.Open()
+		app.ShowOverlay(replaceView)
+	}
+
+	actions := map[string]func(){
+		"quit":         app.Quit,
+		"focus_next":   app.CycleFocusNext,
+		"focus_prev":   app.CycleFocusPrev,
+		"open_finder":  openFinder,
+		"open_replace": openReplace,
+		"open_debug":   openDebugLog,
+		"open_help":    openHelp,
+		"open_config":  openConfig,
+		"split_right":  func() { trySplit(layout.Horizontal) },
+		"split_down":   func() { trySplit(layout.Vertical) },
+		"close_pane":   closeFocusedPane,
+	}
+	global := map[string]func(){}
+	for trigger, action := range globalDefaultKeybinds.Resolve(cfg.Overrides("global")) {
+		fn, ok := actions[action]
+		if !ok {
+			debuglog.Warn("config: unknown global action %q bound to %q", action, trigger)
+			continue
+		}
+		global[trigger] = fn
+	}
+	app.SetGlobalKeymap(global)
+
+	treeView.OnOpen = func(path string) {
+		activeEditorPane.view.Open(path)
+		app.FocusLeaf(activeEditorPane.leaf.ID)
+		refreshLineStatusFor(path)
+	}
 
 	// OnPathMoved/OnPathDeleted are how the file tree's own create/rename/
 	// delete actions reach the rest of the app. Both are called on the UI
@@ -613,6 +667,8 @@ func run() error {
 			}
 		case finder.SearchResult:
 			finderView.ApplyContentResult(e)
+		case finder.ReplaceSearchResult:
+			replaceView.ApplyReplaceSearchResult(e)
 		case lsp.DiagnosticsEvent:
 			// Fanned out to every pane, exactly like refreshLineStatusFor
 			// does for git line status: ApplyDiagnostics is a no-op in panes
