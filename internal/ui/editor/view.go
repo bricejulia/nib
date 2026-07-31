@@ -166,6 +166,23 @@ type tab struct {
 	// path has no git repo) means "draw no markers", same as an empty map.
 	lineStatus map[int]gitstatus.LineStatus
 
+	// selAnchor is the fixed end of the current selection — the end that
+	// stays put while dragging. The MOVING end is cursorLn/cursorCol itself,
+	// deliberately: reusing the cursor as one end of the selection is what
+	// makes auto-scroll-while-dragging fall out for free, since renderBody
+	// already derives topLine/leftCol from the cursor (and it means every
+	// existing clamp keeps applying to the selection too, with no second
+	// copy of that logic).
+	//
+	// Only meaningful while hasSel is true. Per-tab rather than on View,
+	// like cursorLn/cursorCol and for the same reason: switching tabs should
+	// restore what was selected, and a selection means nothing in another
+	// file. Per-tab rather than on Buffer for the mirror-image reason
+	// insertSnapshot is — it's view state, not document state, so two split
+	// panes on one buffer select independently.
+	selAnchor position
+	hasSel    bool
+
 	// diagnostics is this tab's language-server problems, keyed by the
 	// 0-based line each one starts on — set by ApplyDiagnostics, exactly
 	// as lineStatus is set by ApplyLineStatus (the View never talks to a
@@ -174,6 +191,13 @@ type tab struct {
 	// needs severity today, but the message is what a near-future "show
 	// the problem under the cursor" step needs.
 	diagnostics map[int][]lsp.Diagnostic
+
+	// detached is set when this tab's file was deleted from disk while the
+	// buffer still had unsaved changes, so the tab was kept rather than
+	// closed (see CloseTabsUnder). Purely a display/reporting flag — the
+	// buffer works normally, ":w" recreates the file and clears it (see
+	// saveActive), ":q!" throws it away.
+	detached bool
 }
 
 // View is the editor pane: zero or more open tabs, each with its own
@@ -291,6 +315,20 @@ type View struct {
 	// SetRegister. Defaults to a private one, on the same rationale as
 	// store above.
 	register *Register
+
+	// CopyFunc, when set, puts text on the system clipboard — wired to
+	// App.CopyToClipboard in cmd/kiwi/main.go. A func field rather than an
+	// import for the same reason BlameFunc and HunkFunc are: this package
+	// stays free of the terminal and of the OS, and is testable without
+	// either. nil (the default) means a copy still fills the yank register,
+	// so "p" works and only the crossing-out-of-kiwi half is missing.
+	CopyFunc func(string)
+
+	// dragging is true between a left-button press in the text area and its
+	// release — the window during which pointer motion extends the
+	// selection. Pane-wide rather than per-tab because it describes the
+	// mouse, not a document: a drag cannot survive a tab switch.
+	dragging bool
 
 	// lsp, when non-nil, provides real semantic features (diagnostics, go
 	// to definition) via language servers — see internal/lsp. Optional by
@@ -526,6 +564,185 @@ func (v *View) CloseAllTabs() {
 	v.notifyIfEmpty()
 }
 
+// Repath updates every tab whose file moved from oldPath to newPath —
+// either that file itself, or, when oldPath is a directory, every open file
+// underneath it, since one folder rename relocates them all at once.
+//
+// It fans out the consequences a stale tab.path would otherwise cause: the
+// shared BufferStore is re-keyed (once, however many panes share the buffer
+// — see BufferStore.Rekey) so Buffer.Path follows and ":w" stops recreating
+// the file at its old location; the language server is told the old URI
+// closed and the new one opened, which also re-picks the server when the new
+// extension means a different language; and the jump stack's recorded paths
+// are rewritten so Ctrl+b doesn't try to reopen a path that no longer
+// exists. Returns how many tabs it touched.
+//
+// The language-server calls live here rather than in the caller for the same
+// reason Open and releaseTab own theirs: this View is what holds the
+// Manager, and a repath is exactly an Open/Close pair. Manager's per-tab
+// reference counting makes the fan-out safe — two panes each doing
+// Close-then-Open leaves both counts exactly where they started.
+func (v *View) Repath(oldPath, newPath string) int {
+	if oldPath == newPath {
+		return 0
+	}
+	n := 0
+	for _, t := range v.tabs {
+		np, ok := movedPath(oldPath, newPath, t.path)
+		if !ok {
+			continue
+		}
+
+		// A tab already sitting on np means the move landed on a file this
+		// pane has open. Two tabs with the same path would break Open's
+		// de-dupe and tabDisplayNames' distinct-paths assumption, so the
+		// stale one goes — unless it has unsaved work, in which case nothing
+		// is destroyed and this tab is left as it was. The file tree refuses
+		// a move onto an existing path, so this is defensive only.
+		if other := v.tabForPath(np); other != nil && other != t {
+			if other.buf != nil && other.buf.Dirty {
+				debuglog.Warn("repath %s -> %s: %s is open with unsaved changes, tab left alone", t.path, np, np)
+				continue
+			}
+			v.removeTabs(map[*tab]bool{other: true})
+		}
+
+		if t.buf != nil {
+			// The store is the gate: if it can't represent the move, the tab
+			// must keep the path it's filed under, or its Release would miss
+			// and leak the entry.
+			if !v.store.Rekey(t.buf, t.path, np) {
+				debuglog.Error("repath %s -> %s: buffer store refused (destination busy)", t.path, np)
+				continue
+			}
+			if v.lsp != nil {
+				v.lsp.Close(t.path)
+				if lang := languageFor(np); lang != "" {
+					// The buffer's current text, unsaved edits included: that
+					// is what the server already believes is open.
+					v.lsp.Open(np, lang, string(t.buf.Source))
+				}
+			}
+			if languageFor(t.path) != languageFor(np) {
+				t.diagnostics = nil // the old language's problems are meaningless now
+			}
+		}
+
+		t.path = np
+		t.detached = false
+		for i := range v.jumpStack {
+			if jp, ok := movedPath(oldPath, newPath, v.jumpStack[i].path); ok {
+				v.jumpStack[i].path = jp
+			}
+		}
+		v.refreshSyntaxDiagnostics(t)
+		n++
+	}
+	return n
+}
+
+// CloseTabsUnder reacts to path having been deleted from disk: it closes
+// every tab for path itself or, path being a directory, for any open file
+// underneath it — releasing each one's shared Buffer and language-server
+// registration exactly as ":q" would.
+//
+// A tab with unsaved changes is the exception: it stays open, flagged
+// detached, and its path is returned. Deleting a file must never be a way to
+// silently discard edits — this package refuses ":q" on a dirty buffer and
+// makes you type ":q!" (see closeActiveTab) — and since the deletion has
+// already happened by the time this runs, refusing outright isn't on the
+// table. A detached tab is what vim does when a file vanishes underneath it:
+// the buffer is still yours, ":w" recreates the file, ":q!" throws it away.
+// Its git gutter is cleared, there being no file left to diff against, and
+// its language-server registration is deliberately KEPT: an open document
+// with unsaved client-side content is precisely what LSP's didOpen means.
+func (v *View) CloseTabsUnder(path string) (detached []string) {
+	doomed := map[*tab]bool{}
+	for _, t := range v.tabs {
+		if !pathUnder(path, t.path) {
+			continue
+		}
+		if t.buf != nil && t.buf.Dirty {
+			t.detached = true
+			t.lineStatus = nil
+			detached = append(detached, t.path)
+			continue
+		}
+		doomed[t] = true
+	}
+	if len(doomed) > 0 {
+		v.removeTabs(doomed)
+	}
+	// Entries pointing into the deleted subtree can no longer be jumped
+	// back to, so drop them rather than reopening an error tab later.
+	kept := v.jumpStack[:0]
+	for _, j := range v.jumpStack {
+		if !pathUnder(path, j.path) {
+			kept = append(kept, j)
+		}
+	}
+	v.jumpStack = kept
+	return detached
+}
+
+// tabForPath returns the open tab for path, or nil.
+func (v *View) tabForPath(path string) *tab {
+	for _, t := range v.tabs {
+		if t.path == path {
+			return t
+		}
+	}
+	return nil
+}
+
+// removeTabs drops every tab in doomed (by identity), keeping the active
+// selection on the same tab when it survived and falling back to a clamped
+// index when it didn't, releases each removed tab's Buffer and
+// language-server registration, and fires OnAllTabsClosed if the pane is
+// left empty.
+//
+// CloseTab's index arithmetic deliberately isn't reused: it removes exactly
+// one tab at a known index, which doesn't generalize to removing a set.
+func (v *View) removeTabs(doomed map[*tab]bool) {
+	if len(doomed) == 0 || len(v.tabs) == 0 {
+		return
+	}
+	wasActive := v.tabs[v.active]
+	kept := make([]*tab, 0, len(v.tabs))
+	removed := make([]*tab, 0, len(doomed))
+	for _, t := range v.tabs {
+		if doomed[t] {
+			removed = append(removed, t)
+			continue
+		}
+		kept = append(kept, t)
+	}
+
+	prevActive := v.active
+	v.tabs = kept
+	v.active = 0
+	if !doomed[wasActive] {
+		for i, t := range v.tabs {
+			if t == wasActive {
+				v.active = i
+				break
+			}
+		}
+	} else if prevActive >= len(v.tabs) {
+		v.active = len(v.tabs) - 1
+	} else {
+		v.active = prevActive
+	}
+	if v.active < 0 {
+		v.active = 0
+	}
+
+	for _, t := range removed {
+		v.releaseTab(t)
+	}
+	v.notifyIfEmpty()
+}
+
 // releaseTab releases t's Buffer back to the store and its language-server
 // registration (if it successfully loaded one — a failed load never
 // registered either), decrementing both reference counts; see
@@ -567,6 +784,14 @@ func (v *View) StatusText() string {
 	prefix := ""
 	if v.mode == modeInsert {
 		prefix = "-- INSERT -- "
+	}
+	// The file this tab came from was deleted while the buffer still had
+	// unsaved changes (see CloseTabsUnder). Said here because the in-pane
+	// "error:" line only ever shows for a tab with NO buffer, so this status
+	// prefix and the tab bar's own marker are the only places the user can
+	// find out without opening the debug log.
+	if t.detached {
+		prefix += "-- DELETED -- "
 	}
 	return fmt.Sprintf("%sLn %d, Col %d", prefix, t.cursorLn+1, t.cursorCol+1)
 }
@@ -735,6 +960,12 @@ func tabDisplayNames(tabs []*tab) []string {
 		if t.buf != nil && t.buf.Dirty {
 			names[i] += " *" // unsaved-edits marker, appended after disambiguation
 		}
+		if t.detached {
+			// Its file was deleted from under it (see CloseTabsUnder) — so
+			// an inactive tab in that state is still visible, not only the
+			// active one via StatusText.
+			names[i] += " ✗"
+		}
 	}
 	return names
 }
@@ -817,6 +1048,12 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 		t.leftCol = 0
 	}
 
+	// The selection is read off the tab rather than passed in, like the
+	// cursor and scroll offsets this function already reads from it — and
+	// unlike searchMatches, which belongs to the pane because the search
+	// prompt does.
+	selStart, selEnd, hasSel := t.selectionSpan()
+
 	for i := 0; i < rows; i++ {
 		ln := t.topLine + i
 		if ln >= len(t.buf.Lines) {
@@ -834,8 +1071,27 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 		if ranges := matchRangesOnLine(searchMatches, ln); len(ranges) > 0 {
 			raw = applyHighlightRanges(raw, ranges, searchHighlightStyle)
 		}
+		// The selection goes on after the search highlight, and at the same
+		// raw stage, so a match inside a selection shows both.
+		selToEOL := false
+		if hasSel {
+			var selRanges []runeRange
+			selRanges, selToEOL = selectionRangesOnLine(selStart, selEnd, t.buf.Lines[ln], ln, tabWidth)
+			if len(selRanges) > 0 {
+				raw = applyHighlightRanges(raw, selRanges, selectionStyle)
+			}
+		}
 		expandedSegs := textwidth.ExpandTabsSegments(raw, tabWidth)
 		visible := textwidth.SliceSegmentsByDisplayColumn(expandedSegs, t.leftCol, contentWidth)
+		if selToEOL {
+			// A line whose selection runs past its last rune has the line
+			// break selected too, so the highlight continues to the right
+			// edge. This is also the only thing that renders a selected
+			// BLANK line: an empty line produces no segments at all, and
+			// applyHighlightRanges has nothing to split — so without this
+			// pad, a selection spanning a blank line would appear to skip it.
+			visible = padSelection(visible, contentWidth)
+		}
 
 		worst := worstSeverity(t.diagnostics[ln])
 		diagSeg := layout.Segment{
@@ -852,6 +1108,24 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 		}
 		w.Println(rowOffset+i, append([]layout.Segment{diagSeg, diffSeg, gutterSeg}, visible...)...)
 	}
+}
+
+// padSelection extends already-clipped segments with selection-styled
+// spaces out to width, so a selected line break reads as "the rest of this
+// row is selected" rather than stopping ragged at the end of the text.
+// A no-op once the row is already full.
+func padSelection(segs []layout.Segment, width int) []layout.Segment {
+	used := 0
+	for _, s := range segs {
+		used += textwidth.DisplayWidth(s.Text)
+	}
+	if used >= width {
+		return segs
+	}
+	return append(segs, layout.Segment{
+		Text:  strings.Repeat(" ", width-used),
+		Style: selectionStyle,
+	})
 }
 
 // gutterWidthFor is the width of everything left of a line's text: a
@@ -1019,6 +1293,16 @@ func (v *View) HandleKey(k layout.Key) bool {
 	}
 
 	switch action {
+	case "normal_mode":
+		// Esc in Normal mode has no mode to leave, but it does dismiss a
+		// selection. Deliberately only consumed when there IS one: an Esc
+		// with nothing to dismiss has always bubbled to the global keymap,
+		// and swallowing it here would quietly break that.
+		if !t.hasSel {
+			return false
+		}
+		t.clearSelection()
+		return true
 	case "undo":
 		v.undo(t)
 	case "redo":
@@ -1028,6 +1312,15 @@ func (v *View) HandleKey(k layout.Key) bool {
 	case "delete_char_backward":
 		v.deleteCharBackward(t)
 	case "delete_line", "yank_line":
+		// With a selection up, "y" copies it on the FIRST press — vim's own
+		// behaviour, where a visual-mode yank needs no doubling because the
+		// range is already chosen. The selection is consumed along with it,
+		// so a following "y" is an ordinary "yy" again.
+		if action == "yank_line" && t.hasSel {
+			v.copySelection(t)
+			t.clearSelection()
+			return true
+		}
 		// The doubled operators: a first press only arms, and consumes the
 		// key without touching the buffer or the cursor (hence the early
 		// return, skipping the clamp below).
@@ -1105,6 +1398,12 @@ func (v *View) applyMovement(t *tab, action string) bool {
 	default:
 		return false
 	}
+	// Moving the cursor collapses any mouse selection, the way it does in
+	// every editor: the cursor is the selection's own moving end (see
+	// tab.selAnchor), so leaving it set would silently turn an arrow key into
+	// a selection-extending gesture. Only on an actual movement — the
+	// default branch above returns before this.
+	t.clearSelection()
 	return true
 }
 
@@ -1349,6 +1648,12 @@ func (v *View) ExitEditingModes() {
 	// focus, so its next key would otherwise complete an operator armed
 	// arbitrarily long ago.
 	v.pendingAction = ""
+	// Likewise a drag interrupted by focus moving elsewhere: the release that
+	// would have ended it is going to another pane, so nothing else would ever
+	// clear this. The selection ITSELF is kept — it survives losing focus the
+	// way the cursor position does, so clicking back into the pane and
+	// pressing "y" still copies what's highlighted.
+	v.dragging = false
 	switch v.mode {
 	case modeInsert:
 		v.exitInsertMode()
@@ -1585,7 +1890,13 @@ func (v *View) saveActive() {
 	}
 	if err := t.buf.Save(); err != nil {
 		debuglog.Error("save %s: %v", t.buf.Path, err)
+		return
 	}
+	// The file exists again, so the tab is no longer detached (see
+	// CloseTabsUnder). Note a save can still fail with ENOENT when it was
+	// the tab's parent DIRECTORY that was deleted — logged above, and Dirty
+	// stays true, which is the honest outcome.
+	t.detached = false
 }
 
 func (v *View) pageSize() int {

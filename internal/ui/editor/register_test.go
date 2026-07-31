@@ -330,3 +330,178 @@ func TestZeroAndDollarInsertLiterallyWhileInserting(t *testing.T) {
 		t.Fatalf("Lines[0] = %q, want the keys typed literally", got)
 	}
 }
+
+func TestCharwisePutSplicesIntoTheCurrentLine(t *testing.T) {
+	v, tb := selectionView("abcd")
+	v.register.SetCharwise([]string{"XY"})
+	tb.cursorCol = 1 // on "b"
+
+	v.putAfter(tb)
+
+	if got := tb.buf.Lines[0]; got != "abXYcd" {
+		t.Errorf("line = %q, want %q (spliced after the cursor, like vim's p)", got, "abXYcd")
+	}
+}
+
+func TestCharwisePutAtEndOfLineAppends(t *testing.T) {
+	// There is no character to go "after", so the cursor position is already
+	// the insertion point.
+	v, tb := selectionView("ab")
+	v.register.SetCharwise([]string{"XY"})
+	tb.cursorCol = 2
+
+	v.putAfter(tb)
+
+	if got := tb.buf.Lines[0]; got != "abXY" {
+		t.Errorf("line = %q, want %q", got, "abXY")
+	}
+}
+
+func TestCharwisePutOnAnEmptyLineInsertsAtColumnZero(t *testing.T) {
+	v, tb := selectionView("")
+	v.register.SetCharwise([]string{"hi"})
+
+	v.putAfter(tb)
+
+	if got := tb.buf.Lines[0]; got != "hi" {
+		t.Errorf("line = %q, want %q", got, "hi")
+	}
+}
+
+func TestCharwisePutLeavesCursorOnTheLastCharacterPut(t *testing.T) {
+	// vim's behaviour, and what makes a repeated "p" append rather than
+	// build up in reverse.
+	v, tb := selectionView("ab")
+	v.register.SetCharwise([]string{"XYZ"})
+	tb.cursorCol = 0
+
+	v.putAfter(tb)
+
+	// "aXYZb": the last character put is the "Z" at index 3.
+	if tb.cursorCol != 3 {
+		t.Errorf("cursorCol = %d, want 3 (on the %q)", tb.cursorCol, "Z")
+	}
+}
+
+func TestRepeatedCharwisePutAppendsRatherThanReverses(t *testing.T) {
+	v, tb := selectionView("")
+	v.register.SetCharwise([]string{"ab"})
+
+	v.putAfter(tb)
+	v.putAfter(tb)
+
+	if got := tb.buf.Lines[0]; got != "abab" {
+		t.Errorf("line = %q, want %q", got, "abab")
+	}
+}
+
+func TestCharwisePutOfAMultiLineFragmentSplitsTheLine(t *testing.T) {
+	v, tb := selectionView("[]")
+	v.register.SetCharwise([]string{"one", "two", "three"})
+	tb.cursorCol = 0 // on "["
+
+	v.putAfter(tb)
+
+	want := []string{"[one", "two", "three]"}
+	if len(tb.buf.Lines) != len(want) {
+		t.Fatalf("lines = %q, want %q", tb.buf.Lines, want)
+	}
+	for i := range want {
+		if tb.buf.Lines[i] != want[i] {
+			t.Fatalf("lines = %q, want %q", tb.buf.Lines, want)
+		}
+	}
+}
+
+func TestCharwisePutOfATwoLineFragmentHasNoMiddleLines(t *testing.T) {
+	v, tb := selectionView("[]")
+	v.register.SetCharwise([]string{"one", "two"})
+	tb.cursorCol = 0
+
+	v.putAfter(tb)
+
+	want := []string{"[one", "two]"}
+	if len(tb.buf.Lines) != len(want) {
+		t.Fatalf("lines = %q, want %q", tb.buf.Lines, want)
+	}
+	for i := range want {
+		if tb.buf.Lines[i] != want[i] {
+			t.Fatalf("lines = %q, want %q", tb.buf.Lines, want)
+		}
+	}
+}
+
+func TestCopyThenPutRoundTripsTheSelectedText(t *testing.T) {
+	// The property that matters: TextBetween takes text apart and putCharwise
+	// puts it back together, so a copy followed by a put reproduces it.
+	v, tb := selectionView("one", "two", "three")
+	g := gutterFor(tb)
+
+	v.HandleMouse(press(g+1, 1, 1)) // after "o" of "one"
+	v.HandleMouse(motion(g+2, 3))   // into "three"
+	v.copySelection(tb)
+
+	// Put it at the very end of the buffer.
+	tb.clearSelection()
+	tb.cursorLn = 2
+	tb.cursorCol = len([]rune("three"))
+	v.putAfter(tb)
+
+	joined := strings.Join(tb.buf.Lines, "\n")
+	if want := "one\ntwo\nthreene\ntwo\nth"; joined != want {
+		t.Errorf("buffer =\n%q\nwant\n%q", joined, want)
+	}
+}
+
+func TestCharwisePutIsOneUndoEntry(t *testing.T) {
+	v, tb := selectionView("[]")
+	v.register.SetCharwise([]string{"one", "two", "three"})
+	tb.cursorCol = 0
+
+	v.putAfter(tb)
+	if n := len(tb.buf.undoStack); n != 1 {
+		t.Fatalf("undoStack has %d entries, want 1 — a put is one change", n)
+	}
+
+	v.undo(tb)
+	if len(tb.buf.Lines) != 1 || tb.buf.Lines[0] != "[]" {
+		t.Errorf("after undo, lines = %q, want [\"[]\"]", tb.buf.Lines)
+	}
+}
+
+func TestLinewisePutIsUnaffectedByTheCharwiseBranch(t *testing.T) {
+	// Regression guard on "dd"/"yy"/"p", which must keep inserting whole
+	// lines below the cursor.
+	v, tb := selectionView("one", "two")
+	v.register.Set([]string{"inserted"})
+	tb.cursorLn = 0
+
+	v.putAfter(tb)
+
+	want := []string{"one", "inserted", "two"}
+	if len(tb.buf.Lines) != len(want) {
+		t.Fatalf("lines = %q, want %q", tb.buf.Lines, want)
+	}
+	for i := range want {
+		if tb.buf.Lines[i] != want[i] {
+			t.Fatalf("lines = %q, want %q", tb.buf.Lines, want)
+		}
+	}
+	if tb.cursorLn != 1 || tb.cursorCol != 0 {
+		t.Errorf("cursor = (%d,%d), want (1,0) — start of the put line", tb.cursorLn, tb.cursorCol)
+	}
+}
+
+func TestSetMarksLinewiseAndSetCharwiseMarksCharwise(t *testing.T) {
+	// The flag has to be stored, not inferred: []string{"foo"} is a valid
+	// value for both.
+	r := NewRegister()
+	r.SetCharwise([]string{"foo"})
+	if !r.Charwise() {
+		t.Error("SetCharwise should mark the register charwise")
+	}
+	r.Set([]string{"foo"})
+	if r.Charwise() {
+		t.Error("Set should mark the register linewise")
+	}
+}

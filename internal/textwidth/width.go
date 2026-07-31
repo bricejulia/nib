@@ -102,6 +102,42 @@ func DisplayWidth(s string) int {
 	return w
 }
 
+// RuneIndexForDisplayColumn is DisplayWidth's inverse: given a display
+// column, it returns the index of the rune occupying that column in s, which
+// is assumed to already have tabs expanded (ExpandTabs). The result is
+// clamped to [0, rune count], so a column past the end of the line lands
+// just after the last rune — the same "one past the end" position a cursor
+// legitimately sits at.
+//
+// A column falling on the SECOND cell of a double-width rune returns that
+// rune's own index rather than the next one: the two cells are one character,
+// and clicking either half must select the same character. This is why the
+// conversion can't be done by counting runes.
+//
+// Its reason for existing is mouse input — a click arrives as a display
+// column, while every text position in the editor is a rune index — so it is
+// the counterpart of SliceByDisplayColumn (which answers "what is visible
+// from this column") for a single position.
+func RuneIndexForDisplayColumn(s string, col int) int {
+	if col <= 0 {
+		return 0
+	}
+	current := 0
+	for i, r := range []rune(s) {
+		w := runewidth.RuneWidth(r)
+		if w == 0 {
+			w = 1
+		}
+		// col lands anywhere inside this rune's cells — including the
+		// trailing cell of a wide rune — so this is the rune it names.
+		if col < current+w {
+			return i
+		}
+		current += w
+	}
+	return len([]rune(s))
+}
+
 // SliceByDisplayColumn returns the portion of s visible in a viewport that
 // starts at display column fromCol and is maxCols wide. s is assumed to
 // already have tabs expanded (ExpandTabs) — this function works purely in

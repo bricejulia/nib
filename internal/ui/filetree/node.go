@@ -85,14 +85,51 @@ func (n *Node) EnsureLoaded() error {
 		}
 		children = append(children, child)
 	}
+	sortChildren(children)
+
+	n.Children = children
+	n.Loaded = true
+	return nil
+}
+
+// sortChildren puts a directory's children in display order: directories
+// first, then alphabetically. Shared by EnsureLoaded and by the in-place
+// tree updates that follow a rename (see View.moveNodeInTree), so a moved
+// node lands where a fresh re-scan would have put it.
+func sortChildren(children []*Node) {
 	sort.Slice(children, func(i, j int) bool {
 		if children[i].IsDir != children[j].IsDir {
 			return children[i].IsDir // dirs first
 		}
 		return children[i].Name < children[j].Name
 	})
+}
 
-	n.Children = children
-	n.Loaded = true
+// child returns n's already-loaded child named name, or nil. It never reads
+// the disk — a nil result means "not loaded, or not there", and the caller
+// is expected to treat both the same way.
+func (n *Node) child(name string) *Node {
+	for _, c := range n.Children {
+		if c.Name == name {
+			return c
+		}
+	}
 	return nil
+}
+
+// Retarget rewrites n's Name and Path — and, recursively, every loaded
+// descendant's Path — after n itself was renamed or its containing
+// directory moved on disk.
+//
+// This is what lets a rename preserve node identity. Without it the only
+// way to reflect a rename would be to invalidate the parent and let
+// EnsureLoaded rebuild, and EnsureLoaded carries Expanded/Loaded/Children
+// over by NAME — so a rename reads as a delete plus a create, and a
+// renamed open directory silently collapses and drops its loaded subtree.
+func (n *Node) Retarget(newParentPath, newName string) {
+	n.Name = newName
+	n.Path = filepath.Join(newParentPath, newName)
+	for _, c := range n.Children {
+		c.Retarget(n.Path, c.Name)
+	}
 }

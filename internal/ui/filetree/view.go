@@ -2,6 +2,8 @@ package filetree
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/bricejulia/kiwi/internal/config"
 	"github.com/bricejulia/kiwi/internal/layout"
@@ -13,6 +15,11 @@ import (
 // DefaultKeybinds are the file tree pane's built-in keybindings,
 // overridable via the user config's "filetree" scope (see
 // internal/config).
+//
+// These are only consulted in the pane's normal browsing state: while a
+// create/rename/delete prompt is open, keys go to handlePromptKey, which
+// never looks at this map. That's what keeps "a"/"r"/"d" — or any other
+// plain letter bound here — typeable in a filename.
 var DefaultKeybinds = config.Defaults{
 	{Trigger: "Down", Action: "move_down"},
 	{Trigger: "j", Action: "move_down"},
@@ -25,6 +32,9 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "h", Action: "collapse"},
 	{Trigger: "Shift+Right", Action: "peek_right"},
 	{Trigger: "Shift+Left", Action: "peek_left"},
+	{Trigger: "a", Action: "create"},
+	{Trigger: "r", Action: "rename"},
+	{Trigger: "d", Action: "delete"},
 }
 
 // hScrollStep is how many display columns Shift+Left/Shift+Right shift the
@@ -45,10 +55,48 @@ type View struct {
 	hScroll   int // display columns; how far the selected row is peeked right
 	dirty     bool
 
+	// Prompt state for the file operations — see prompt.go. The pending
+	// operation's target is kept as an absolute PATH, never as a *Node:
+	// the watcher's debounced Refresh can land between two keystrokes, and
+	// EnsureLoaded rebuilds child Nodes from scratch on a reload, so a
+	// *Node captured when the prompt opened could be an orphan by the time
+	// Enter is pressed.
+	prompt       promptMode
+	promptBuf    []rune
+	promptCaret  int    // rune index into promptBuf
+	promptErr    string // refusal shown inline, cleared by the next edit
+	promptTarget string // absolute path the pending rename/delete acts on
+	promptCount  int    // entries inside promptTarget, for a recursive delete
+	promptScroll int    // display columns the prompt row is scrolled by
+
+	// lastHeight is the pane height at the last Render, so CursorPosition
+	// knows which row the prompt was drawn on. Safe to rely on: ui.App
+	// renders a pane immediately before asking it for its cursor.
+	lastHeight int
+
 	// OnOpen is called with the absolute path when the cursor activates a
 	// file row. Set by the caller (cmd/kiwi/main.go) to wire in the
 	// editor pane.
 	OnOpen func(path string)
+
+	// OnPathMoved is called after a successful rename or move, before the
+	// tree itself is updated, so the caller can retarget anything holding
+	// the old path (an open editor buffer's tab, its language-server
+	// registration). Called ONCE with the renamed entry's own old and new
+	// paths — for a directory, the caller handles what's underneath it by
+	// prefix.
+	OnPathMoved func(oldPath, newPath string)
+
+	// OnPathDeleted is called after a successful delete, with the absolute
+	// path that was removed — once, and again by prefix on the caller's
+	// side for anything that was inside a deleted directory.
+	OnPathDeleted func(path string)
+
+	// OnMutated is called after any successful create/rename/delete, and
+	// never after a cancel or a refusal, so the caller can re-run the
+	// refresh (git status, per-line diffs) it would otherwise only do when
+	// the debounced fsnotify signal arrives a fifth of a second later.
+	OnMutated func()
 
 	keymap map[string]string
 }
@@ -76,6 +124,10 @@ func (v *View) Title() string { return "Files" }
 // possibly stale and re-scanned. Collapsed directories are left alone,
 // preserving the lazy-load contract: only what's visible gets re-read.
 func (v *View) Refresh() {
+	// The root itself first: it has no row of its own, so invalidateExpanded
+	// — which only looks at a node's children — would never reach it, and a
+	// file created at the top level of the project would never appear.
+	v.root.Loaded = false
 	invalidateExpanded(v.root)
 	v.dirty = true
 }
@@ -144,12 +196,24 @@ func (v *View) Render(w layout.Window) {
 
 	cols, rows := w.Size()
 	w.Clear()
+	v.lastHeight = rows
+
+	// A prompt takes the pane's bottom row, so the tree gets one row less
+	// to work with — and the scroll clamp below has to agree, or the cursor
+	// could sit on the row the prompt is drawn over.
+	treeRows := rows
+	if v.prompt != promptNone {
+		treeRows--
+	}
+	if treeRows < 0 {
+		treeRows = 0
+	}
 
 	if v.cursor < v.scrollTop {
 		v.scrollTop = v.cursor
 	}
-	if v.cursor >= v.scrollTop+rows {
-		v.scrollTop = v.cursor - rows + 1
+	if v.cursor >= v.scrollTop+treeRows {
+		v.scrollTop = v.cursor - treeRows + 1
 	}
 	if v.scrollTop < 0 {
 		v.scrollTop = 0
@@ -163,7 +227,7 @@ func (v *View) Render(w layout.Window) {
 		v.hScroll = textwidth.ClampScroll(v.hScroll, textwidth.DisplayWidth(selected), cols)
 	}
 
-	for i := 0; i < rows; i++ {
+	for i := 0; i < treeRows; i++ {
 		idx := v.scrollTop + i
 		if idx >= len(v.rows) {
 			break
@@ -172,6 +236,10 @@ func (v *View) Render(w layout.Window) {
 		style := styleForRow(row, idx == v.cursor)
 		text := textwidth.SliceByDisplayColumn(formatRow(row), v.hScroll, cols)
 		w.Println(i, layout.Segment{Text: text, Style: style})
+	}
+
+	if v.prompt != promptNone && rows > 0 {
+		v.renderPrompt(w, rows-1, cols)
 	}
 }
 
@@ -208,6 +276,12 @@ func (v *View) HandleKey(k layout.Key) bool {
 	if k.EventType == layout.EventRelease {
 		return false
 	}
+	// Before ensureFresh, and before any keymap lookup: a prompt keystroke
+	// must not re-read every expanded directory from disk, and must never
+	// be matched against a binding — see handlePromptKey.
+	if v.prompt != promptNone {
+		return v.handlePromptKey(k)
+	}
 	v.ensureFresh()
 	if v.keymap == nil {
 		// A View built via a bare struct literal (as some tests do, to
@@ -229,6 +303,12 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.activate()
 	case "collapse":
 		v.collapse()
+	case "create":
+		v.beginCreate()
+	case "rename":
+		v.beginRename()
+	case "delete":
+		v.beginDelete()
 	default:
 		return false
 	}
@@ -298,10 +378,154 @@ func (v *View) collapse() {
 	parent.Expanded = false
 	v.dirty = true
 	v.ensureFresh()
+	v.selectNode(parent)
+}
+
+// selectNode puts the cursor on n's row, if n has one.
+func (v *View) selectNode(n *Node) bool {
 	for i, row := range v.rows {
-		if row.Node == parent {
+		if row.Node == n {
 			v.cursor = i
+			v.hScroll = 0 // peeking is per-row: start from the left on the new selection
+			return true
+		}
+	}
+	return false
+}
+
+// loadedDirNode returns the in-memory node for absDir if the tree has
+// already read that far, or nil. It never touches the disk: a directory the
+// tree hasn't loaded has nothing to invalidate, since it will be read fresh
+// whenever it's first expanded.
+func (v *View) loadedDirNode(absDir string) *Node {
+	if absDir == v.root.Path {
+		return v.root
+	}
+	rel, ok := relPath(v.root.Path, absDir)
+	if !ok {
+		return nil
+	}
+	n := v.root
+	for _, name := range strings.Split(rel, "/") {
+		if !n.Loaded {
+			return nil
+		}
+		c := n.child(name)
+		if c == nil || !c.IsDir {
+			return nil
+		}
+		n = c
+	}
+	return n
+}
+
+// childOrReload returns n's child named name, re-reading n from disk once if
+// it isn't there yet. That second read is what makes revealing a
+// just-created path work at any depth: a create can bring whole
+// intermediate directories into existence (os.MkdirAll), and their parents
+// were last read before any of it was there. The re-read carries existing
+// children's state over by name, so nothing already open collapses.
+func childOrReload(n *Node, name string) *Node {
+	if err := n.EnsureLoaded(); err != nil {
+		return nil
+	}
+	if c := n.child(name); c != nil {
+		return c
+	}
+	n.Loaded = false
+	if err := n.EnsureLoaded(); err != nil {
+		return nil
+	}
+	return n.child(name)
+}
+
+// revealPath expands (loading from disk as it goes) every directory between
+// the root and abs, then leaves the cursor on abs's own row. Reports false
+// if abs is the root, sits outside it, or isn't in the tree — e.g. because
+// it was created inside a directory the tree can't read.
+func (v *View) revealPath(abs string) bool {
+	rel, ok := relPath(v.root.Path, abs)
+	if !ok {
+		return false
+	}
+	names := strings.Split(rel, "/")
+
+	n := v.root
+	for _, name := range names[:len(names)-1] {
+		c := childOrReload(n, name)
+		if c == nil || !c.IsDir {
+			return false
+		}
+		c.Expanded = true
+		n = c
+	}
+	target := childOrReload(n, names[len(names)-1])
+	if target == nil {
+		return false
+	}
+
+	// Expanding an ancestor changes which rows exist, so re-flatten before
+	// looking the target's row up. ensureFresh also re-runs EnsureLoaded on
+	// everything expanded, which is a no-op for what was just loaded above.
+	v.dirty = true
+	v.ensureFresh()
+	return v.selectNode(target)
+}
+
+// syncAfter brings the tree back in step with the disk after a mutation:
+// it invalidates the specific directories that changed, re-flattens, and
+// leaves the cursor on selectPath (pass "" when there's nothing to select,
+// e.g. after a delete).
+//
+// Refresh would not do: it only invalidates directories that are currently
+// EXPANDED, which misses a create or move destination inside a
+// collapsed-but-already-loaded folder — the tree would keep showing its
+// stale children until something else happened to re-read it.
+func (v *View) syncAfter(selectPath string, dirs ...string) {
+	for _, d := range dirs {
+		if n := v.loadedDirNode(d); n != nil {
+			n.Loaded = false
+		}
+	}
+	v.dirty = true
+	if selectPath != "" && v.revealPath(selectPath) {
+		return
+	}
+	v.ensureFresh()
+}
+
+// moveNodeInTree relocates the node at src to dst within the tree,
+// preserving its identity so a renamed or moved directory keeps its
+// Expanded/Loaded/Children state and its subtree stays where it was.
+//
+// Reports false when either end isn't loaded in memory, in which case the
+// caller falls back to invalidating both directories and letting
+// EnsureLoaded rebuild them — correct, but a renamed directory collapses,
+// because EnsureLoaded carries state over by NAME and so reads a rename as
+// a delete plus a create.
+func (v *View) moveNodeInTree(src, dst string) bool {
+	srcParent := v.loadedDirNode(filepath.Dir(src))
+	dstParent := v.loadedDirNode(filepath.Dir(dst))
+	if srcParent == nil || dstParent == nil {
+		return false
+	}
+	n := srcParent.child(filepath.Base(src))
+	if n == nil {
+		return false
+	}
+	if dstParent.child(filepath.Base(dst)) != nil {
+		return false // something is already there in the tree; re-read instead
+	}
+
+	for i, c := range srcParent.Children {
+		if c == n {
+			srcParent.Children = append(srcParent.Children[:i], srcParent.Children[i+1:]...)
 			break
 		}
 	}
+	n.Parent = dstParent
+	n.Retarget(dstParent.Path, filepath.Base(dst))
+	dstParent.Children = append(dstParent.Children, n)
+	sortChildren(dstParent.Children)
+	return true
 }

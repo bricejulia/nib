@@ -211,3 +211,47 @@ func TestEnsureLoadedOnFileIsNoop(t *testing.T) {
 		t.Errorf("a file node should never have children")
 	}
 }
+
+func TestRetargetRewritesTheWholeSubtreesPaths(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "sub", "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"sub/a.txt", "sub/deep/b.txt"} {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(p)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r := NewRoot(root)
+	if err := r.EnsureLoaded(); err != nil {
+		t.Fatal(err)
+	}
+	sub := r.child("sub")
+	if sub == nil {
+		t.Fatal("no sub child")
+	}
+	if err := sub.EnsureLoaded(); err != nil {
+		t.Fatal(err)
+	}
+	sub.Expanded = true
+	deep := sub.child("deep")
+	if err := deep.EnsureLoaded(); err != nil {
+		t.Fatal(err)
+	}
+
+	sub.Retarget(root, "pkg")
+
+	if sub.Name != "pkg" || sub.Path != filepath.Join(root, "pkg") {
+		t.Fatalf("Retarget left %q at %q", sub.Name, sub.Path)
+	}
+	if want := filepath.Join(root, "pkg", "deep"); deep.Path != want {
+		t.Errorf("child path = %q, want %q", deep.Path, want)
+	}
+	if want := filepath.Join(root, "pkg", "deep", "b.txt"); deep.child("b.txt").Path != want {
+		t.Errorf("grandchild path = %q, want %q", deep.child("b.txt").Path, want)
+	}
+	if !sub.Expanded || !sub.Loaded {
+		t.Error("Retarget must preserve Expanded/Loaded — that's the whole point over a re-scan")
+	}
+}

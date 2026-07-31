@@ -111,6 +111,14 @@ func applyHighlightRanges(segs []layout.Segment, ranges []runeRange, style layou
 					if style.Foreground != layout.ColorDefault {
 						segStyle.Foreground = style.Foreground
 					}
+					// Background composes the same way Foreground does, so
+					// overlaying a selection (which uses one — see
+					// selectionStyle) leaves the syntax foreground colour
+					// underneath intact, and a search match inside a
+					// selection keeps its own reverse video on top.
+					if style.Background != layout.ColorDefault {
+						segStyle.Background = style.Background
+					}
 				}
 				out = append(out, layout.Segment{Text: text, Style: segStyle})
 				runStart = i

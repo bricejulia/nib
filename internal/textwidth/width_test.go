@@ -246,3 +246,81 @@ func TestClampScrollTextShorterThanViewportClampsToZero(t *testing.T) {
 		t.Errorf("got %d, want 0", got)
 	}
 }
+
+func TestRuneIndexForDisplayColumnOnPlainASCII(t *testing.T) {
+	// One cell per rune, so column and index coincide.
+	for col, want := range []int{0, 1, 2, 3} {
+		if got := RuneIndexForDisplayColumn("abcd", col); got != want {
+			t.Errorf("col %d: got %d, want %d", col, got, want)
+		}
+	}
+}
+
+func TestRuneIndexForDisplayColumnNegativeClampsToZero(t *testing.T) {
+	if got := RuneIndexForDisplayColumn("abc", -3); got != 0 {
+		t.Errorf("got %d, want 0", got)
+	}
+}
+
+func TestRuneIndexForDisplayColumnPastEndOfLineClampsOnePastLastRune(t *testing.T) {
+	// "one past the end" is a position a cursor legitimately occupies, so
+	// this clamps to len(runes) rather than to the last valid index.
+	if got := RuneIndexForDisplayColumn("abc", 99); got != 3 {
+		t.Errorf("got %d, want 3", got)
+	}
+}
+
+func TestRuneIndexForDisplayColumnCountsWideRunesAsTwoCells(t *testing.T) {
+	// "a世b": columns 0 | 1,2 | 3.
+	cases := map[int]int{0: 0, 1: 1, 2: 1, 3: 2}
+	for col, want := range cases {
+		if got := RuneIndexForDisplayColumn("a世b", col); got != want {
+			t.Errorf("col %d: got %d, want %d", col, got, want)
+		}
+	}
+}
+
+func TestRuneIndexForDisplayColumnOnTrailingCellOfWideRuneSnapsToThatRune(t *testing.T) {
+	// The regression this guards: clicking the right-hand cell of a CJK
+	// glyph must select the glyph itself, not the character after it —
+	// the two cells are one character.
+	if got := RuneIndexForDisplayColumn("世界", 1); got != 0 {
+		t.Errorf("got %d, want 0 (second cell of the first glyph)", got)
+	}
+	if got := RuneIndexForDisplayColumn("世界", 3); got != 1 {
+		t.Errorf("got %d, want 1 (second cell of the second glyph)", got)
+	}
+}
+
+func TestRuneIndexForDisplayColumnRoundTripsWithDisplayWidth(t *testing.T) {
+	// The two are inverses at every rune boundary, which is the property
+	// the editor's click handling relies on.
+	const s = "ab世c界d"
+	runes := []rune(s)
+	for i := range runes {
+		col := DisplayWidth(string(runes[:i]))
+		if got := RuneIndexForDisplayColumn(s, col); got != i {
+			t.Errorf("index %d -> col %d -> got %d, want %d", i, col, got, i)
+		}
+	}
+}
+
+func TestRuneIndexForDisplayColumnAfterExpandTabs(t *testing.T) {
+	// Callers hand it already-expanded text; with tabWidth 4, "\tx"
+	// expands to "    x", so x sits at column 4.
+	expanded := ExpandTabs("\tx", 4)
+	if got := RuneIndexForDisplayColumn(expanded, 4); got != 4 {
+		t.Errorf("got %d, want 4 (the 'x' in %q)", got, expanded)
+	}
+	// A column inside the tab's expansion names one of the spaces, which is
+	// what lets a click land mid-indentation.
+	if got := RuneIndexForDisplayColumn(expanded, 2); got != 2 {
+		t.Errorf("got %d, want 2", got)
+	}
+}
+
+func TestRuneIndexForDisplayColumnOnEmptyStringIsZero(t *testing.T) {
+	if got := RuneIndexForDisplayColumn("", 5); got != 0 {
+		t.Errorf("got %d, want 0", got)
+	}
+}

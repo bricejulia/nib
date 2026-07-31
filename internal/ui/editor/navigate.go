@@ -24,23 +24,40 @@ func wordUnderCursor(t *tab, tabWidth int) string {
 		return ""
 	}
 	line := t.buf.Lines[t.cursorLn]
-	runes := []rune(line)
 	pos := rawIndexForExpandedCol(line, t.cursorCol, tabWidth)
+	start, end, ok := wordRangeAt(line, pos)
+	if !ok {
+		return ""
+	}
+	return string([]rune(line)[start:end])
+}
+
+// wordRangeAt returns the half-open RAW rune range of the identifier-like
+// word touching rune index pos in line, and ok=false if pos isn't touching
+// one. Factored out of wordUnderCursor so that double-click-to-select-a-word
+// (see View.HandleMouse) draws its boundaries from exactly the same rune
+// class the "go to definition" word does — two different answers to "what is
+// the word here" in one editor would be a bug users could see.
+func wordRangeAt(line string, pos int) (start, end int, ok bool) {
+	runes := []rune(line)
+	// Check one rune back if pos sits just past a word's last rune — the
+	// common case right after moving to end-of-word, and also what makes
+	// clicking the space immediately after a word still select it.
 	if pos >= len(runes) || !isIdentRune(runes[pos]) {
 		pos--
 	}
 	if pos < 0 || pos >= len(runes) || !isIdentRune(runes[pos]) {
-		return ""
+		return 0, 0, false
 	}
 
-	start, end := pos, pos+1
+	start, end = pos, pos+1
 	for start > 0 && isIdentRune(runes[start-1]) {
 		start--
 	}
 	for end < len(runes) && isIdentRune(runes[end]) {
 		end++
 	}
-	return string(runes[start:end])
+	return start, end, true
 }
 
 // byteOffsetForPosition converts a (line, raw rune column) position into a

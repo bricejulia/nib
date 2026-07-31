@@ -63,6 +63,42 @@ func (s *BufferStore) Release(path string) {
 	}
 }
 
+// Rekey moves buf's entry from oldPath to newPath after the file was
+// renamed or moved on disk, carrying its reference count across wholesale
+// (the entry itself moves, so there's no count arithmetic to get wrong) and
+// repathing the Buffer so its Path — what Save writes to — can never
+// disagree with the key it's filed under.
+//
+// Reports whether newPath now maps to buf. That deliberately includes the
+// case where a previous call already moved it: the same rename is fanned out
+// to every View sharing this store (each has its own tab to fix up), so only
+// the first call does work and the rest must be harmless no-ops rather than
+// failures.
+//
+// False means the store could not represent the move — newPath is taken by a
+// DIFFERENT buffer, or buf was never registered under oldPath — and the
+// caller must then leave its tab's path alone: a tab whose path disagrees
+// with the store leaks the entry forever, because its eventual Release would
+// miss. Two entries are never merged: they're distinct Buffers with
+// different content and different saved baselines, and evicting one while
+// tabs elsewhere still point at it would corrupt the survivor's count.
+func (s *BufferStore) Rekey(buf *Buffer, oldPath, newPath string) bool {
+	if buf == nil || oldPath == newPath {
+		return false
+	}
+	if sb, ok := s.bufs[newPath]; ok {
+		return sb.buf == buf // already moved by another View, or a real collision
+	}
+	sb, ok := s.bufs[oldPath]
+	if !ok || sb.buf != buf {
+		return false
+	}
+	delete(s.bufs, oldPath)
+	s.bufs[newPath] = sb
+	buf.Repath(newPath)
+	return true
+}
+
 // Len reports how many distinct paths currently have a live Buffer
 // tracked — test/diagnostic use.
 func (s *BufferStore) Len() int {

@@ -32,6 +32,64 @@ type Unfocusable interface {
 	Unfocusable() bool
 }
 
+// MouseHandler is an optional interface a View implements to receive mouse
+// events — clicks, drags, and wheel ticks — with coordinates already
+// translated into the View's own space. Views that don't implement it (the
+// status bar, the help overlay) simply never see a mouse, exactly as before.
+//
+// HandleMouse returns true if it consumed the event. An unconsumed event
+// falls back to App's own default handling (wheel scrolling, press-to-focus
+// a pane), so a View can opt into precise clicks without giving up the
+// generic behaviour it doesn't care about — see App.handleMouse.
+type MouseHandler interface {
+	HandleMouse(m Mouse) bool
+}
+
+// MouseButton identifies which button (or wheel direction) an event came
+// from. The wheel is reported as a button press, the way terminals encode
+// it, rather than as a separate axis.
+type MouseButton int
+
+const (
+	MouseLeft MouseButton = iota
+	MouseMiddle
+	MouseRight
+	// MouseNone is what a bare motion event carries: the pointer moved with
+	// nothing held down. Terminals in all-motion tracking mode (which is
+	// what kiwi runs — see App's vaxis setup) report these continuously as
+	// the pointer crosses the screen, so a View that only cares about drags
+	// must check for this and ignore it.
+	MouseNone
+	MouseWheelUp
+	MouseWheelDown
+	MouseWheelLeft
+	MouseWheelRight
+)
+
+// Mouse is a terminal-independent mouse event. The real vaxis.Mouse is
+// translated into this type at the single seam in internal/ui/app.go, so
+// that View implementations never import vaxis — the same arrangement as
+// Key.
+//
+// Col and Row are relative to the Window the View was last given in Render
+// (i.e. already inside the pane's border), matching CursorPosition's
+// convention so the two are directly comparable. They are NOT clamped to
+// that Window: during a drag the pointer can leave the pane, and a View
+// that wants to auto-scroll needs to see the negative or past-the-bottom
+// row that says so.
+type Mouse struct {
+	Col, Row  int
+	Button    MouseButton
+	EventType EventType
+	Mods      ModMask
+	// Clicks is 1, 2 or 3 for a press that is part of a single, double or
+	// triple click, and 0 for any event that isn't a press. Counted in App
+	// rather than in each View so that Views hold no wall-clock state and
+	// stay deterministic under test — the same reasoning behind App owning
+	// the double-shift detector rather than the finder.
+	Clicks int
+}
+
 // Window is the drawing surface handed to a View's Render. It is a thin,
 // terminal-independent abstraction over the real renderer (vaxis, in
 // internal/ui/app.go) so that View implementations are unit-testable
@@ -88,19 +146,36 @@ const (
 )
 
 // Style is the terminal-independent styling applied to a line of text.
+//
+// Background exists so a range of text can be marked without spending the
+// only other available signal, AttrReverse, which is already the "selected
+// row" convention in the tab bar, the file tree, the finder and popups —
+// reverse-on-reverse doesn't cancel, so overlaying it on something already
+// reversed makes the two indistinguishable rather than additive.
+//
+// Style is compared with == wherever adjacent same-style segments are
+// coalesced (see textwidth.SliceSegmentsByDisplayColumn, highlightLine,
+// splitHighlightsByLine), which keeps working as long as every field stays
+// a scalar.
 type Style struct {
 	Attr       AttrMask
 	Foreground Color
+	Background Color
 }
 
 // EventType distinguishes a key press from a repeat or release, mirroring
-// what the kitty keyboard protocol reports.
+// what the kitty keyboard protocol reports. Shared with Mouse, which adds
+// EventMotion to the same set.
 type EventType int
 
 const (
 	EventPress EventType = iota
 	EventRepeat
 	EventRelease
+	// EventMotion is the pointer moving. Only ever set on a Mouse, never on
+	// a Key, and deliberately appended last so the three key event types
+	// keep the values they already had.
+	EventMotion
 )
 
 // ModMask is a bitmask of held modifier keys.

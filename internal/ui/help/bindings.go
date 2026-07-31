@@ -54,6 +54,7 @@ var sections = []section{
 			{"dd", "Delete (cut) this line"},
 			{"yy", "Yank (copy) this line"},
 			{"p", "Put (paste) after this line"},
+			{"y", "Copy the mouse selection (to the clipboard too)"},
 			{"Esc", "Return to Normal mode"},
 			{"Enter", "Insert a newline (Insert mode)"},
 			{"Backspace", "Delete before cursor (Insert mode)"},
@@ -78,6 +79,18 @@ var sections = []section{
 		},
 	},
 	{
+		Title: "Editor — mouse",
+		Bindings: []binding{
+			{"Click", "Place the cursor"},
+			{"Drag", "Select text (drag past the edge to scroll)"},
+			{"Double-click", "Select the word"},
+			{"Triple-click", "Select the line"},
+			{"Shift+click", "Extend the selection"},
+			{"y", "Copy the selection, then Esc or any move to dismiss"},
+			{"Wheel", "Scroll the pane under the pointer"},
+		},
+	},
+	{
 		Title: "Editor — git",
 		Bindings: []binding{
 			{"B", "Blame: who last changed this line"},
@@ -92,6 +105,10 @@ var sections = []section{
 			{"Enter, l, Right", "Open file / expand directory"},
 			{"h, Left", "Collapse directory (or its parent)"},
 			{"Shift+Left Shift+Right", "Peek a long name"},
+			{"a", "New file (end with \"/\" for a directory)"},
+			{"r", "Rename / move: edit the path, Enter"},
+			{"d", "Delete (confirm y/N)"},
+			{"Esc", "Cancel the prompt"},
 		},
 	},
 	{

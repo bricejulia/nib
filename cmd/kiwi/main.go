@@ -307,6 +307,13 @@ func run() error {
 		if p, ok := editorPanes[lastFocusedLeaf]; ok && lastFocusedLeaf != id {
 			p.view.ExitEditingModes()
 		}
+		// Same reason, for the file tree's own create/rename/delete prompt:
+		// a half-typed filename left behind by a click elsewhere would sit
+		// swallowing every key the next time the tree got focus back. See
+		// filetree.View.CancelPrompt.
+		if lastFocusedLeaf == fileTreeLeaf.ID && lastFocusedLeaf != id {
+			treeView.CancelPrompt()
+		}
 		lastFocusedLeaf = id
 
 		// The only place activeEditorPane is ever written: keeps it
@@ -396,6 +403,13 @@ func run() error {
 			return gitstatus.FileHunkAt(absRoot, path, line)
 		}
 		v.OnShowFileDiff = openFileDiff
+		// Copying a mouse selection reaches the system clipboard through
+		// here — the editor pane speaks no OSC 52 itself, same arrangement
+		// as the git callbacks above. The yank register (SetRegister) is what
+		// makes an in-kiwi "p" work, and is filled independently, so a
+		// terminal that ignores OSC 52 costs only the crossing-out-of-kiwi
+		// half of the copy.
+		v.CopyFunc = app.CopyToClipboard
 	}
 	wireEditorPane(editorView)
 
@@ -525,6 +539,42 @@ func run() error {
 		refreshAllLineStatus()
 	}
 	refreshGitStatus()
+
+	// OnPathMoved/OnPathDeleted are how the file tree's own create/rename/
+	// delete actions reach the rest of the app. Both are called on the UI
+	// goroutine AFTER the filesystem operation succeeded, with absolute
+	// paths, and either path may be a directory — a folder rename moves
+	// every file under it, which editor.View.Repath handles by prefix
+	// itself, so nothing here does path arithmetic.
+	//
+	// Fanned out over every editor pane for the same reason
+	// refreshLineStatusFor and ApplyDiagnostics are: the same file can be
+	// open in several panes, and each pane owns its own tab for it. The
+	// store-level work (re-keying the shared Buffer) still happens exactly
+	// once — see editor.BufferStore.Rekey. The file tree updates its own
+	// node tree, so neither of these calls Refresh.
+	treeView.OnPathMoved = func(oldPath, newPath string) {
+		for _, p := range editorPanes {
+			p.view.Repath(oldPath, newPath)
+		}
+	}
+	treeView.OnPathDeleted = func(path string) {
+		var detached []string
+		for _, p := range editorPanes {
+			detached = append(detached, p.view.CloseTabsUnder(path)...)
+		}
+		if len(detached) > 0 {
+			// The durable record of what happened; the panes themselves show
+			// it as "-- DELETED --" and a ✗ in the tab bar.
+			debuglog.Warn("deleted %s: %d open buffer(s) with unsaved changes stay open (\":w\" recreates the file, \":q!\" discards): %s",
+				path, len(detached), strings.Join(detached, ", "))
+		}
+	}
+	// Run last, after the tabs are carrying their new paths: refreshGitStatus
+	// ends in refreshAllLineStatus, and ApplyLineStatus matches on a tab's
+	// path — so doing this first would leave a moved file's gutter blank
+	// until something else invalidated it.
+	treeView.OnMutated = refreshGitStatus
 
 	// Registered unconditionally (not just when the watcher starts):
 	// finder.SearchResult must be handled regardless of whether fsnotify

@@ -37,7 +37,11 @@ func translateStyle(s layout.Style) vaxis.Style {
 	if s.Attr&layout.AttrReverse != 0 {
 		attr |= vaxis.AttrReverse
 	}
-	return vaxis.Style{Attribute: attr, Foreground: translateColor(s.Foreground)}
+	return vaxis.Style{
+		Attribute:  attr,
+		Foreground: translateColor(s.Foreground),
+		Background: translateColor(s.Background),
+	}
 }
 
 // translateColor maps layout.Color to a vaxis indexed color by its actual
@@ -171,6 +175,89 @@ func namedSpace(k vaxis.Key) string {
 	}
 }
 
+// translateMouse converts a vaxis.Mouse into layout's terminal-independent
+// form, the mirror of translateKey. Col/Row are left in SCREEN space here —
+// making them pane-relative needs the leaf's rect, which only handleMouse
+// knows.
+//
+// vaxis reports coordinates 0-based already (it subtracts the 1 the SGR
+// encoding uses), so there is no off-by-one to undo.
+func translateMouse(m vaxis.Mouse) layout.Mouse {
+	var mods layout.ModMask
+	if m.Modifiers&vaxis.ModShift != 0 {
+		mods |= layout.ModShift
+	}
+	if m.Modifiers&vaxis.ModAlt != 0 {
+		mods |= layout.ModAlt
+	}
+	if m.Modifiers&vaxis.ModCtrl != 0 {
+		mods |= layout.ModCtrl
+	}
+
+	et := layout.EventPress
+	switch m.EventType {
+	case vaxis.EventRelease:
+		et = layout.EventRelease
+	case vaxis.EventMotion:
+		et = layout.EventMotion
+	}
+
+	return layout.Mouse{
+		Col:       m.Col,
+		Row:       m.Row,
+		Button:    translateMouseButton(m.Button),
+		EventType: et,
+		Mods:      mods,
+	}
+}
+
+// translateMouseButton maps vaxis's button encoding — which uses the raw
+// terminal wire values, so the wheel lands at 64-67 rather than following on
+// from the three real buttons — onto layout's dense enum.
+func translateMouseButton(b vaxis.MouseButton) layout.MouseButton {
+	switch b {
+	case vaxis.MouseLeftButton:
+		return layout.MouseLeft
+	case vaxis.MouseMiddleButton:
+		return layout.MouseMiddle
+	case vaxis.MouseRightButton:
+		return layout.MouseRight
+	case vaxis.MouseWheelUp:
+		return layout.MouseWheelUp
+	case vaxis.MouseWheelDown:
+		return layout.MouseWheelDown
+	case vaxis.MouseWheelLeft:
+		return layout.MouseWheelLeft
+	case vaxis.MouseWheelRight:
+		return layout.MouseWheelRight
+	default:
+		// vaxis.MouseNoButton, plus any button 8-11 kiwi doesn't bind: a
+		// motion event with nothing held reports MouseNoButton, and that is
+		// the reading a View needs in order to ignore bare hover.
+		return layout.MouseNone
+	}
+}
+
+// contentRect returns the region of leaf rect r that a View actually draws
+// into: r itself when the pane is too small to be bordered, otherwise r
+// inset by the 1-cell border.
+//
+// It exists so renderNode and handleMouse cannot disagree. renderNode used
+// to inline this inset, while a.rects stores only the OUTER rect — a mouse
+// handler that read a.rects directly would be off by one in both axes on
+// every pane, which is exactly the kind of bug that looks like "selection is
+// slightly wrong" rather than "mouse is broken". Deliberately a pure
+// function of r rather than a map filled in during render, so mouse handling
+// does not depend on a frame having been drawn first.
+//
+// The size test must stay in step with drawBorder's own bail-out.
+func contentRect(r layout.Rect) layout.Rect {
+	if r.W < 2 || r.H < 2 {
+		return r
+	}
+	return layout.Rect{X: r.X + 1, Y: r.Y + 1, W: r.W - 2, H: r.H - 2}
+}
+
 // App owns the vaxis terminal, the window tree, and the focus manager. It
 // is the only place a vaxis event is translated into the layout package's
 // terminal-independent Key type, and the only place layout.Compute's
@@ -191,6 +278,29 @@ type App struct {
 
 	onDoubleShift  func()
 	lastShiftPress time.Time
+
+	// mouseCapture is the leaf that owns the mouse for the duration of a
+	// drag: set when a button goes down over it, cleared on release. While
+	// it is set, motion and release events go there rather than to whatever
+	// leafAt says is under the pointer NOW.
+	//
+	// Without this, dragging a selection off the bottom of the editor pane
+	// would silently stop extending it the moment the pointer crossed into
+	// the status bar — and worse, start feeding events to a pane the user
+	// isn't interacting with. Capture is also what lets a View see an
+	// out-of-bounds row and decide to auto-scroll.
+	mouseCapture    layout.LeafID
+	hasMouseCapture bool
+
+	// lastPress tracks the previous mouse press so consecutive presses in
+	// the same cell within multiClickWindow can be reported as a double or
+	// triple click (layout.Mouse.Clicks). Counted here, not per-View, so no
+	// View needs wall-clock state of its own — the same split as
+	// lastShiftPress above.
+	lastPressAt   time.Time
+	lastPressCol  int
+	lastPressRow  int
+	lastPressRuns int
 
 	// onFocusChange, if set, is called whenever the focused leaf actually
 	// changes (Tab-cycle, mouse click, or any FocusLeaf call) — see
@@ -328,6 +438,22 @@ func (a *App) SuspendAndRun(fn func() error) error {
 	return fn()
 }
 
+// CopyToClipboard puts s on the system clipboard via OSC 52, the escape
+// sequence a terminal application uses to set the clipboard of whatever
+// machine the terminal itself is running on — which is why it works over
+// ssh, where shelling out to pbcopy would set the wrong machine's clipboard.
+//
+// Fire-and-forget by design: OSC 52 has no reply, and support is not
+// universal (tmux needs "set -g set-clipboard on", and some terminals
+// disable it deliberately because it lets a remote program write the local
+// clipboard). There is nothing to report back, so callers must not treat a
+// copy as guaranteed — kiwi's own yank register is what makes an internal
+// put reliable regardless. Panes reach this through a func field wired in
+// cmd/kiwi/main.go, never by importing this package.
+func (a *App) CopyToClipboard(s string) {
+	a.vx.ClipboardPush(s)
+}
+
 // Rebuild recomputes focus traversal order after the tree's leaves change
 // (e.g. a new panel is opened). It is a no-op for Step 0, which has a fixed
 // two-pane tree, but future steps that open new panels need it.
@@ -418,34 +544,102 @@ func (a *App) handleKey(k layout.Key) {
 // one line per tick for it to feel responsive.
 const wheelScrollLines = 3
 
+// multiClickWindow is the maximum gap between two presses in the same cell
+// for them to count as a double (then triple) click. Same duration as
+// doubleShiftWindow, for the same reason: long enough not to punish a
+// deliberate slow double-click, short enough that two unrelated clicks in
+// one spot don't merge.
+const multiClickWindow = 400 * time.Millisecond
+
 func (a *App) handleMouse(m vaxis.Mouse) {
-	id, ok := a.leafAt(m.Col, m.Row)
+	ev := translateMouse(m)
+
+	// A drag belongs to whoever the button went down on, even once the
+	// pointer has wandered off that pane — see mouseCapture.
+	id, ok := a.mouseCapture, a.hasMouseCapture
 	if !ok {
+		id, ok = a.leafAt(m.Col, m.Row)
+		if !ok {
+			return
+		}
+	}
+
+	switch ev.EventType {
+	case layout.EventPress:
+		if ev.Button == layout.MouseLeft {
+			a.mouseCapture, a.hasMouseCapture = id, true
+		}
+		ev.Clicks = a.countPress(m.Col, m.Row)
+		// Clicking a pane focuses it, as it always has — done before the
+		// View sees the event so a handler can rely on being focused.
+		if !isWheel(ev.Button) {
+			a.focus.FocusAt(id)
+		}
+	case layout.EventRelease:
+		a.mouseCapture, a.hasMouseCapture = 0, false
+	}
+
+	view := a.focus.ViewAt(id)
+	if view == nil {
 		return
 	}
 
-	switch m.Button {
-	case vaxis.MouseWheelUp, vaxis.MouseWheelDown:
+	// Offer the event to the View first, in ITS coordinate space. An
+	// unconsumed event falls through to the generic handling below, so a
+	// View that only cares about clicks keeps wheel scrolling for free.
+	if mh, ok := view.(layout.MouseHandler); ok {
+		local := ev
+		content := contentRect(a.rects[id])
+		local.Col -= content.X
+		local.Row -= content.Y
+		if mh.HandleMouse(local) {
+			return
+		}
+	}
+
+	if ev.Button == layout.MouseWheelUp || ev.Button == layout.MouseWheelDown {
 		// Wheel scroll acts on whichever pane the mouse is over,
 		// independent of keyboard focus — it reuses the same
 		// HandleKey path as pressing Up/Down, so it inherits each
 		// View's existing scroll-follow behavior for free.
-		view := a.focus.ViewAt(id)
-		if view == nil {
-			return
-		}
 		key := layout.Key{Named: layout.KeyDown}
-		if m.Button == vaxis.MouseWheelUp {
+		if ev.Button == layout.MouseWheelUp {
 			key = layout.Key{Named: layout.KeyUp}
 		}
 		for i := 0; i < wheelScrollLines; i++ {
 			view.HandleKey(key)
 		}
-	default:
-		if m.EventType == vaxis.EventPress {
-			a.focus.FocusAt(id)
-		}
 	}
+}
+
+// isWheel reports whether b is a wheel direction rather than a real button.
+// A wheel tick arrives as a press, but scrolling over a pane must not steal
+// focus from it — that's the whole point of routing the wheel by hover.
+func isWheel(b layout.MouseButton) bool {
+	switch b {
+	case layout.MouseWheelUp, layout.MouseWheelDown, layout.MouseWheelLeft, layout.MouseWheelRight:
+		return true
+	default:
+		return false
+	}
+}
+
+// countPress returns 1, 2 or 3 for a press that continues a multi-click run
+// in the same cell, and resets to 1 whenever the pointer moved or the run
+// timed out. Caps at 3: nothing binds a quadruple click, and wrapping back
+// to 1 on the fourth press is what most editors do.
+func (a *App) countPress(col, row int) int {
+	now := time.Now()
+	sameCell := col == a.lastPressCol && row == a.lastPressRow
+	inWindow := !a.lastPressAt.IsZero() && now.Sub(a.lastPressAt) <= multiClickWindow
+
+	if sameCell && inWindow && a.lastPressRuns < 3 {
+		a.lastPressRuns++
+	} else {
+		a.lastPressRuns = 1
+	}
+	a.lastPressAt, a.lastPressCol, a.lastPressRow = now, col, row
+	return a.lastPressRuns
 }
 
 // leafAt returns the leaf whose last-computed Rect contains (col, row).
@@ -535,9 +729,14 @@ func (a *App) renderNode(n layout.Node, full vaxis.Window) bool {
 		focused := v.ID == focusedID
 		bordered := drawBorder(leafWin, focused, v.View.Title())
 
+		// The inset comes from contentRect rather than being written out
+		// again here, so that the region drawn into and the region mouse
+		// coordinates are measured against can never drift apart. cr is in
+		// screen space; leafWin.New wants an offset within the leaf.
 		content := leafWin
 		if bordered {
-			content = leafWin.New(1, 1, r.W-2, r.H-2)
+			cr := contentRect(r)
+			content = leafWin.New(cr.X-r.X, cr.Y-r.Y, cr.W, cr.H)
 		}
 		v.View.Render(vaxisWindow{content})
 

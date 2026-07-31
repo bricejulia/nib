@@ -88,6 +88,24 @@ func Load(path string) (*Buffer, error) {
 	return &Buffer{Lines: lines, Path: path, Source: []byte(text), mode: mode, saved: append([]string(nil), lines...)}, nil
 }
 
+// Repath points the buffer at newPath — what Save writes to from now on —
+// and recomputes whatever is derived from the path.
+//
+// Today that's tree-sitter highlighting, which is keyed on the file
+// extension (see highlightBuffer): a rename can change the language
+// outright (.txt -> .go), so the cached highlight has to be rebuilt, not
+// merely kept. One full re-parse per rename is nothing next to the full
+// re-parse this package already does after every edit (see
+// View.onBufferEdited).
+//
+// Deliberately NOT re-stat'ed: mode is the file's own permission bits,
+// which a move carries with the inode, and saved stays the correct Dirty
+// baseline because moving a file doesn't change its bytes.
+func (b *Buffer) Repath(newPath string) {
+	b.Path = newPath
+	b.highlighted = highlightBuffer(b)
+}
+
 // InsertText inserts s (which must not contain '\n') into line ln at rune
 // index col and resyncs (Source, Dirty). It returns the rune index just
 // past the inserted text, for repositioning the cursor.
@@ -190,6 +208,65 @@ func (b *Buffer) InsertLines(at int, lines []string) {
 	b.Lines = merged
 
 	b.resync()
+}
+
+// TextBetween returns the text of the range starting at (startLn, startCol)
+// and ending just before (endLn, endCol), as one string per line the range
+// touches: the tail of the first line, whole lines in between, and the head
+// of the last. A single-line range therefore returns exactly one string, and
+// the caller joins with "\n" to get the flat text.
+//
+// Columns are RAW rune indices into Lines — the same units InsertText,
+// SplitLine and DeleteBackward take — NOT the tab-expanded indices the
+// cursor uses. Callers holding a cursor position must convert first (see
+// rawIndexForExpandedCol); this method deliberately knows nothing about tab
+// expansion, exactly as every other Buffer method doesn't.
+//
+// Arguments in the wrong order are swapped rather than rejected, so callers
+// derived from a drag (where the end can be above the start) don't each have
+// to normalise. Out-of-range lines are clamped, and cols are clamped to
+// their own line's length, so a position past the end of a short line
+// (legal for a rectangular drag) yields that line's text rather than a
+// panic. Returns nil for an empty range.
+func (b *Buffer) TextBetween(startLn, startCol, endLn, endCol int) []string {
+	if len(b.Lines) == 0 {
+		return nil
+	}
+	if endLn < startLn || (endLn == startLn && endCol < startCol) {
+		startLn, startCol, endLn, endCol = endLn, endCol, startLn, startCol
+	}
+	startLn = clampIndex(startLn, len(b.Lines)-1)
+	endLn = clampIndex(endLn, len(b.Lines)-1)
+
+	runesAt := func(ln int) []rune { return []rune(b.Lines[ln]) }
+	startCol = clampIndex(startCol, len(runesAt(startLn)))
+	endCol = clampIndex(endCol, len(runesAt(endLn)))
+
+	if startLn == endLn {
+		if startCol == endCol {
+			return nil
+		}
+		return []string{string(runesAt(startLn)[startCol:endCol])}
+	}
+
+	out := make([]string, 0, endLn-startLn+1)
+	out = append(out, string(runesAt(startLn)[startCol:]))
+	for ln := startLn + 1; ln < endLn; ln++ {
+		out = append(out, b.Lines[ln])
+	}
+	out = append(out, string(runesAt(endLn)[:endCol]))
+	return out
+}
+
+// clampIndex bounds i to [0, max].
+func clampIndex(i, max int) int {
+	if i < 0 {
+		return 0
+	}
+	if i > max {
+		return max
+	}
+	return i
 }
 
 // resync re-derives Source from Lines — the same join Load's initial split

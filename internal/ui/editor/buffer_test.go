@@ -343,3 +343,70 @@ func TestRestoreDirtyReflectsSaveThatHappenedAfterTheSnapshot(t *testing.T) {
 		t.Fatal("expected Dirty after redo: buffer diverges from disk again, must not read as saved")
 	}
 }
+
+func TestTextBetweenOnOneLineReturnsTheFragment(t *testing.T) {
+	b := &Buffer{Lines: []string{"hello world"}}
+	got := b.TextBetween(0, 0, 0, 5)
+	if len(got) != 1 || got[0] != "hello" {
+		t.Errorf("got %q, want [\"hello\"]", got)
+	}
+}
+
+func TestTextBetweenAcrossLinesSplitsHeadMiddleAndTail(t *testing.T) {
+	b := &Buffer{Lines: []string{"one", "two", "three", "four"}}
+	got := b.TextBetween(0, 1, 3, 2)
+	want := []string{"ne", "two", "three", "fo"}
+	if len(got) != len(want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	}
+}
+
+func TestTextBetweenSwapsReversedArguments(t *testing.T) {
+	// Callers derive ranges from a drag, which can run backwards; normalising
+	// here means each of them doesn't have to.
+	b := &Buffer{Lines: []string{"hello world"}}
+	forward := b.TextBetween(0, 2, 0, 7)
+	backward := b.TextBetween(0, 7, 0, 2)
+	if len(forward) != 1 || len(backward) != 1 || forward[0] != backward[0] {
+		t.Errorf("forward %q != backward %q", forward, backward)
+	}
+}
+
+func TestTextBetweenEmptyRangeReturnsNil(t *testing.T) {
+	b := &Buffer{Lines: []string{"hello"}}
+	if got := b.TextBetween(0, 3, 0, 3); got != nil {
+		t.Errorf("got %q, want nil", got)
+	}
+}
+
+func TestTextBetweenClampsColumnsPastEndOfLine(t *testing.T) {
+	// A drag can leave a column past a short line's end; that must yield the
+	// line's text rather than panic.
+	b := &Buffer{Lines: []string{"ab", "cdef"}}
+	got := b.TextBetween(0, 99, 1, 99)
+	if len(got) != 2 || got[0] != "" || got[1] != "cdef" {
+		t.Errorf("got %q, want [\"\" \"cdef\"]", got)
+	}
+}
+
+func TestTextBetweenClampsLinesPastEndOfBuffer(t *testing.T) {
+	b := &Buffer{Lines: []string{"only"}}
+	got := b.TextBetween(0, 0, 99, 99)
+	if len(got) != 1 || got[0] != "only" {
+		t.Errorf("got %q, want [\"only\"]", got)
+	}
+}
+
+func TestTextBetweenCountsRunesNotBytes(t *testing.T) {
+	// Columns are rune indices, so a multi-byte glyph must not be split.
+	b := &Buffer{Lines: []string{"世界ok"}}
+	got := b.TextBetween(0, 0, 0, 2)
+	if len(got) != 1 || got[0] != "世界" {
+		t.Errorf("got %q, want [\"世界\"]", got)
+	}
+}

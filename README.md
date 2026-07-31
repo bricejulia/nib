@@ -35,6 +35,8 @@ servers — in a codebase small enough to read in an afternoon.
 - **Git integration** — file status in the tree, per-line diff markers in the
   gutter, branch and dirty summary in the status bar.
 - **In-file search** — `/` with `n`/`N`, all matches highlighted.
+- **Mouse text selection** — click, drag, double-click a word, triple-click a
+  line; `y` copies to the system clipboard (OSC 52) and to the yank register.
 - **Everything rebindable** through a plain-text config file.
 
 ## Getting started
@@ -194,10 +196,32 @@ Press `?` in kiwi for this list at runtime. Every binding is rebindable
 | `Esc` | Back to Normal mode |
 | `x` / `X` | Delete the character under / before the cursor |
 | `dd` / `yy` | Delete (cut) / yank (copy) this line |
-| `p` | Put (paste) the yanked line after this one |
+| `p` | Put (paste) after this one — a line, or a fragment if the last copy was a selection |
 | `Enter`, `Backspace`, `Tab` | Newline, delete back, insert a tab (Insert mode) |
 | `u` / `Ctrl+R` | Undo / redo |
 | `Ctrl+S` | Save |
+
+### Editor — mouse
+
+| Gesture | Action |
+| --- | --- |
+| Click | Place the cursor |
+| Drag | Select text — drag past the pane's edge to scroll |
+| Double-click | Select the word |
+| Triple-click | Select the line, including its line break |
+| `Shift`+click | Extend the selection |
+| `y` | Copy the selection; `Esc` or any cursor movement dismisses it |
+| Wheel | Scroll whichever pane the pointer is over, focused or not |
+
+A selection copy goes to the system clipboard **and** to kiwi's own yank
+register, so `p` puts it back regardless. The clipboard half uses OSC 52,
+which the terminal forwards to whatever machine it is running on (so it works
+over ssh) — but support is not universal: tmux needs `set -g set-clipboard on`,
+and some terminals disable it deliberately.
+
+Note that kiwi asks the terminal for mouse reporting, which means the
+terminal's *own* click-drag selection doesn't apply inside kiwi. Most
+terminals bypass this while a modifier is held (`Option` on macOS).
 
 ### Editor — code intelligence
 
@@ -237,6 +261,22 @@ Press `?` in kiwi for this list at runtime. Every binding is rebindable
 | `Enter`, `l`, `→` | Open file / expand directory |
 | `h`, `←` | Collapse directory |
 | `Shift+←` / `Shift+→` | Peek at a truncated name |
+| `a` | New file or directory |
+| `r` | Rename / move |
+| `d` | Delete |
+
+`a` and `r` open a prompt on the pane's bottom row. What you type is a path
+relative to the project root — `a` prefills the selected folder, `r` prefills
+the selected entry — so editing the last segment renames and editing an
+earlier one moves. End a name with `/` to create a directory; missing parent
+directories are created for you. Nothing is ever overwritten: a name that
+already exists is refused, with the reason shown on the prompt row.
+
+`d` asks `(y/N)` for a file or an empty directory. A directory that still has
+entries in it reports how many and requires typing `yes` — the removal is
+recursive and permanent. Deleting a file that's open in an editor pane closes
+its tab, unless it has unsaved changes, in which case the tab stays open
+marked `-- DELETED --` so `:w` can write the file back.
 
 ### Finder
 
