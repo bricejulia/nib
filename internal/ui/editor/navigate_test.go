@@ -250,34 +250,36 @@ func TestGoToDefinitionNoMatchIsNoop(t *testing.T) {
 	}
 }
 
-func TestFindReferencesFiresCallbackWithWordUnderCursor(t *testing.T) {
+// TestViewWordUnderCursorDelegatesToTheActiveTab guards the View-level
+// wrapper cmd/kiwi/main.go's global "find references" (Ctrl+F) handler
+// actually calls — the word-touching logic itself is covered by
+// TestWordUnderCursorFindsTheTouchedIdentifier above; this only needs to
+// confirm the wrapper resolves the active tab and tabWidth correctly.
+func TestViewWordUnderCursorDelegatesToTheActiveTab(t *testing.T) {
 	v := NewView()
 	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"count := total"}}}}
 	v.active = 0
 	v.activeTab().cursorCol = 2
 
-	var got string
-	v.OnFindReferences = func(word string) { got = word }
-
-	if !v.HandleKey(ctrlKey("f")) {
-		t.Fatal("expected Ctrl+f to be consumed")
-	}
-	if got != "count" {
-		t.Fatalf("OnFindReferences called with %q, want %q", got, "count")
+	if got := v.WordUnderCursor(); got != "count" {
+		t.Fatalf("WordUnderCursor() = %q, want %q", got, "count")
 	}
 }
 
-func TestFindReferencesNoWordUnderCursorDoesFire(t *testing.T) {
+func TestViewWordUnderCursorEmptyWhenNotTouchingAWord(t *testing.T) {
 	v := NewView()
 	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"a  b"}}}}
 	v.active = 0
 	v.activeTab().cursorCol = 2 // the middle of the two-space gap between "a" and "b" — not touching either
 
-	calls := 0
-	v.OnFindReferences = func(string) { calls++ }
-	v.HandleKey(ctrlKey("f"))
+	if got := v.WordUnderCursor(); got != "" {
+		t.Fatalf("WordUnderCursor() = %q, want empty", got)
+	}
+}
 
-	if calls != 1 {
-		t.Fatalf("expected OnFindReferences not to fire, got %d calls", calls)
+func TestViewWordUnderCursorNoActiveTabReturnsEmpty(t *testing.T) {
+	v := NewView() // no tabs open at all — the "No file open" placeholder state
+	if got := v.WordUnderCursor(); got != "" {
+		t.Fatalf("WordUnderCursor() = %q, want empty with no active tab", got)
 	}
 }

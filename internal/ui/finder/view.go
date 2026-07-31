@@ -154,9 +154,10 @@ func (v *View) Open() {
 }
 
 // OpenWithQuery opens the finder already in content-search mode with
-// query pre-filled and searched — used by the editor's find-references
-// action (see editor.View.OnFindReferences) so the user doesn't have to
-// retype the identifier under their cursor.
+// query pre-filled and searched — used by the global "find references"
+// action (Ctrl+F, see cmd/kiwi/main.go's openFindReferences and
+// editor.View.WordUnderCursor) so the user doesn't have to retype the
+// identifier under their cursor.
 func (v *View) OpenWithQuery(query string) {
 	v.Open()
 	v.mode = modeContent

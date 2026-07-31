@@ -302,19 +302,3 @@ func (v *View) goToDefinitionTreeSitter(t *tab) {
 	}
 	debuglog.Warn("go to definition: no declaration found for %q", word)
 }
-
-// findReferences implements "find references": calls OnFindReferences
-// with the identifier under the cursor, if any and if set (see
-// cmd/kiwi/main.go, which wires this to the finder overlay's
-// content-search — see finder.View.OpenWithQuery).
-func (v *View) findReferences(t *tab) {
-	/*if t.buf == nil || v.OnFindReferences == nil {
-		return
-	}*/
-	if word := wordUnderCursor(t, v.tabWidth); word != "" {
-		v.OnFindReferences(word)
-		return
-	}
-
-	v.OnFindReferences("")
-}

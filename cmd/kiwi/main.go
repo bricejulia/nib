@@ -35,7 +35,7 @@ const watchDebounce = 200 * time.Millisecond
 // mainShortcutsHint is the fixed reminder shown left-aligned in the status
 // bar — see internal/ui/help for the full keybinding reference (opened via
 // "?", included at the end here).
-const mainShortcutsHint = "Tab Switch pane  ·  Ctrl+P Finder  ·  Ctrl+Shift+R Replace  ·  Ctrl+D Debug  ·  ? Help  ·  Ctrl+C Quit  ·  Ctrl+O Config"
+const mainShortcutsHint = "Tab Switch pane  ·  Ctrl+P Finder  ·  Ctrl+F Find refs  ·  Ctrl+Shift+R Replace  ·  Ctrl+D Debug  ·  ? Help  ·  Ctrl+C Quit  ·  Ctrl+O Config"
 
 // globalDefaultKeybinds are kiwi's built-in global keybindings,
 // overridable via the user config's "global" scope (see internal/config).
@@ -50,6 +50,14 @@ var globalDefaultKeybinds = config.Defaults{
 	// terminals reporting bare modifier keypresses (kitty keyboard
 	// protocol) — Ctrl+P is the conventional fallback everywhere else.
 	{Trigger: "Ctrl+p", Action: "open_finder"},
+	// "Find references": opens the finder's content search, pre-filled
+	// with the word under the cursor when an editor pane happens to be
+	// focused (see openFindReferences) — global, not editor-scoped, so it
+	// also works from the file tree, unlike every other editor-only
+	// gesture (B/D/H, go-to-definition, ...). A bare Ctrl+<letter>, so
+	// (unlike Ctrl+Shift+r below) it's reliably representable on any
+	// terminal.
+	{Trigger: "Ctrl+f", Action: "open_find_references"},
 	// Ctrl+Shift+<letter> is only reliably distinguishable from plain
 	// Ctrl+<letter> on terminals reporting the kitty keyboard protocol's
 	// full modifier state — on everything else this arrives indistinguishable
@@ -411,13 +419,6 @@ func run() error {
 		// the "No file open" placeholder with nothing left to do in it, so
 		// hand focus back to the file tree.
 		v.OnAllTabsClosed = func() { app.FocusLeaf(fileTreeLeaf.ID) }
-		// "Find references" (Ctrl+f) reuses the finder's own content-search
-		// overlay, pre-seeded with the identifier under the cursor, rather
-		// than a separate results picker — see finder.View.OpenWithQuery.
-		v.OnFindReferences = func(word string) {
-			finderView.OpenWithQuery(word)
-			app.ShowOverlay(finderView)
-		}
 		// The git tooltips ("B" blame, "H" current-line diff): the editor
 		// pane never shells out to git itself, so it asks through these,
 		// exactly as its gutter markers arrive via ApplyLineStatus.
@@ -461,10 +462,11 @@ func run() error {
 		}
 	}
 
-	// targetPane resolves the editor pane split/close should act on: the
-	// one currently focused, or ok=false if focus isn't on any known
-	// editor pane (e.g. it's on the file tree) — in which case split/close
-	// are simply no-ops.
+	// targetPane resolves the editor pane an action driven by CURRENT focus
+	// should act on: the one currently focused, or ok=false if focus isn't
+	// on any known editor pane (e.g. it's on the file tree) — in which case
+	// split/close are simply no-ops, and openFindReferences below falls
+	// back to an empty query.
 	targetPane := func() (*editorPane, bool) {
 		id, ok := app.FocusedLeaf()
 		if !ok {
@@ -472,6 +474,20 @@ func run() error {
 		}
 		p, ok := editorPanes[id]
 		return p, ok
+	}
+	// openFindReferences is Ctrl+F's global handler (see
+	// globalDefaultKeybinds): it opens the finder's content search,
+	// pre-filled with the word under the cursor when an editor pane
+	// happens to be focused — the exact behavior "find references" always
+	// had — or with an empty query otherwise, identical to how it already
+	// behaved when no word was under the cursor.
+	openFindReferences := func() {
+		word := ""
+		if p, ok := targetPane(); ok {
+			word = p.view.WordUnderCursor()
+		}
+		finderView.OpenWithQuery(word)
+		app.ShowOverlay(finderView)
 	}
 	trySplit := func(dir layout.Direction) {
 		target, ok := targetPane()
@@ -578,17 +594,18 @@ func run() error {
 	}
 
 	actions := map[string]func(){
-		"quit":         app.Quit,
-		"focus_next":   app.CycleFocusNext,
-		"focus_prev":   app.CycleFocusPrev,
-		"open_finder":  openFinder,
-		"open_replace": openReplace,
-		"open_debug":   openDebugLog,
-		"open_help":    openHelp,
-		"open_config":  openConfig,
-		"split_right":  func() { trySplit(layout.Horizontal) },
-		"split_down":   func() { trySplit(layout.Vertical) },
-		"close_pane":   closeFocusedPane,
+		"quit":                 app.Quit,
+		"focus_next":           app.CycleFocusNext,
+		"focus_prev":           app.CycleFocusPrev,
+		"open_finder":          openFinder,
+		"open_find_references": openFindReferences,
+		"open_replace":         openReplace,
+		"open_debug":           openDebugLog,
+		"open_help":            openHelp,
+		"open_config":          openConfig,
+		"split_right":          func() { trySplit(layout.Horizontal) },
+		"split_down":           func() { trySplit(layout.Vertical) },
+		"close_pane":           closeFocusedPane,
 	}
 	global := map[string]func(){}
 	for trigger, action := range globalDefaultKeybinds.Resolve(cfg.Overrides("global")) {

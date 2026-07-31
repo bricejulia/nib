@@ -172,6 +172,7 @@ Press `?` in kiwi for this list at runtime. Every binding is rebindable
 | `Ctrl+C` | Quit |
 | `Tab` / `Shift+Tab` | Focus next / previous pane |
 | `Ctrl+P` | File finder (also: double-tap `Shift`) |
+| `Ctrl+F` | Find references: search file contents, pre-filled with the word under the cursor if an editor pane is focused |
 | `Ctrl+Shift+R` | Find & replace in path |
 | `Ctrl+D` | Debug log |
 | `?` | Help |
@@ -246,7 +247,6 @@ terminals bypass this while a modifier is held (`Option` on macOS).
 | `Ctrl+]` | Go to definition (LSP when available, else same-file) |
 | `Ctrl+B` | Jump back |
 | `Ctrl+G` | Go to parent node in the syntax tree |
-| `Ctrl+F` | Find references (opens the finder) |
 | `Ctrl+Space` | Autocomplete (LSP members, else buffer words) |
 | `K` | Show error/warning details for this line |
 

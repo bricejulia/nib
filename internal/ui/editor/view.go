@@ -67,7 +67,11 @@ var DefaultKeybinds = config.Defaults{
 	// elsewhere already has to work around. Ctrl+b ("back") has no such
 	// collision.
 	{Trigger: "Ctrl+b", Action: "jump_back"},
-	{Trigger: "Ctrl+f", Action: "find_references"},
+	// Not bound here: Ctrl+f ("find references") is a GLOBAL binding (see
+	// cmd/kiwi/main.go's globalDefaultKeybinds) so it works regardless of
+	// which pane has focus — the global handler asks this pane for
+	// WordUnderCursor when it happens to be the focused one, rather than
+	// this pane owning the trigger itself.
 	{Trigger: "Ctrl+Space", Action: "trigger_autocomplete"},
 	// "K" is vim's own "look up what's under the cursor", which is exactly
 	// this gesture — and being a letter, it works on any keyboard layout.
@@ -245,13 +249,6 @@ type View struct {
 	// pattern as finder.View.OnClose/debug.View.OnClose.
 	OnAllTabsClosed func()
 
-	// OnFindReferences, if set, is called with the identifier under the
-	// cursor when "find references" (Ctrl+f) fires — set by
-	// cmd/kiwi/main.go to open the finder overlay pre-seeded with that
-	// query (see finder.View.OpenWithQuery). Same plain-callback pattern
-	// as OnAllTabsClosed.
-	OnFindReferences func(word string)
-
 	// completion holds the in-progress autocomplete popup (Ctrl+Space),
 	// nil when none is showing — see completion.go.
 	completion *completionState
@@ -288,7 +285,7 @@ type View struct {
 	// internal/ui/diffview). A whole-file diff is a scrollable document
 	// rather than a tooltip, so it belongs in an overlay the app owns, not
 	// in a popup this pane draws. Same plain-callback pattern as
-	// OnFindReferences.
+	// OnAllTabsClosed.
 	OnShowFileDiff func(path string)
 
 	// In-file search state (see search.go). searchBuf is what's typed at the
@@ -474,6 +471,19 @@ func (v *View) activeTab() *tab {
 		return nil
 	}
 	return v.tabs[v.active]
+}
+
+// WordUnderCursor returns the identifier-like word touching the active
+// tab's cursor, or "" if there's no active tab or the cursor isn't
+// touching one — the query cmd/kiwi/main.go pre-fills the finder's content
+// search with when the global "find references" binding (Ctrl+F) fires
+// while this pane happens to be focused.
+func (v *View) WordUnderCursor() string {
+	t := v.activeTab()
+	if t == nil {
+		return ""
+	}
+	return wordUnderCursor(t, v.tabWidth)
 }
 
 // OpenPaths returns the paths of every open tab, for the caller
@@ -1405,8 +1415,6 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.goToDefinition(t)
 	case "jump_back":
 		v.jumpBack()
-	case "find_references":
-		v.findReferences(t)
 	case "search_next":
 		v.searchNext()
 	case "search_prev":
