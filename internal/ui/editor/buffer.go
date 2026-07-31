@@ -50,12 +50,25 @@ type Buffer struct {
 	// this buffer's own content: with the same Buffer now potentially
 	// shown in more than one pane (see BufferStore), a per-tab cache would
 	// go stale in every OTHER tab the moment just one of them re-highlights
-	// after an edit. Computed on first Open and recomputed in full after
-	// every edit (see View.onBufferEdited) — not incremental, but simple and
-	// correct; caching a tree-sitter *Tree and re-parsing incrementally is
-	// the natural next optimization, once something needs the Tree anyway
-	// (e.g. real go-to-definition/find-references built on the same parse).
+	// after an edit.
+	//
+	// A full re-parse is far too slow to run on a keystroke — measured at
+	// 236ms per key on an 1800-line Go file, and 8-12x worse than a clean
+	// parse whenever the file is momentarily unparseable, which while
+	// typing it nearly always is. So edits do NOT recompute this: they
+	// keep it index-aligned with Lines via spliceHighlight, nil-ing only
+	// the lines they touched (which renderBody then draws with the cheap
+	// highlightLine heuristic), and hand the new text to the background
+	// highlighter, which replaces this wholesale when it finishes. See
+	// Highlighter and View.submitHighlight.
 	highlighted [][]layout.Segment
+
+	// rev counts content changes, so a highlight computed in the
+	// background can tell whether it is still describing this buffer's
+	// current text (see ApplyHighlightResult). Bumped by resync — i.e. by
+	// every mutation, from any pane — and by Repath, since a rename can
+	// change the language a pending result was computed for.
+	rev uint64
 
 	// undoStack/redoStack hold one undoEntry (see view.go) per completed
 	// Insert session or single-key Normal-mode edit — vim's own undo
@@ -89,21 +102,23 @@ func Load(path string) (*Buffer, error) {
 }
 
 // Repath points the buffer at newPath — what Save writes to from now on —
-// and recomputes whatever is derived from the path.
+// and drops whatever is derived from the path.
 //
 // Today that's tree-sitter highlighting, which is keyed on the file
 // extension (see highlightBuffer): a rename can change the language
-// outright (.txt -> .go), so the cached highlight has to be rebuilt, not
-// merely kept. One full re-parse per rename is nothing next to the full
-// re-parse this package already does after every edit (see
-// View.onBufferEdited).
+// outright (.txt -> .go), so the cached highlight is discarded rather than
+// kept, and rev is bumped so a result already in flight for the OLD
+// language can't land on top of the new one. Rebuilding it is the caller's
+// job — see View.Repath, which submits the buffer for re-highlighting once
+// the store has accepted the move.
 //
 // Deliberately NOT re-stat'ed: mode is the file's own permission bits,
 // which a move carries with the inode, and saved stays the correct Dirty
 // baseline because moving a file doesn't change its bytes.
 func (b *Buffer) Repath(newPath string) {
 	b.Path = newPath
-	b.highlighted = highlightBuffer(b)
+	b.highlighted = nil
+	b.rev++
 }
 
 // InsertText inserts s (which must not contain '\n') into line ln at rune
@@ -119,6 +134,7 @@ func (b *Buffer) InsertText(ln, col int, s string) int {
 	merged = append(merged, runes[col:]...)
 	b.Lines[ln] = string(merged)
 
+	b.spliceHighlight(ln, 1, 1)
 	b.resync()
 	return col + len(ins)
 }
@@ -138,6 +154,7 @@ func (b *Buffer) SplitLine(ln, col int) {
 	lines = append(lines, b.Lines[ln+1:]...)
 	b.Lines = lines
 
+	b.spliceHighlight(ln, 1, 2)
 	b.resync()
 }
 
@@ -150,6 +167,7 @@ func (b *Buffer) DeleteBackward(ln, col int) (newLn, newCol int) {
 	if col > 0 {
 		runes := []rune(b.Lines[ln])
 		b.Lines[ln] = string(append(runes[:col-1], runes[col:]...))
+		b.spliceHighlight(ln, 1, 1)
 		b.resync()
 		return ln, col - 1
 	}
@@ -160,6 +178,7 @@ func (b *Buffer) DeleteBackward(ln, col int) (newLn, newCol int) {
 	joinCol := len([]rune(b.Lines[ln-1]))
 	b.Lines[ln-1] += b.Lines[ln]
 	b.Lines = append(b.Lines[:ln], b.Lines[ln+1:]...)
+	b.spliceHighlight(ln-1, 2, 1)
 	b.resync()
 	return ln - 1, joinCol
 }
@@ -177,8 +196,10 @@ func (b *Buffer) DeleteLine(ln int) string {
 	removed := b.Lines[ln]
 	if len(b.Lines) == 1 {
 		b.Lines[0] = ""
+		b.spliceHighlight(0, 1, 1) // the line survives, emptied, so its entry does too
 	} else {
 		b.Lines = append(b.Lines[:ln], b.Lines[ln+1:]...)
+		b.spliceHighlight(ln, 1, 0)
 	}
 	b.resync()
 	return removed
@@ -207,6 +228,7 @@ func (b *Buffer) InsertLines(at int, lines []string) {
 	merged = append(merged, b.Lines[at:]...)
 	b.Lines = merged
 
+	b.spliceHighlight(at, 0, len(lines))
 	b.resync()
 }
 
@@ -277,6 +299,51 @@ func clampIndex(i, max int) int {
 func (b *Buffer) resync() {
 	b.Source = []byte(strings.Join(b.Lines, "\n"))
 	b.Dirty = !linesEqual(b.Lines, b.saved)
+	b.rev++
+}
+
+// spliceHighlight keeps highlighted index-aligned with Lines across a
+// structural edit: the removed entries at ln are replaced by inserted nil
+// ones, matching the splice the caller just performed on Lines itself. The
+// nils are what make an edit feel instant — renderBody draws a nil entry
+// with the highlightLine heuristic (see its loop), so the edited lines
+// stay readable at keystroke speed while the real tree-sitter result is
+// computed in the background and swapped in whole.
+//
+// A no-op while highlighted is nil, which is the "nothing cached yet"
+// state every buffer starts in and returns to on Restore/Repath: there is
+// no alignment to maintain, and allocating an all-nil array here would
+// only pretend otherwise.
+//
+// Out-of-range ln, or a removal running past the end, means the caller's
+// splice and this one disagree — the alignment invariant is already lost,
+// so the whole cache is dropped rather than a mangled one kept.
+func (b *Buffer) spliceHighlight(ln, removed, inserted int) {
+	if b.highlighted == nil {
+		return
+	}
+	if ln < 0 || removed < 0 || inserted < 0 || ln+removed > len(b.highlighted) {
+		b.highlighted = nil
+		return
+	}
+
+	// The hot path — typing, which replaces one line with one line — needs
+	// no splice at all: clearing in place keeps the common case free of an
+	// allocation and a copy of one entry per line of the buffer, on every
+	// single keystroke. Only edits that change the line COUNT (Enter, dd,
+	// p, a backspace that joins) rebuild the array below.
+	if removed == inserted {
+		for i := ln; i < ln+removed; i++ {
+			b.highlighted[i] = nil
+		}
+		return
+	}
+
+	spliced := make([][]layout.Segment, 0, len(b.highlighted)-removed+inserted)
+	spliced = append(spliced, b.highlighted[:ln]...)
+	spliced = append(spliced, make([][]layout.Segment, inserted)...)
+	spliced = append(spliced, b.highlighted[ln+removed:]...)
+	b.highlighted = spliced
 }
 
 // Restore replaces the buffer's contents with lines and resyncs — the
@@ -288,8 +355,13 @@ func (b *Buffer) resync() {
 // stale — restoring content from before that Save must still compare
 // against what's actually on disk now, not against a snapshot of Dirty
 // taken before the Save ever happened.
+// The highlight cache is dropped rather than spliced: a snapshot replaces
+// the content wholesale, so there is no line-to-line mapping from the old
+// array to the new one to preserve. Every line falls back to the
+// highlightLine heuristic until the background result lands.
 func (b *Buffer) Restore(lines []string) {
 	b.Lines = lines
+	b.highlighted = nil
 	b.resync()
 }
 

@@ -330,6 +330,18 @@ type View struct {
 	// mouse, not a document: a drag cannot survive a tab switch.
 	dragging bool
 
+	// highlights, when non-nil, computes tree-sitter highlighting off the
+	// UI goroutine — see Highlighter and submitHighlight. Every pane should
+	// share ONE (like store and register), since results land on the shared
+	// Buffer.
+	//
+	// nil means highlight inline instead, exactly as this package did
+	// before the worker existed. That keeps a bare NewView() — every test
+	// in this package, and any embedder that never wires an event loop —
+	// synchronous and deterministic: the highlight is there the moment the
+	// edit returns, with no goroutine to wait on.
+	highlights *Highlighter
+
 	// lsp, when non-nil, provides real semantic features (diagnostics, go
 	// to definition) via language servers — see internal/lsp. Optional by
 	// design: nil (the default) means every LSP-backed feature falls back
@@ -379,6 +391,41 @@ func (v *View) SetRegister(r *Register) {
 		return
 	}
 	v.register = r
+}
+
+// SetHighlighter gives this pane a background highlight worker, so
+// keystrokes stop paying for a tree-sitter re-parse. Every pane should
+// share ONE (see cmd/kiwi/main.go): highlights are stored on the shared
+// Buffer, and one worker is also what keeps the tree-sitter parsers it
+// uses single-goroutine (see highlighterCache).
+//
+// A nil argument leaves the pane highlighting inline — see View.highlights.
+func (v *View) SetHighlighter(h *Highlighter) {
+	v.highlights = h
+}
+
+// submitHighlight refreshes buf's highlighting after its content or path
+// changed: handed to the worker when there is one, computed inline when
+// there isn't. immediate skips the worker's debounce, for the one-off
+// refreshes that aren't part of a typing burst (open, rename).
+//
+// The inline path is also why the worker never highlights on the UI
+// goroutine and vice versa: a Highlighter and its parsers are safe for one
+// goroutine at a time, so a View either has a worker doing all of its
+// parsing or does all of it itself.
+func (v *View) submitHighlight(buf *Buffer, immediate bool) {
+	if buf == nil {
+		return
+	}
+	if v.highlights == nil {
+		buf.highlighted = highlightBuffer(buf)
+		return
+	}
+	if immediate {
+		v.highlights.SubmitNow(buf)
+		return
+	}
+	v.highlights.Submit(buf)
 }
 
 // SetLSPManager gives this pane a language-server manager, enabling
@@ -481,7 +528,11 @@ func (v *View) Open(path string) {
 	buf, err := v.store.Open(path)
 	t := &tab{path: path, buf: buf, err: err}
 	if buf != nil && buf.highlighted == nil {
-		buf.highlighted = highlightBuffer(buf) // already cached if another pane opened this path first
+		// Already highlighted if another pane opened this path first.
+		// Submitted immediately (no debounce): opening a file isn't part of
+		// a typing burst, so there is nothing to coalesce with — the file
+		// shows the heuristic colors for the one frame the parse takes.
+		v.submitHighlight(buf, true)
 	}
 	v.tabs = append(v.tabs, t)
 	v.active = len(v.tabs) - 1
@@ -615,6 +666,11 @@ func (v *View) Repath(oldPath, newPath string) int {
 				debuglog.Error("repath %s -> %s: buffer store refused (destination busy)", t.path, np)
 				continue
 			}
+			// Rekey dropped the buffer's highlight, since the new extension
+			// can mean a new language entirely (see Buffer.Repath). Rebuild
+			// it under the new path — immediately, as a rename is a one-off,
+			// not part of a burst.
+			v.submitHighlight(t.buf, true)
 			if v.lsp != nil {
 				v.lsp.Close(t.path)
 				if lang := languageFor(np); lang != "" {
@@ -1835,16 +1891,19 @@ func (v *View) openLineBelow() {
 }
 
 // onBufferEdited is the single funnel every buffer mutation runs through
-// once it's applied: it recomputes t.buf.highlighted (a full re-parse, the
-// same cost as Open's initial call — see the highlighted field's doc
-// comment for the incremental-parsing optimization this defers) and pushes
+// once it's applied: it queues the buffer for re-highlighting and pushes
 // the new contents to the language server, if any, so its diagnostics and
 // definition answers reflect what's actually on screen.
+//
+// The highlight is queued rather than computed here — that one line used
+// to be the whole cost of a keystroke (236ms on an 1800-line Go file). The
+// edit itself has already nil'd the lines it touched, so they render with
+// the heuristic until the worker answers. See submitHighlight.
 func (v *View) onBufferEdited(t *tab) {
 	if t.buf == nil {
 		return
 	}
-	t.buf.highlighted = highlightBuffer(t.buf)
+	v.submitHighlight(t.buf, false)
 	if v.lsp != nil {
 		v.lsp.Change(t.path, string(t.buf.Source))
 	}

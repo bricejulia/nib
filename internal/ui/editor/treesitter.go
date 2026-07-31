@@ -7,6 +7,7 @@ import (
 	"github.com/odvcencio/gotreesitter"
 	"github.com/odvcencio/gotreesitter/grammars"
 
+	"github.com/bricejulia/kiwi/internal/debuglog"
 	"github.com/bricejulia/kiwi/internal/layout"
 )
 
@@ -24,43 +25,127 @@ func languageFor(path string) string {
 	return entry.Name
 }
 
+// nonCodeGrammars names grammars whose highlighting isn't worth a parse
+// for the files they claim. The registry maps ".txt" to the vimdoc
+// grammar, so without this every large plain-text file pays a full parse
+// (measured at 14ms per keystroke on an 1800-line file) to produce
+// markup-directive colors for prose that has none.
+//
+// A deny list rather than an allow list, unlike syntaxCheckedLanguages
+// next door in diagnostics.go: 206 of the registry's grammars ship a
+// highlight query, so an allow list would silently drop highlighting for
+// most languages kiwi supports, whereas that one guards correctness
+// (invented error markers) and so has to fail closed. Both are data, not
+// code — one more line covers one more language.
+var nonCodeGrammars = map[string]bool{
+	"vimdoc": true,
+}
+
+// highlightTimeoutMicros bounds a single parse. The parser's error
+// recovery costs 8-12x a clean parse, and mid-edit code is nearly always
+// momentarily unparseable, so a big enough file in a bad enough state can
+// otherwise occupy the highlight worker for a very long time. Hitting this
+// leaves the previous highlight in place (see highlightSource) — stale
+// colors on a few lines, which is what the heuristic fallback already
+// looks like, rather than a stalled worker.
+// A var only so a test can wind it down far enough to actually trip; treat
+// it as a constant otherwise. Note it is baked into each cached
+// highlighter at construction (see highlightSource), so changing it later
+// only affects languages not yet compiled.
+var highlightTimeoutMicros uint64 = 250_000 // 250ms
+
+// highlightGrammar returns the grammar to highlight path with, or nil if
+// tree-sitter has nothing useful to offer for it: no grammar claims the
+// extension, the one that does is prose (see nonCodeGrammars), or it ships
+// no highlight query. The single place that decision is made, so the
+// worker's "is this worth waking up for" check (see Highlighter.submit)
+// and the parse itself can't disagree about which files get highlighted.
+func highlightGrammar(path string) *grammars.LangEntry {
+	entry := grammars.DetectLanguage(path)
+	if entry == nil || nonCodeGrammars[entry.Name] || strings.TrimSpace(entry.HighlightQuery) == "" {
+		return nil
+	}
+	return entry
+}
+
 // highlighterCache holds one compiled *gotreesitter.Highlighter per
 // language name — constructing one compiles a tree-sitter Query, so it's
 // built once and reused across every tab/Open() of the same language, not
 // rebuilt per file. A nil value (present key, nil pointer) records "this
 // language's highlighter failed to construct", so a broken query doesn't
 // get retried on every Open of that language.
+//
+// NOT synchronized, and a *gotreesitter.Highlighter owns a parser that is
+// itself not safe for concurrent use. Everything here is therefore reached
+// from exactly one goroutine at a time: the Highlighter worker's, once a
+// View has one, and otherwise the UI goroutine's (see View.submitHighlight,
+// which never straddles the two). Note this is a different cache from
+// parserCache below, whose parsers stay on the UI goroutine — separate
+// instances, and the library's own global state is all sync.Pool/sync.Map,
+// so the two coexist safely.
 var highlighterCache = map[string]*gotreesitter.Highlighter{}
 
 // highlightBuffer returns per-line, tab-unexpanded, styled segments for
-// buf's entire contents, or nil if no grammar matches buf.Path or the
-// highlighter fails to construct — callers fall back to the heuristic
-// highlightLine in that case. Computed once in Open and recomputed after
-// every edit (see View.onBufferEdited); the result is cached on
-// Buffer.highlighted, not per-tab — see its doc comment for why.
+// buf's entire contents. See highlightSource, which it defers to; a parse
+// that stops early leaves the buffer's existing highlight in place rather
+// than blanking it.
 func highlightBuffer(buf *Buffer) [][]layout.Segment {
 	if buf == nil {
 		return nil
 	}
-	entry := grammars.DetectLanguage(buf.Path)
-	if entry == nil || strings.TrimSpace(entry.HighlightQuery) == "" {
-		return nil
+	lines, ok := highlightSource(buf.Path, buf.Source)
+	if !ok {
+		return buf.highlighted
+	}
+	return lines
+}
+
+// highlightSource returns per-line, tab-unexpanded, styled segments for
+// src, parsed with the grammar path's extension selects.
+//
+// ok reports whether the answer is final. (nil, true) is a definitive "no
+// tree-sitter highlighting for this file" — no grammar matches, the
+// grammar is prose (see nonCodeGrammars), or its query won't compile — and
+// callers should show the heuristic highlightLine fallback. (nil, false)
+// means the parse gave up early (see highlightTimeoutMicros) and whatever
+// highlight the buffer already has should be kept.
+//
+// Takes the path and bytes rather than a *Buffer precisely so it can run
+// on the highlight worker's goroutine, which must not touch a Buffer the
+// UI goroutine is free to be mutating (see Highlighter).
+func highlightSource(path string, src []byte) ([][]layout.Segment, bool) {
+	entry := highlightGrammar(path)
+	if entry == nil {
+		return nil, true
 	}
 
 	hl, cached := highlighterCache[entry.Name]
 	if !cached {
 		var err error
-		hl, err = gotreesitter.NewHighlighter(entry.Language(), entry.HighlightQuery)
+		hl, err = gotreesitter.NewHighlighter(entry.Language(), entry.HighlightQuery,
+			gotreesitter.WithHighlighterTimeoutMicros(highlightTimeoutMicros))
 		if err != nil {
 			hl = nil // cache the failure too: don't retry every Open of this language
 		}
 		highlighterCache[entry.Name] = hl
 	}
 	if hl == nil {
-		return nil
+		return nil, true
 	}
 
-	return splitHighlightsByLine(buf.Source, hl.Highlight(buf.Source))
+	// The Strict variant purely to learn whether the parse finished:
+	// Highlight() reports a timed-out parse as an ordinary (but wrong,
+	// half-colored) result. It hands the tree back instead of releasing it
+	// internally, so releasing it is this function's job.
+	ranges, tree, err := hl.HighlightIncrementalStrict(src, nil)
+	if tree != nil {
+		defer tree.Release()
+	}
+	if err != nil {
+		debuglog.Debug("highlight %s: %v", path, err)
+		return nil, false
+	}
+	return splitHighlightsByLine(src, ranges), true
 }
 
 // parserCache holds one *gotreesitter.Parser per language name, mirroring
@@ -74,12 +159,22 @@ var parserCache = map[string]*gotreesitter.Parser{}
 // navigate.go). Returns ok=false if the language isn't recognized or
 // parsing fails.
 //
-// Deliberately not cached on Buffer: unlike highlighting, which is
-// recomputed on every keystroke via onBufferEdited, these actions only ever
-// fire on an explicit keypress, so a fresh parse each time is cheap and
-// needs no invalidation — notably simpler now that a Buffer can be shown
-// in more than one pane at once (see BufferStore), where a cached *Tree
-// would need to account for edits made from any of them.
+// Deliberately not cached on Buffer: these actions only ever fire on an
+// explicit keypress, so a fresh parse each time needs no invalidation —
+// notably simpler now that a Buffer can be shown in more than one pane at
+// once (see BufferStore), where a cached *Tree would need to account for
+// edits made from any of them.
+//
+// Nor is the tree reused across edits via Tree.Edit + the parser's
+// incremental path, which looks like the obvious optimization and is not:
+// measured on an 1800-line Go file, one mid-file character costs 33.5ms
+// incrementally against 19.7ms for a parse from scratch, so in
+// gotreesitter v0.47.1 "incremental" is 1.7x slower than starting over.
+// The fix for parse cost is to keep it off the keystroke path (see
+// Highlighter), not to try to make each parse smaller.
+//
+// Runs on the UI goroutine, using parserCache's own parsers — never the
+// highlight worker's (see highlighterCache).
 func parseTree(buf *Buffer) (*gotreesitter.Tree, bool) {
 	if buf == nil {
 		return nil, false

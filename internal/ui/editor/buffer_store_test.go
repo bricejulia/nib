@@ -246,27 +246,35 @@ func TestBufferStoreRekeyRejectsAnUnknownOldPath(t *testing.T) {
 }
 
 // A rename can change the language outright, and highlighting is keyed on
-// the extension — so the cached tree-sitter output has to be rebuilt, not
-// carried over.
-func TestBufferStoreRekeyRecomputesHighlightingWhenTheLanguageChanges(t *testing.T) {
+// the extension — so the cached tree-sitter output has to be dropped, not
+// carried over. Rebuilding it is View.Repath's job, not the store's (see
+// TestViewRepathRehighlightsWhenTheLanguageChanges): a store that parsed
+// would be doing it on whatever goroutine called Rekey, behind the
+// highlight worker's back.
+func TestBufferStoreRekeyDropsHighlightingWhenTheLanguageChanges(t *testing.T) {
 	dir := t.TempDir()
-	txt := filepath.Join(dir, "x.txt")
-	if err := os.WriteFile(txt, []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+	src := filepath.Join(dir, "x.go")
+	if err := os.WriteFile(src, []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s := NewBufferStore()
-	buf, err := s.Open(txt)
+	buf, err := s.Open(src)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if buf.highlighted != nil {
-		t.Fatal("a .txt file should have no tree-sitter highlighting to start with")
+	buf.highlighted = highlightBuffer(buf)
+	if buf.highlighted == nil {
+		t.Fatal("a .go file should have tree-sitter highlighting to start with")
 	}
+	before := buf.rev
 
-	if !s.Rekey(buf, txt, filepath.Join(dir, "x.go")) {
+	if !s.Rekey(buf, src, filepath.Join(dir, "x.txt")) {
 		t.Fatal("Rekey should have succeeded")
 	}
-	if buf.highlighted == nil {
-		t.Error("renaming .txt -> .go should have produced Go highlighting")
+	if buf.highlighted != nil {
+		t.Error("renaming .go -> .txt should have dropped the stale Go highlighting")
+	}
+	if buf.rev == before {
+		t.Error("rev should advance on a rename, so a result in flight for the old language is discarded")
 	}
 }

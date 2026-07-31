@@ -434,3 +434,28 @@ func TestViewCloseTabsUnderDropsJumpStackEntriesIntoTheDeletedTree(t *testing.T)
 		t.Errorf("jumpStack = %v, want only the surviving path", v.jumpStack)
 	}
 }
+
+// The rebuild half of the rename contract: the store drops highlighting
+// keyed on the old extension (see TestBufferStoreRekeyDropsHighlightingWhenTheLanguageChanges),
+// and the View is what puts the new language's colors back.
+func TestViewRepathRehighlightsWhenTheLanguageChanges(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := writeTemp(t, dir, "x.txt", "package main\n\nfunc main() {}\n")
+	newPath := filepath.Join(dir, "x.go")
+
+	v := NewView()
+	v.Open(oldPath)
+	if v.activeTab().buf.highlighted != nil {
+		t.Fatal("a .txt file should have no tree-sitter highlighting to start with")
+	}
+	if err := os.Rename(oldPath, newPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := v.Repath(oldPath, newPath); got != 1 {
+		t.Fatalf("Repath updated %d tabs, want 1", got)
+	}
+	if v.activeTab().buf.highlighted == nil {
+		t.Error("renaming .txt -> .go should have produced Go highlighting")
+	}
+}

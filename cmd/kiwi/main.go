@@ -290,6 +290,16 @@ func run() error {
 	// the filesystem watcher and the finder's content search already use.
 	lspManager.Post = app.Post
 
+	// highlighter is shared by every editor pane, like bufferStore above and
+	// for the same reason: a highlight belongs to the Buffer, so a file open
+	// in two panes is parsed once and both show the result. It exists at all
+	// because a tree-sitter re-parse is far too slow to run on a keystroke
+	// (236ms per key on an 1800-line Go file), so edits queue the work here
+	// and it lands back through Post like everything else off the UI
+	// goroutine. See editor.Highlighter.
+	highlighter := editor.NewHighlighter(app.Post)
+	defer highlighter.Close()
+
 	// lastFocusedLeaf is only used to know which editor pane (if any) just
 	// LOST focus, immediately below — activeEditorPane (which pane last
 	// genuinely had focus, full stop) is a separate, longer-lived thing
@@ -382,6 +392,9 @@ func run() error {
 	// feature — which is exactly what a third hand-maintained copy of this
 	// list would eventually do.
 	wireEditorPane := func(v *editor.View) {
+		// Keystrokes hand their re-highlighting to the shared worker rather
+		// than parsing inline — see editor.View.SetHighlighter.
+		v.SetHighlighter(highlighter)
 		// Closing a pane's last tab (via ":q"/":qa"/etc.) leaves it showing
 		// the "No file open" placeholder with nothing left to do in it, so
 		// hand focus back to the file tree.
@@ -608,6 +621,12 @@ func run() error {
 			for _, p := range editorPanes {
 				p.view.ApplyDiagnostics(e.Path, e.Diagnostics)
 			}
+		case editor.HighlightResult:
+			// Like DiagnosticsEvent, but with no fan-out to do: a highlight
+			// belongs to the shared Buffer, not to a pane, so storing it
+			// once updates every pane showing that file. Dropped here if the
+			// buffer has been edited since — see editor.ApplyHighlightResult.
+			editor.ApplyHighlightResult(e)
 		case lsp.AsyncResult:
 			// One generic case covers every request/response LSP feature:
 			// the closure was built by whoever issued the request and
