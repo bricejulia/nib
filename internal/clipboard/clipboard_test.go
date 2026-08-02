@@ -201,7 +201,7 @@ func TestCopyReportsAFailingHelper(t *testing.T) {
 
 func TestMechanismReportsTheBareCommandNameNotItsPath(t *testing.T) {
 	// It's a label for a human reading the debug pane.
-	w := &Writer{native: []string{filepath.Join("/usr", "local", "bin", "pbcopy")}}
+	w := &Writer{native: []string{"/usr/local/bin/pbcopy"}}
 	if got := w.Mechanism(); got != "pbcopy" {
 		t.Errorf("got %q, want pbcopy", got)
 	}

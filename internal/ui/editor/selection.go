@@ -236,8 +236,10 @@ func (v *View) HandleMouse(m layout.Mouse) bool {
 			v.dragMoved = false
 		}
 		return true
+	default:
+		// EventRepeat never applies to a mouse event.
+		return false
 	}
-	return false
 }
 
 // mousePress handles a button-down in the text area: it moves the cursor

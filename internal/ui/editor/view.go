@@ -1306,6 +1306,8 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return v.handleCommandKey(k)
 	case modeSearch:
 		return v.handleSearchKey(k)
+	case modeNormal:
+		// Falls through to the Normal-mode keymap below.
 	}
 
 	action, ok := v.keymap[k.String()]
@@ -1437,6 +1439,66 @@ func (v *View) HandleKey(k layout.Key) bool {
 	}
 
 	v.clamp(t)
+	return true
+}
+
+// HandlePaste implements layout.Paster: it inserts s as a single operation
+// instead of routing it through HandleKey one character at a time, which is
+// what lets a multi-line paste actually produce multiple lines rather than
+// gluing every pasted line onto the cursor's line (see internal/ui/app.go's
+// bracketed-paste accumulation, which is what assembles s in the first
+// place).
+//
+// Command and Search mode have no use for embedded newlines — both are
+// single-line prompts — so a paste there just drops them rather than
+// committing/searching partway through, the way a literal Enter keystroke
+// would.
+func (v *View) HandlePaste(s string) bool {
+	if s == "" {
+		return true
+	}
+
+	switch v.mode {
+	case modeCommand:
+		v.commandBuf += strings.ReplaceAll(s, "\n", "")
+		return true
+	case modeSearch:
+		v.searchBuf += strings.ReplaceAll(s, "\n", "")
+		v.refreshSearchHighlights()
+		return true
+	case modeNormal, modeInsert:
+		// Falls through to pasting into the buffer below.
+	}
+
+	t := v.activeTab()
+	if t == nil || t.buf == nil {
+		return true
+	}
+
+	// Pasting in Normal mode inserts the same as pasting in Insert mode —
+	// bracketed paste exists precisely so a terminal app can tell "this is
+	// pasted text" apart from "this is typed commands" and treat it as
+	// literal content either way. Wrapping it in enter/exitInsertMode gives
+	// it its own undo entry, the same one Insert-mode typing gets.
+	wasInsert := v.mode == modeInsert
+	if !wasInsert && !v.enterInsertMode() {
+		return true
+	}
+	v.completion = nil // a pasted block isn't a continuation of any open completion
+
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if line != "" {
+			v.insertText(line)
+		}
+		if i < len(lines)-1 {
+			v.insertNewline()
+		}
+	}
+
+	if !wasInsert {
+		v.exitInsertMode()
+	}
 	return true
 }
 
@@ -1704,9 +1766,10 @@ func (v *View) exitInsertMode() {
 }
 
 // ExitEditingModes returns the pane to Normal mode, discarding an
-// in-progress Command prompt and committing (or discarding, if nothing
-// was typed) an in-progress Insert session — exactly what Esc would do in
-// either mode. Meant to be called when focus moves away from this pane
+// in-progress Command or Search prompt and committing (or discarding, if
+// nothing was typed) an in-progress Insert session — exactly what Esc
+// would do in any of the three. Meant to be called when focus moves away
+// from this pane
 // (see cmd/kiwi/main.go's focus-change wiring): a mouse click can switch
 // focus without ever routing a key through the losing pane's HandleKey
 // (unlike Tab-cycling, which Insert mode's own key-trap already blocks),
@@ -1732,6 +1795,15 @@ func (v *View) ExitEditingModes() {
 	case modeCommand:
 		v.mode = modeNormal
 		v.commandBuf = ""
+	case modeSearch:
+		// Same as pressing Esc mid-search: restores the cursor to where
+		// the prompt was opened and clears the in-progress highlights, so
+		// a pane doesn't stay "stuck" showing a half-typed "/" query (and
+		// its stale match highlights) after focus moves away from it —
+		// the same hazard this function exists for in Insert/Command mode.
+		v.cancelSearch()
+	case modeNormal:
+		// Nothing to exit.
 	}
 }
 

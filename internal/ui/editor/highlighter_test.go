@@ -148,7 +148,7 @@ func TestApplyHighlightResultDropsStaleResults(t *testing.T) {
 
 	current := HighlightResult{buf: b, rev: b.rev, lines: fresh}
 	ApplyHighlightResult(current)
-	if b.highlighted == nil || b.highlighted[0] == nil {
+	if len(b.highlighted) == 0 || b.highlighted[0] == nil {
 		t.Error("a result matching the buffer's current revision should have been stored")
 	}
 }
@@ -385,7 +385,7 @@ func TestTypingThenPausingRestoresRealHighlighting(t *testing.T) {
 		v.HandleKey(layout.Key{Text: string(r)})
 	}
 	tb := v.activeTab()
-	if tb.buf.highlighted != nil && tb.buf.highlighted[tb.cursorLn] != nil {
+	if len(tb.buf.highlighted) > tb.cursorLn && tb.buf.highlighted[tb.cursorLn] != nil {
 		t.Error("the line being typed on should be cleared, not re-highlighted inline")
 	}
 
@@ -393,7 +393,7 @@ func TestTypingThenPausingRestoresRealHighlighting(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		drainInto(t, results, highlightDebounce+300*time.Millisecond)
-		if tb.buf.highlighted != nil && tb.buf.highlighted[tb.cursorLn] != nil {
+		if len(tb.buf.highlighted) > tb.cursorLn && tb.buf.highlighted[tb.cursorLn] != nil {
 			return
 		}
 	}

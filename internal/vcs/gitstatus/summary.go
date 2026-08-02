@@ -22,6 +22,8 @@ func Summary(direct map[string]Status) string {
 			untracked++
 		case Conflicted:
 			conflicted++
+		case Unmodified:
+			// Not counted: Summary only reports what changed.
 		}
 	}
 

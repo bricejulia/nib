@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/kiwi/internal/textfile"
 )
 
 // defaultSaveMode is the permission Save falls back to when Load couldn't
@@ -41,6 +42,16 @@ type Buffer struct {
 	// Save doesn't silently drop them (e.g. a script's executable bit) by
 	// writing back with some fixed default instead.
 	mode os.FileMode
+
+	// Charset and EOL are the file's on-disk encoding and line-ending
+	// style, detected once at Load and reproduced by Save — see
+	// internal/textfile. Their zero values (textfile.UTF8, textfile.LF)
+	// are today's defaults, so a Buffer{} literal that never sets these
+	// (as most tests still do) behaves exactly as before. Source/Lines
+	// stay plain UTF-8 split on "\n" regardless of either field — only
+	// Load and Save ever convert to/from the on-disk form.
+	Charset textfile.Charset
+	EOL     textfile.EOL
 
 	// highlighted is real tree-sitter output (see treesitter.go), one
 	// entry per Lines index, raw/not-tab-expanded — nil (as a whole, or
@@ -90,15 +101,17 @@ func Load(path string) (*Buffer, error) {
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode()
 	}
-	text := string(data)
-	text = strings.TrimSuffix(text, "\n")
-	var lines []string
-	if text == "" {
-		lines = []string{""}
-	} else {
-		lines = strings.Split(text, "\n")
+	text, charset, err := textfile.Decode(data)
+	if err != nil {
+		return nil, err
 	}
-	return &Buffer{Lines: lines, Path: path, Source: []byte(text), mode: mode, saved: append([]string(nil), lines...)}, nil
+	lines, eol := textfile.SplitLines(text)
+	source := strings.Join(lines, "\n")
+	return &Buffer{
+		Lines: lines, Path: path, Source: []byte(source), mode: mode,
+		saved:   append([]string(nil), lines...),
+		Charset: charset, EOL: eol,
+	}, nil
 }
 
 // Repath points the buffer at newPath — what Save writes to from now on —
@@ -366,10 +379,15 @@ func (b *Buffer) Restore(lines []string) {
 }
 
 // Save writes the buffer's current contents back to Path, preserving the
-// original file's permission bits (see Load), records that content as the
-// new saved baseline, and clears Dirty.
+// original file's permission bits (see Load) and its detected charset/EOL
+// (see textfile), records that content as the new saved baseline, and
+// clears Dirty.
 func (b *Buffer) Save() error {
-	if err := os.WriteFile(b.Path, b.Source, b.mode); err != nil {
+	data, err := textfile.Encode(textfile.JoinLines(b.Lines, b.EOL), b.Charset)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(b.Path, data, b.mode); err != nil {
 		return err
 	}
 	b.saved = append([]string(nil), b.Lines...)

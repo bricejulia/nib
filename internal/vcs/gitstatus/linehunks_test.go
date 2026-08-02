@@ -78,6 +78,33 @@ func TestFileHunksUntrackedFileMarksEveryLineAdded(t *testing.T) {
 	}
 }
 
+func TestFileHunksUntrackedCRLFFileMarksEveryLineAddedWithoutStrayLine(t *testing.T) {
+	// wholeFileAdded must split exactly like editor.Buffer.Load (see
+	// internal/textfile), or an untracked CRLF file's line count would
+	// desync from what the editor pane actually shows.
+	dir := newLineHunksTestRepo(t)
+	writeAndCommit(t, dir, "committed.txt", "x\n")
+
+	path := filepath.Join(dir, "untracked.txt")
+	if err := os.WriteFile(path, []byte("p\r\nq\r\nr\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FileHunks(dir, path)
+	if err != nil {
+		t.Fatalf("FileHunks: %v", err)
+	}
+	want := map[int]LineStatus{0: LineAdded, 1: LineAdded, 2: LineAdded}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v, want %+v (3 lines, not 6 or a single CRLF-mangled line)", got, want)
+	}
+	for i, s := range want {
+		if got[i] != s {
+			t.Errorf("line %d: got %v, want %v", i, got[i], s)
+		}
+	}
+}
+
 func TestFileHunksStagedNewFileMarksEveryLineAdded(t *testing.T) {
 	dir := newLineHunksTestRepo(t)
 	writeAndCommit(t, dir, "committed.txt", "x\n")

@@ -1851,6 +1851,34 @@ func TestExitEditingModesCommitsInsertSessionAndClearsCommandPrompt(t *testing.T
 	}
 }
 
+func TestExitEditingModesCancelsSearchPrompt(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc", "xyz"}}}}
+	v.active = 0
+	v.activeTab().cursorLn, v.activeTab().cursorCol = 0, 1
+
+	v.HandleKey(layout.Key{Text: "/"})
+	v.HandleKey(layout.Key{Text: "x"})
+	if v.mode != modeSearch || len(v.searchMatches) == 0 {
+		t.Fatal("expected Search mode with a live match before ExitEditingModes")
+	}
+
+	v.ExitEditingModes()
+
+	if v.mode != modeNormal {
+		t.Fatalf("expected Normal mode after ExitEditingModes, got %v", v.mode)
+	}
+	if v.searchBuf != "" {
+		t.Fatalf("expected the Search prompt to be cleared, got searchBuf=%q", v.searchBuf)
+	}
+	if v.searchMatches != nil {
+		t.Fatalf("expected the in-progress match highlights to be cleared, got %+v", v.searchMatches)
+	}
+	if ln, col := v.activeTab().cursorLn, v.activeTab().cursorCol; ln != 0 || col != 1 {
+		t.Fatalf("expected the cursor restored to (0, 1), got (%d, %d)", ln, col)
+	}
+}
+
 func TestRenderClampsCursorAfterSiblingPaneShrinksSharedBuffer(t *testing.T) {
 	store := NewBufferStore()
 	v1, v2 := NewView(), NewView()
@@ -1898,5 +1926,90 @@ func TestTabInNormalModeIsNotConsumedByEditor(t *testing.T) {
 
 	if v.HandleKey(layout.Key{Named: layout.KeyTab}) {
 		t.Fatal("expected Tab in Normal mode to fall through unconsumed, so the global focus-cycle keybind still fires")
+	}
+}
+
+// TestHandlePasteInInsertModeSplitsIntoMultipleLines is a regression test
+// for the reported bug: a multi-line paste used to glue every line onto the
+// cursor's line instead of actually creating new lines.
+func TestHandlePasteInInsertModeSplitsIntoMultipleLines(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"ac"}}}}
+	v.active = 0
+	v.HandleKey(layout.Key{Text: "i"})
+	v.activeTab().cursorCol = 1
+
+	if !v.HandlePaste("1\n2\n3") {
+		t.Fatal("expected HandlePaste to report the paste as handled")
+	}
+
+	want := []string{"a1", "2", "3c"}
+	if got := v.activeTab().buf.Lines; !linesEqual(got, want) {
+		t.Fatalf("Lines = %q, want %q", got, want)
+	}
+	if v.activeTab().cursorLn != 2 || v.activeTab().cursorCol != 1 {
+		t.Fatalf("cursor = (%d,%d), want (2,1) — just after the pasted \"3\"", v.activeTab().cursorLn, v.activeTab().cursorCol)
+	}
+}
+
+// TestHandlePasteInNormalModeInsertsAsOneUndoEntry guards that a paste while
+// in Normal mode (not already in the middle of typing) still inserts text —
+// bracketed paste means "this is literal content", not "replay these as
+// Normal-mode commands" — and that the whole paste undoes in a single step.
+func TestHandlePasteInNormalModeInsertsAsOneUndoEntry(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{""}}}}
+	v.active = 0
+
+	v.HandlePaste("one\ntwo")
+
+	if v.mode != modeNormal {
+		t.Fatalf("expected Normal mode to be restored after the paste, got mode=%v", v.mode)
+	}
+	want := []string{"one", "two"}
+	if got := v.activeTab().buf.Lines; !linesEqual(got, want) {
+		t.Fatalf("Lines = %q, want %q", got, want)
+	}
+
+	v.undo(v.activeTab())
+	if got := v.activeTab().buf.Lines; !linesEqual(got, []string{""}) {
+		t.Fatalf("expected a single undo to revert the whole paste, got Lines = %q", got)
+	}
+}
+
+// TestHandlePasteInCommandModeStripsNewlines guards that pasting into the
+// ":" prompt (a single-line field) appends the text instead of committing
+// partway through the way a literal Enter keystroke would.
+func TestHandlePasteInCommandModeStripsNewlines(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"one", "two", "three"}}}}
+	v.active = 0
+	v.mode = modeCommand
+
+	v.HandlePaste("1\n0")
+
+	if v.mode != modeCommand {
+		t.Fatalf("expected to stay in Command mode, got mode=%v", v.mode)
+	}
+	if v.commandBuf != "10" {
+		t.Fatalf("commandBuf = %q, want %q (newlines stripped, not committed)", v.commandBuf, "10")
+	}
+}
+
+// TestHandlePasteInSearchModeStripsNewlines is the Search-mode counterpart
+// of TestHandlePasteInCommandModeStripsNewlines.
+func TestHandlePasteInSearchModeStripsNewlines(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"needle", "other"}}}}
+	v.active = 0
+	v.enterSearchMode()
+
+	v.HandlePaste("nee\ndle")
+
+	if v.mode != modeSearch {
+		t.Fatalf("expected to stay in Search mode, got mode=%v", v.mode)
+	}
+	if v.searchBuf != "needle" {
+		t.Fatalf("searchBuf = %q, want %q (newlines stripped)", v.searchBuf, "needle")
 	}
 }

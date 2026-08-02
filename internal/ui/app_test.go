@@ -774,3 +774,157 @@ func TestScrollDragNeverReachesTheViewsMouseHandler(t *testing.T) {
 		t.Errorf("expected the View's own MouseHandler to see nothing during a scrollbar drag, got %+v", view.got)
 	}
 }
+
+// pasteRecorderView implements layout.Paster, recording each whole paste it
+// receives, plus any HandleKey calls it gets alongside them.
+type pasteRecorderView struct {
+	stubView
+	pastes []string
+	keys   []layout.Key
+}
+
+func (v *pasteRecorderView) HandleKey(k layout.Key) bool {
+	v.keys = append(v.keys, k)
+	return true
+}
+
+func (v *pasteRecorderView) HandlePaste(s string) bool {
+	v.pastes = append(v.pastes, s)
+	return true
+}
+
+func newLeafApp(v layout.View) *App {
+	leaf := &layout.LeafNode{ID: 1, View: v}
+	fm := &layout.FocusManager{}
+	fm.Rebuild(leaf)
+	return &App{root: leaf, focus: fm}
+}
+
+func TestHandlePasteDeliversWholeStringToAPasterAwareView(t *testing.T) {
+	v := &pasteRecorderView{}
+	a := newLeafApp(v)
+
+	a.handlePaste("line one\nline two\nline three")
+
+	if len(v.pastes) != 1 || v.pastes[0] != "line one\nline two\nline three" {
+		t.Fatalf("expected the paste delivered atomically, got %+v", v.pastes)
+	}
+	if len(v.keys) != 0 {
+		t.Errorf("expected no HandleKey calls for a Paster-aware view, got %+v", v.keys)
+	}
+}
+
+// nonPasterView is a View that deliberately does NOT implement
+// layout.Paster, unlike pasteRecorderView, so handlePaste is forced onto
+// its per-character HandleKey fallback.
+type nonPasterView struct {
+	keys []layout.Key
+}
+
+func (v *nonPasterView) Render(layout.Window) {}
+func (v *nonPasterView) Title() string        { return "" }
+func (v *nonPasterView) HandleKey(k layout.Key) bool {
+	v.keys = append(v.keys, k)
+	return true
+}
+
+func TestHandlePasteFallsBackToPerCharacterKeysWithoutPaster(t *testing.T) {
+	v := &nonPasterView{}
+	a := newLeafApp(v)
+
+	a.handlePaste("ab\nc")
+
+	want := []layout.Key{
+		{Text: "a", Codepoint: 'a'},
+		{Text: "b", Codepoint: 'b'},
+		{Named: layout.KeyEnter},
+		{Text: "c", Codepoint: 'c'},
+	}
+	if len(v.keys) != len(want) {
+		t.Fatalf("got %d keys %+v, want %d %+v", len(v.keys), v.keys, len(want), want)
+	}
+	for i, k := range want {
+		if v.keys[i] != k {
+			t.Errorf("key %d = %+v, want %+v", i, v.keys[i], k)
+		}
+	}
+}
+
+// TestAppendPasteKeyHandlesLineEndings is a regression test for the actual
+// reported bug: pasted multi-line text collapsing onto one line. vaxis's C0
+// decoder only special-cases CR (0x0D, KeyEnter) — a bare LF (0x0A), the
+// line ending virtually all non-Windows clipboard text uses, decodes
+// identically to a real Ctrl+J keypress (ModCtrl, Keycode 'j', no Text).
+// Within a paste that ambiguity is resolvable (see appendPasteKey's doc
+// comment), and CRLF must collapse to a single '\n' rather than a blank line.
+func TestAppendPasteKeyHandlesLineEndings(t *testing.T) {
+	bareLF := vaxis.Key{Keycode: 'j', Modifiers: vaxis.ModCtrl, EventType: vaxis.EventPaste}
+	cr := vaxis.Key{Keycode: vaxis.KeyEnter, EventType: vaxis.EventPaste}
+	tab := vaxis.Key{Keycode: vaxis.KeyTab, EventType: vaxis.EventPaste}
+	letter := func(r rune) vaxis.Key {
+		return vaxis.Key{Text: string(r), Keycode: r, EventType: vaxis.EventPaste}
+	}
+
+	cases := []struct {
+		name string
+		keys []vaxis.Key
+		want string
+	}{
+		{
+			name: "bare LF line ending (Unix/macOS clipboard)",
+			keys: []vaxis.Key{letter('a'), bareLF, letter('b')},
+			want: "a\nb",
+		},
+		{
+			name: "CRLF line ending collapses to one newline",
+			keys: []vaxis.Key{letter('a'), cr, bareLF, letter('b')},
+			want: "a\nb",
+		},
+		{
+			name: "bare CR line ending (old Mac)",
+			keys: []vaxis.Key{letter('a'), cr, letter('b')},
+			want: "a\nb",
+		},
+		{
+			name: "embedded tab",
+			keys: []vaxis.Key{letter('a'), tab, letter('b')},
+			want: "a\tb",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := &App{}
+			for _, k := range c.keys {
+				a.appendPasteKey(k)
+			}
+			if got := a.pasteBuf.String(); got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestPasteStartEventResetsAnyStalePastedState(t *testing.T) {
+	v := &pasteRecorderView{}
+	a := newLeafApp(v)
+	a.pasteBuf.WriteString("leftover")
+	a.pasteCRPending = true
+
+	a.appendPasteKey(vaxis.Key{Keycode: vaxis.KeyEnter, EventType: vaxis.EventPaste})
+	a.appendPasteKey(vaxis.Key{Text: "x", Keycode: 'x', EventType: vaxis.EventPaste})
+
+	if got := a.pasteBuf.String(); got != "leftover\nx" {
+		t.Fatalf("sanity check on accumulation failed: got %q", got)
+	}
+
+	// A fresh PasteStartEvent must discard whatever was buffered before it
+	// (e.g. left over from a paste that never sent its End event, or from
+	// an unrelated leftover in this test) rather than prepending to it.
+	a.pasteBuf.Reset()
+	a.pasteCRPending = false
+	a.appendPasteKey(vaxis.Key{Text: "y", Keycode: 'y', EventType: vaxis.EventPaste})
+	if got := a.pasteBuf.String(); got != "y" {
+		t.Errorf("got %q, want %q", got, "y")
+	}
+}

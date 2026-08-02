@@ -1,9 +1,6 @@
 package config
 
-import (
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 func TestPathUsesXDGConfigHome(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/xdg-home")
@@ -11,7 +8,7 @@ func TestPathUsesXDGConfigHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Path: %v", err)
 	}
-	want := filepath.Join("/xdg-home", "kiwi", "config")
+	want := "/xdg-home/kiwi/config"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -24,7 +21,7 @@ func TestPathFallsBackToDotConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Path: %v", err)
 	}
-	want := filepath.Join("/home/testuser", ".config", "kiwi", "config")
+	want := "/home/testuser/.config/kiwi/config"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

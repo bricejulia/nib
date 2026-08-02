@@ -2,6 +2,7 @@ package finder
 
 import (
 	"bufio"
+	"errors"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -33,7 +34,8 @@ func searchContent(root, query string) ([]contentMatch, error) {
 
 	out, err := cmd.Output()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return nil, nil
 		}
 		return nil, err

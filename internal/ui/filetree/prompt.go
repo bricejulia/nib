@@ -240,6 +240,11 @@ func (v *View) handlePromptKey(k layout.Key) bool {
 // commitPrompt acts on Enter.
 func (v *View) commitPrompt() {
 	switch v.prompt {
+	case promptNone, promptConfirm:
+		// promptNone: nothing to commit. promptConfirm is a single-keypress
+		// y/N handled entirely in handlePromptKey before Enter ever reaches
+		// here (see the early return there), so this case is never actually
+		// hit — kept only so this switch stays exhaustive.
 	case promptCreate:
 		v.commitCreate()
 	case promptRename:

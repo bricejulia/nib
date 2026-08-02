@@ -4,6 +4,7 @@
 package ui
 
 import (
+	"strings"
 	"time"
 
 	"go.rockorager.dev/vaxis"
@@ -98,6 +99,9 @@ func translateKey(k vaxis.Key) layout.Key {
 		et = layout.EventRepeat
 	case vaxis.EventRelease:
 		et = layout.EventRelease
+	default:
+		// vaxis.EventPress (already the default above), plus EventMotion/
+		// EventPaste which never apply to a key event.
 	}
 
 	return layout.Key{
@@ -202,6 +206,9 @@ func translateMouse(m vaxis.Mouse) layout.Mouse {
 		et = layout.EventRelease
 	case vaxis.EventMotion:
 		et = layout.EventMotion
+	default:
+		// vaxis.EventPress (already the default above), plus EventRepeat/
+		// EventPaste which never apply to a mouse event.
 	}
 
 	return layout.Mouse{
@@ -367,6 +374,20 @@ type App struct {
 	// otherwise pop the finder open in a session the user isn't even
 	// looking at.
 	focused bool
+
+	// pasteBuf accumulates the text of a bracketed paste in progress,
+	// between a vaxis.PasteStartEvent and its matching PasteEndEvent — see
+	// appendPasteKey. Keeping it on App (rather than e.g. a local in Run)
+	// is what lets pasteCRPending survive across the many individual
+	// vaxis.Key events that make up one paste.
+	pasteBuf strings.Builder
+
+	// pasteCRPending is true immediately after a CR (vaxis.KeyEnter) has
+	// been appended to pasteBuf as '\n', so the very next key can tell a
+	// CRLF pair's trailing LF apart from a real bare-LF line ending — both
+	// arrive from vaxis identically decoded as Ctrl+j (see appendPasteKey).
+	// Without this, pasted CRLF text would show up double-spaced.
+	pasteCRPending bool
 }
 
 // doubleShiftWindow is the maximum gap between two bare Shift presses for
@@ -552,8 +573,21 @@ func (a *App) Run() error {
 		switch e := ev.(type) {
 		case vaxis.Resize:
 			a.vx.Resize(e)
+		case vaxis.PasteStartEvent:
+			a.pasteBuf.Reset()
+			a.pasteCRPending = false
+		case vaxis.PasteEndEvent:
+			if s := a.pasteBuf.String(); s != "" {
+				a.handlePaste(s)
+			}
+			a.pasteBuf.Reset()
+			a.pasteCRPending = false
 		case vaxis.Key:
-			a.handleKey(translateKey(e))
+			if e.EventType == vaxis.EventPaste {
+				a.appendPasteKey(e)
+			} else {
+				a.handleKey(translateKey(e))
+			}
 		case vaxis.Mouse:
 			if a.overlay == nil {
 				a.handleMouse(e)
@@ -596,6 +630,80 @@ func (a *App) handleKey(k layout.Key) {
 		return
 	}
 	layout.Dispatch(k, a.focus.FocusedView(), a.global)
+}
+
+// appendPasteKey accumulates one key of an in-progress bracketed paste (see
+// the vaxis.PasteStartEvent/PasteEndEvent cases in Run) into a.pasteBuf.
+//
+// It exists because a pasted line ending cannot simply be read off k.Text:
+// vaxis's C0 decoder only special-cases CR (0x0D) as KeyEnter — a bare LF
+// (0x0A), the line ending virtually all non-Windows clipboard text uses,
+// falls through its default branch and decodes as Ctrl+j (ModCtrl set,
+// Keycode 'j', Text ""), identically to how a real Ctrl+J keypress would.
+// That ambiguity is harmless here: actual keypresses never arrive tagged
+// EventPaste, so within a paste, "Ctrl+j with no text" can only mean a
+// pasted bare LF.
+func (a *App) appendPasteKey(k vaxis.Key) {
+	if k.Keycode == vaxis.KeyEnter {
+		a.pasteBuf.WriteByte('\n')
+		a.pasteCRPending = true
+		return
+	}
+
+	wasCR := a.pasteCRPending
+	a.pasteCRPending = false
+
+	isBareLF := k.Text == "" && k.Modifiers&vaxis.ModCtrl != 0 && k.Keycode == 'j'
+	switch {
+	case isBareLF && wasCR:
+		// The LF half of a CRLF pair already written as '\n' above.
+	case isBareLF:
+		a.pasteBuf.WriteByte('\n')
+	case k.Keycode == vaxis.KeyTab:
+		a.pasteBuf.WriteByte('\t')
+	case k.Text != "":
+		a.pasteBuf.WriteString(k.Text)
+	}
+}
+
+// handlePaste delivers a fully-accumulated paste to whatever currently owns
+// input — the overlay if one is open, otherwise the focused pane — via
+// layout.Paster when it implements that (an atomic multi-line insert),
+// falling back to feeding it through HandleKey one character at a time
+// (embedded newlines becoming a synthetic Enter) for anything that doesn't,
+// which is exactly how the paste would have arrived before this existed.
+func (a *App) handlePaste(s string) {
+	var target layout.View
+	if a.overlay != nil {
+		target = a.overlay
+	} else {
+		target = a.focus.FocusedView()
+	}
+	if target == nil {
+		return
+	}
+	if p, ok := target.(layout.Paster); ok {
+		p.HandlePaste(s)
+		return
+	}
+	feedPasteAsKeystrokes(target, s)
+}
+
+// feedPasteAsKeystrokes is handlePaste's fallback for a View that doesn't
+// implement layout.Paster: it replays s as the sequence of keys typing it
+// would have produced, so a paste into e.g. the file tree behaves the same
+// as it always has.
+func feedPasteAsKeystrokes(v layout.View, s string) {
+	for _, r := range s {
+		switch r {
+		case '\n':
+			v.HandleKey(layout.Key{Named: layout.KeyEnter})
+		case '\t':
+			v.HandleKey(layout.Key{Named: layout.KeyTab})
+		default:
+			v.HandleKey(layout.Key{Text: string(r), Codepoint: r})
+		}
+	}
 }
 
 // wheelScrollLines is how many lines a single wheel tick moves — vaxis
@@ -647,6 +755,10 @@ func (a *App) handleMouse(m vaxis.Mouse) {
 		}
 	case layout.EventRelease:
 		a.mouseCapture, a.hasMouseCapture = 0, false
+	default:
+		// EventMotion (hover/drag) and EventRepeat need none of the
+		// press/release bookkeeping above; they fall straight through to
+		// the generic handling below.
 	}
 
 	view := a.focus.ViewAt(id)

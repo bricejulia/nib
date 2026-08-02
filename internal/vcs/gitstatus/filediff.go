@@ -39,6 +39,9 @@ func FileDiff(dir, path string) ([]string, error) {
 		return nil, nil
 	case Untracked:
 		return untrackedDiff(dir, path)
+	default:
+		// Modified/Added/Deleted/Renamed/Conflicted all fall through to
+		// the general `git diff` path below.
 	}
 
 	cmd := exec.Command("git", "diff", "HEAD", "--no-color", "--", path)

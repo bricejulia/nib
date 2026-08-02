@@ -9,7 +9,7 @@ import (
 
 func fixturePath(t *testing.T, name string) string {
 	t.Helper()
-	abs, err := filepath.Abs(filepath.Join("../../../testdata", name))
+	abs, err := filepath.Abs(filepath.Join("..", "..", "..", "testdata", name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,6 +275,103 @@ func TestSavePreservesFileMode(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o755 {
 		t.Fatalf("file mode = %v, want 0755 preserved", info.Mode().Perm())
+	}
+}
+
+func TestLoadStripsCRLFAndSaveWritesItBack(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "crlf.txt")
+	if err := os.WriteFile(path, []byte("one\r\ntwo\r\nthree\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"one", "two", "three"}
+	if len(buf.Lines) != len(want) {
+		t.Fatalf("Lines = %+v, want %+v", buf.Lines, want)
+	}
+	for i := range want {
+		if buf.Lines[i] != want[i] {
+			t.Errorf("Lines[%d] = %q, want %q (no stray \\r)", i, buf.Lines[i], want[i])
+		}
+	}
+
+	buf.InsertText(0, len(buf.Lines[0]), "!")
+	if err := buf.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No trailing "\r\n" on the last line: kiwi already drops a file's
+	// final newline on save regardless of EOL style (a pre-existing,
+	// unrelated behavior — see Buffer.Save's doc comment) — this just
+	// confirms CRLF is used between lines instead of "\n".
+	if string(got) != "one!\r\ntwo\r\nthree" {
+		t.Fatalf("saved file = %q, want CRLF preserved", got)
+	}
+}
+
+func TestLoadSaveRoundTripsUTF8BOM(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bom.txt")
+	original := append([]byte{0xEF, 0xBB, 0xBF}, []byte("hello\nworld")...)
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(buf.Lines) != 2 || buf.Lines[0] != "hello" || buf.Lines[1] != "world" {
+		t.Fatalf("Lines = %+v, want [\"hello\" \"world\"] (BOM stripped)", buf.Lines)
+	}
+
+	if err := buf.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("round-tripped file = %q, want %q (BOM re-added, unchanged)", got, original)
+	}
+}
+
+func TestLoadSaveRoundTripsUTF16LE(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "utf16le.txt")
+	// "hi" (no trailing newline, so Save's separate "drop the final
+	// newline" behavior can't affect this round-trip) as UTF-16LE with a
+	// BOM: BOM, h, i.
+	original := []byte{0xFF, 0xFE, 'h', 0, 'i', 0}
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(buf.Lines) != 1 || buf.Lines[0] != "hi" {
+		t.Fatalf("Lines = %+v, want [\"hi\"]", buf.Lines)
+	}
+
+	if err := buf.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("round-tripped file = %v, want %v (UTF-16LE preserved)", got, original)
 	}
 }
 

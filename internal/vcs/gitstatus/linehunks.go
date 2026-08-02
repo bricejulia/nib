@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/bricejulia/kiwi/internal/textfile"
 )
 
 // LineStatus is the per-line git diff marker shown in the editor gutter —
@@ -50,6 +52,9 @@ func FileHunks(dir, path string) (map[int]LineStatus, error) {
 		return nil, nil
 	case Untracked:
 		return wholeFileAdded(dir, path)
+	default:
+		// Modified/Added/Deleted/Renamed/Conflicted all fall through to
+		// the general `git diff` path below.
 	}
 
 	cmd := exec.Command("git", "diff", "HEAD", "--no-color", "-U0", "--", path)
@@ -81,22 +86,22 @@ func singleFileStatus(dir, path string) (Status, error) {
 	return Unmodified, nil
 }
 
-// wholeFileAdded reads path and marks every line LineAdded, splitting the
-// same way editor.Buffer.Load does (trim exactly one trailing newline,
-// an all-empty file is a single empty line) so the returned indices line
-// up with Buffer.Lines.
+// wholeFileAdded reads path and marks every line LineAdded, splitting it
+// exactly the way editor.Buffer.Load does (see internal/textfile) so the
+// returned indices line up with Buffer.Lines regardless of the file's
+// charset or line-ending style.
 func wholeFileAdded(dir, path string) (map[int]LineStatus, error) {
 	data, err := os.ReadFile(resolve(dir, path))
 	if err != nil {
 		return nil, err
 	}
-	text := strings.TrimSuffix(string(data), "\n")
-	n := 1
-	if text != "" {
-		n = strings.Count(text, "\n") + 1
+	text, _, err := textfile.Decode(data)
+	if err != nil {
+		return nil, err
 	}
-	out := make(map[int]LineStatus, n)
-	for i := range n {
+	lines, _ := textfile.SplitLines(text)
+	out := make(map[int]LineStatus, len(lines))
+	for i := range lines {
 		out[i] = LineAdded
 	}
 	return out, nil
@@ -239,6 +244,9 @@ func FileHunkList(dir, path string) ([]Hunk, error) {
 		return nil, nil
 	case Untracked:
 		return nil, ErrUntracked
+	default:
+		// Modified/Added/Deleted/Renamed/Conflicted all fall through to
+		// the general `git diff` path below.
 	}
 
 	cmd := exec.Command("git", "diff", "HEAD", "--no-color", "-U0", "--", path)

@@ -45,6 +45,20 @@ type MouseHandler interface {
 	HandleMouse(m Mouse) bool
 }
 
+// Paster is an optional interface a View implements to receive a pasted
+// block of text as a single atomic string, rather than character by
+// character through HandleKey. Without this, a multi-line paste has no way
+// to be told apart from someone typing every one of its characters (and
+// pressing Enter between lines) one at a time — which is exactly what
+// App's bracketed-paste handling would otherwise fall back to.
+//
+// HandlePaste returns true if it consumed the paste. A View that doesn't
+// implement Paster (a status bar, a filetree) simply never receives one;
+// App feeds it through HandleKey instead, same as before this existed.
+type Paster interface {
+	HandlePaste(s string) bool
+}
+
 // MouseButton identifies which button (or wheel direction) an event came
 // from. The wheel is reported as a button press, the way terminals encode
 // it, rather than as a separate axis.
