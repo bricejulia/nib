@@ -165,6 +165,27 @@ func TestOpenWithNoServerForLanguageIsNoop(t *testing.T) {
 	}
 }
 
+func TestDefaultServersCoverJSAndTS(t *testing.T) {
+	// javascript/typescript/tsx all share one server command: there's no
+	// separate "jsx" entry because grammar detection resolves .jsx to
+	// "javascript" already (see languageFor in internal/ui/editor).
+	want := []string{"typescript-language-server", "--stdio"}
+	for _, lang := range []string{"javascript", "typescript", "tsx"} {
+		got, ok := DefaultServers[lang]
+		if !ok {
+			t.Fatalf("DefaultServers[%q] missing, want %v", lang, want)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("DefaultServers[%q] = %v, want %v", lang, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("DefaultServers[%q] = %v, want %v", lang, got, want)
+			}
+		}
+	}
+}
+
 func TestStatusDistinguishesUnconfiguredFromNotRunning(t *testing.T) {
 	// The whole point of ServerStatus: "kiwi has no server for this
 	// language" and "the configured server isn't running" look identical

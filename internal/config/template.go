@@ -61,11 +61,16 @@ func Template(scopes []Scope) string {
 #   lsp = php = intelephense --stdio         # npm i -g intelephense
 #   lsp = php = phpactor language-server     # fully open source alternative
 #
+# TypeScript/JavaScript/JSX/TSX — pick one (kiwi defaults to
+# typescript-language-server; uncomment to change). The same command covers
+# all four; set it once per language name if you want different servers:
+#   lsp = typescript = typescript-language-server --stdio   # npm i -g typescript-language-server typescript
+#   lsp = typescript = vtsls --stdio                        # alternative wrapper around VS Code's tsserver
+#
 # Some other common servers:
-#   lsp = python     = pyright-langserver --stdio
-#   lsp = typescript = typescript-language-server --stdio
-#   lsp = rust       = rust-analyzer
-#   lsp = c          = clangd
+#   lsp = python = pyright-langserver --stdio
+#   lsp = rust   = rust-analyzer
+#   lsp = c      = clangd
 `)
 
 	for _, s := range scopes {

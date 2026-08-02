@@ -50,9 +50,11 @@ make build          # or: go build -o kiwi cmd/kiwi/main.go
 ```
 
 Requires Go 1.23+. For LSP features, install the relevant language server —
-`gopls` for Go, `intelephense` or `phpactor` for PHP, and any other via one
-config line (see [Language servers](#language-servers)). kiwi finds it on
-`PATH` and degrades gracefully to its tree-sitter features if it isn't there.
+`gopls` for Go, `intelephense` or `phpactor` for PHP,
+`typescript-language-server` for TypeScript/JavaScript/JSX/TSX, and any other
+via one config line (see [Language servers](#language-servers)). kiwi finds
+it on `PATH` and degrades gracefully to its tree-sitter features if it isn't
+there.
 
 ## Architecture
 
@@ -169,7 +171,7 @@ Press `?` in kiwi for this list at runtime. Every binding is rebindable
 
 | Key | Action |
 | --- | --- |
-| `Ctrl+C` | Quit |
+| `Ctrl+C` | Quit (asks first if there are unsaved changes) |
 | `Tab` / `Shift+Tab` | Focus next / previous pane |
 | `Ctrl+P` | File finder (also: double-tap `Shift`) |
 | `Ctrl+F` | Find references: search file contents, pre-filled with the word under the cursor if an editor pane is focused |
@@ -370,13 +372,17 @@ lsp = <language> = <command args...>
 
 The language name is the one kiwi's grammar detection reports, which is shown
 in the status bar. These merge over the built-in defaults (`go` → `gopls`,
-`php` → `intelephense --stdio`), so a config line wins:
+`php` → `intelephense --stdio`, `javascript`/`typescript`/`tsx` →
+`typescript-language-server --stdio`), so a config line wins:
 
 ```
 lsp = php    = phpactor language-server     # prefer the open-source PHP server
 lsp = python = pyright-langserver --stdio
 lsp = rust   = rust-analyzer
 ```
+
+`.jsx` files are detected as the `javascript` language (there's no separate
+`jsx` grammar), so `lsp = javascript = ...` covers them too.
 
 The command must be on your `PATH` and speak LSP over stdin/stdout. A language
 with no entry, or whose binary is missing, simply falls back to kiwi's
@@ -391,6 +397,8 @@ you which case you're in:
 
 Installing the PHP servers: `npm i -g intelephense`, or see
 [Phpactor's install docs](https://phpactor.readthedocs.io/en/master/usage/standalone.html).
+Installing the TypeScript/JavaScript server:
+`npm i -g typescript-language-server typescript`.
 
 ## Development
 

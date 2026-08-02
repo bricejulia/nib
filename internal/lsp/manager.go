@@ -24,9 +24,17 @@ import (
 // tier covers everything kiwi asks for (diagnostics, definitions,
 // completion — the paid features are refactorings kiwi doesn't do).
 // Phpactor is a fully open-source alternative, one config line away.
+//
+// TypeScript, JavaScript, and TSX share one server, typescript-language-server,
+// the standard community TS/JS server. There's no separate entry for JSX:
+// grammar detection resolves .jsx to the "javascript" language same as .js,
+// so the "javascript" entry already covers it.
 var DefaultServers = map[string][]string{
-	"go":  {"gopls"},
-	"php": {"intelephense", "--stdio"},
+	"go":         {"gopls"},
+	"php":        {"intelephense", "--stdio"},
+	"javascript": {"typescript-language-server", "--stdio"},
+	"typescript": {"typescript-language-server", "--stdio"},
+	"tsx":        {"typescript-language-server", "--stdio"},
 }
 
 // DiagnosticsEvent is posted to the UI goroutine when a server publishes

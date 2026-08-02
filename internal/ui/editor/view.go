@@ -1963,15 +1963,55 @@ func (v *View) saveActive() {
 	if t == nil || t.buf == nil {
 		return
 	}
-	if err := t.buf.Save(); err != nil {
+	if err := v.saveTab(t); err != nil {
 		debuglog.Error("save %s: %v", t.buf.Path, err)
-		return
 	}
-	// The file exists again, so the tab is no longer detached (see
-	// CloseTabsUnder). Note a save can still fail with ENOENT when it was
-	// the tab's parent DIRECTORY that was deleted — logged above, and Dirty
-	// stays true, which is the honest outcome.
+}
+
+// saveTab saves t's buffer to disk. The file exists again on success, so
+// the tab is no longer detached (see CloseTabsUnder). Note a save can
+// still fail with ENOENT when it was the tab's parent DIRECTORY that was
+// deleted — Dirty stays true in that case, which is the honest outcome.
+func (v *View) saveTab(t *tab) error {
+	if err := t.buf.Save(); err != nil {
+		return err
+	}
 	t.detached = false
+	return nil
+}
+
+// DirtyPaths returns the paths of every tab open in this pane whose
+// buffer has unsaved changes — used by cmd/kiwi/main.go to warn before
+// quitting would silently discard them.
+func (v *View) DirtyPaths() []string {
+	var paths []string
+	for _, t := range v.tabs {
+		if t.buf != nil && t.buf.Dirty {
+			paths = append(paths, t.path)
+		}
+	}
+	return paths
+}
+
+// SaveDirtyTabs saves every tab open in this pane with unsaved changes,
+// returning the error for each save that failed, keyed by path. A buffer
+// shared with another pane (see BufferStore) that this pane's own dirty
+// scan just saved is simply no longer Dirty by the time that other pane's
+// SaveDirtyTabs runs, so it costs nothing to call this once per pane.
+func (v *View) SaveDirtyTabs() map[string]error {
+	var failed map[string]error
+	for _, t := range v.tabs {
+		if t.buf == nil || !t.buf.Dirty {
+			continue
+		}
+		if err := v.saveTab(t); err != nil {
+			if failed == nil {
+				failed = map[string]error{}
+			}
+			failed[t.path] = err
+		}
+	}
+	return failed
 }
 
 func (v *View) pageSize() int {

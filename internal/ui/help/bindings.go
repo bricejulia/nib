@@ -21,7 +21,7 @@ var sections = []section{
 	{
 		Title: "Global",
 		Bindings: []binding{
-			{"Ctrl+c", "Quit"},
+			{"Ctrl+c", "Quit (asks first if there are unsaved changes)"},
 			{"Tab", "Focus next pane"},
 			{"Shift+Tab", "Focus previous pane"},
 			{"Ctrl+p", "Open file finder (also: double-tap Shift)"},

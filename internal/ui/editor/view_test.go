@@ -1496,6 +1496,81 @@ func TestColonQaForceClosesAllTabs(t *testing.T) {
 	}
 }
 
+func TestDirtyPathsListsOnlyUnsavedTabs(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{
+		{path: "a.txt", buf: &Buffer{Lines: []string{"a"}, Dirty: false}},
+		{path: "b.txt", buf: &Buffer{Lines: []string{"b"}, Dirty: true}},
+		{path: "c.txt", buf: &Buffer{Lines: []string{"c"}, Dirty: true}},
+	}
+	v.active = 0
+
+	got := v.DirtyPaths()
+	want := []string{"b.txt", "c.txt"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("DirtyPaths() = %v, want %v", got, want)
+	}
+}
+
+func TestSaveDirtyTabsSavesEveryDirtyTabAndClearsDirty(t *testing.T) {
+	dir := t.TempDir()
+	pathA := filepath.Join(dir, "a.txt")
+	pathB := filepath.Join(dir, "b.txt")
+	if err := os.WriteFile(pathA, []byte("original a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pathB, []byte("original b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewView()
+	v.Open(pathA)
+	v.Open(pathB)
+	// One tab edited (dirty), one left untouched (clean) — SaveDirtyTabs
+	// must only write the dirty one.
+	v.tabs[0].buf.Lines[0] = "edited a"
+	v.tabs[0].buf.resync()
+
+	failed := v.SaveDirtyTabs()
+	if len(failed) != 0 {
+		t.Fatalf("SaveDirtyTabs() failed = %v, want none", failed)
+	}
+	if v.tabs[0].buf.Dirty {
+		t.Fatal("expected the edited tab's Dirty to be cleared after save")
+	}
+
+	got, err := os.ReadFile(pathA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "edited a" {
+		t.Fatalf("a.txt contents = %q, want %q", got, "edited a")
+	}
+	gotB, err := os.ReadFile(pathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotB) != "original b" {
+		t.Fatalf("b.txt should be untouched, got %q", gotB)
+	}
+}
+
+func TestSaveDirtyTabsReportsFailure(t *testing.T) {
+	v := NewView()
+	// A path inside a nonexistent directory: Save fails with ENOENT, and
+	// Dirty must stay true so the caller doesn't think it succeeded.
+	v.tabs = []*tab{{path: "missing.txt", buf: &Buffer{Lines: []string{"x"}, Dirty: true, Path: filepath.Join(t.TempDir(), "no-such-dir", "f.txt")}}}
+	v.active = 0
+
+	failed := v.SaveDirtyTabs()
+	if len(failed) != 1 {
+		t.Fatalf("SaveDirtyTabs() failed = %v, want exactly one failure", failed)
+	}
+	if !v.tabs[0].buf.Dirty {
+		t.Fatal("expected Dirty to remain true after a failed save")
+	}
+}
+
 func TestColonWSavesWithoutClosing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "f.txt")

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/bricejulia/kiwi/internal/ui/filetree"
 	"github.com/bricejulia/kiwi/internal/ui/finder"
 	"github.com/bricejulia/kiwi/internal/ui/help"
+	"github.com/bricejulia/kiwi/internal/ui/quitconfirm"
 	"github.com/bricejulia/kiwi/internal/ui/statusbar"
 	"github.com/bricejulia/kiwi/internal/vcs/gitblame"
 	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
@@ -593,8 +595,69 @@ func run() error {
 		app.ShowOverlay(replaceView)
 	}
 
+	// dirtyPaths lists every currently-open file with unsaved changes,
+	// across every editor pane, deduplicated (the same Buffer can be open
+	// as a tab in more than one pane — see bufferStore above) and sorted
+	// for a stable, scannable order in the quit-confirm dialog below.
+	dirtyPaths := func() []string {
+		seen := map[string]bool{}
+		var paths []string
+		for _, p := range editorPanes {
+			for _, path := range p.view.DirtyPaths() {
+				if seen[path] {
+					continue
+				}
+				seen[path] = true
+				paths = append(paths, path)
+			}
+		}
+		sort.Strings(paths)
+		return paths
+	}
+	// saveAllDirty saves every unsaved file across every editor pane. A
+	// buffer shared by two panes is simply no longer Dirty by the time the
+	// second pane's SaveDirtyTabs runs, so this never double-writes.
+	saveAllDirty := func() {
+		for _, p := range editorPanes {
+			for path, err := range p.view.SaveDirtyTabs() {
+				debuglog.Error("save %s: %v", path, err)
+			}
+		}
+	}
+
+	// quitConfirmView warns before quitting would silently discard unsaved
+	// changes, instead of app.Quit firing unconditionally — see
+	// internal/ui/quitconfirm.
+	quitConfirmView := quitconfirm.New()
+	quitConfirmView.OnCancel = app.CloseOverlay
+	quitConfirmView.OnSaveAndQuit = func() {
+		app.CloseOverlay()
+		saveAllDirty()
+		app.Quit()
+	}
+	quitConfirmView.OnDiscardAndQuit = func() {
+		app.CloseOverlay()
+		app.Quit()
+	}
+	confirmQuit := func() {
+		dirty := dirtyPaths()
+		if len(dirty) == 0 {
+			app.Quit()
+			return
+		}
+		rel := make([]string, len(dirty))
+		for i, p := range dirty {
+			rel[i] = p
+			if r, err := filepath.Rel(absRoot, p); err == nil {
+				rel[i] = r
+			}
+		}
+		quitConfirmView.Show(rel)
+		app.ShowOverlay(quitConfirmView)
+	}
+
 	actions := map[string]func(){
-		"quit":                 app.Quit,
+		"quit":                 confirmQuit,
 		"focus_next":           app.CycleFocusNext,
 		"focus_prev":           app.CycleFocusPrev,
 		"open_finder":          openFinder,
