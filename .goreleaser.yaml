@@ -36,7 +36,7 @@ homebrew_casks:
     skip_upload: auto
     repository:
       owner: bricejulia
-      name: homebrew
+      name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TOKEN }}"
     homepage: "https://github.com/bricejulia/nib"
     description: "A terminal code editor in Go. Modal editing in the vim tradition, real syntax awareness from tree-sitter, and real semantic features from language servers"
