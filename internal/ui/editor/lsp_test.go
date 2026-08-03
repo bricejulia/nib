@@ -38,6 +38,23 @@ type fakeLSP struct {
 	completionOK         bool
 	completionLine       int
 	completionChar       int
+
+	hoverDispatched bool
+	hoverText       string
+	hoverOK         bool
+	hoverLine       int
+	hoverChar       int
+
+	sigHelpDispatched bool
+	sigHelpAnswer     lsp.SignatureHelp
+	sigHelpOK         bool
+	sigHelpLine       int
+	sigHelpChar       int
+
+	formatDispatched bool
+	formatEdits      []lsp.TextEdit
+	formatOK         bool
+	formatTabWidth   int
 }
 
 func (f *fakeLSP) Ready(string) bool { return f.ready }
@@ -77,6 +94,39 @@ func (f *fakeLSP) Completion(_, _ string, line, character int, apply func([]lsp.
 	f.completionLine, f.completionChar = line, character
 	items, ok := f.completionItems, f.completionOK
 	f.pendingApply = func() { apply(items, ok) }
+	return true
+}
+
+func (f *fakeLSP) Hover(_, _ string, line, character int, apply func(string, bool)) bool {
+	if !f.ready {
+		return false
+	}
+	f.hoverDispatched = true
+	f.hoverLine, f.hoverChar = line, character
+	text, ok := f.hoverText, f.hoverOK
+	f.pendingApply = func() { apply(text, ok) }
+	return true
+}
+
+func (f *fakeLSP) SignatureHelp(_, _ string, line, character int, apply func(lsp.SignatureHelp, bool)) bool {
+	if !f.ready {
+		return false
+	}
+	f.sigHelpDispatched = true
+	f.sigHelpLine, f.sigHelpChar = line, character
+	sh, ok := f.sigHelpAnswer, f.sigHelpOK
+	f.pendingApply = func() { apply(sh, ok) }
+	return true
+}
+
+func (f *fakeLSP) Formatting(_, _ string, tabWidth int, apply func([]lsp.TextEdit, bool)) bool {
+	if !f.ready {
+		return false
+	}
+	f.formatDispatched = true
+	f.formatTabWidth = tabWidth
+	edits, ok := f.formatEdits, f.formatOK
+	f.pendingApply = func() { apply(edits, ok) }
 	return true
 }
 

@@ -83,6 +83,9 @@ type serverClient interface {
 	didClose(path string) error
 	definition(path string, line, character int) (Location, bool, error)
 	completion(path string, line, character int) ([]CompletionItem, error)
+	hover(path string, line, character int) (string, bool, error)
+	signatureHelp(path string, line, character int) (SignatureHelp, bool, error)
+	formatting(path string, tabWidth int) ([]TextEdit, error)
 	Close() error
 }
 
@@ -341,6 +344,90 @@ func (m *Manager) Completion(path, language string, line, character int, apply f
 			return
 		}
 		m.Post(AsyncResult{Apply: func() { apply(items, err == nil) }})
+	}()
+	return true
+}
+
+// Hover asks language's server for documentation/type info at (line,
+// character) in path, delivering the answer to apply on the UI goroutine
+// via Post. Returns false if no request could be made at all (no server
+// for that language).
+//
+// Same async shape as Definition/Completion — see Definition for why the
+// request runs on its own goroutine.
+func (m *Manager) Hover(path, language string, line, character int, apply func(text string, ok bool)) bool {
+	m.mu.Lock()
+	c := m.clients[language]
+	m.mu.Unlock()
+	if c == nil {
+		return false
+	}
+
+	go func() {
+		text, found, err := c.hover(path, line, character)
+		if err != nil {
+			debuglog.Warn("lsp: hover %s: %v", path, err)
+			found = false
+		}
+		if m.Post == nil {
+			return
+		}
+		m.Post(AsyncResult{Apply: func() { apply(text, found) }})
+	}()
+	return true
+}
+
+// SignatureHelp asks language's server what parameters the call enclosing
+// (line, character) in path takes, delivering the answer to apply on the UI
+// goroutine via Post. Returns false if no request could be made at all (no
+// server for that language).
+//
+// Same async shape as Definition/Completion.
+func (m *Manager) SignatureHelp(path, language string, line, character int, apply func(sh SignatureHelp, ok bool)) bool {
+	m.mu.Lock()
+	c := m.clients[language]
+	m.mu.Unlock()
+	if c == nil {
+		return false
+	}
+
+	go func() {
+		sh, found, err := c.signatureHelp(path, line, character)
+		if err != nil {
+			debuglog.Warn("lsp: signatureHelp %s: %v", path, err)
+			found = false
+		}
+		if m.Post == nil {
+			return
+		}
+		m.Post(AsyncResult{Apply: func() { apply(sh, found) }})
+	}()
+	return true
+}
+
+// Formatting asks language's server to reformat path's entire document,
+// delivering the edits to apply on the UI goroutine via Post. Returns false
+// if no request could be made at all (no server for that language).
+//
+// Same async shape as Definition/Completion.
+func (m *Manager) Formatting(path, language string, tabWidth int, apply func(edits []TextEdit, ok bool)) bool {
+	m.mu.Lock()
+	c := m.clients[language]
+	m.mu.Unlock()
+	if c == nil {
+		return false
+	}
+
+	go func() {
+		edits, err := c.formatting(path, tabWidth)
+		if err != nil {
+			debuglog.Warn("lsp: formatting %s: %v", path, err)
+			edits = nil
+		}
+		if m.Post == nil {
+			return
+		}
+		m.Post(AsyncResult{Apply: func() { apply(edits, err == nil && len(edits) > 0) }})
 	}()
 	return true
 }

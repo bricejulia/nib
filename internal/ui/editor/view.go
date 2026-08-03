@@ -73,16 +73,31 @@ var DefaultKeybinds = config.Defaults{
 	// WordUnderCursor when it happens to be the focused one, rather than
 	// this pane owning the trigger itself.
 	{Trigger: "Ctrl+Space", Action: "trigger_autocomplete"},
+	// Not Ctrl+Shift+Space (the more VSCode-familiar chord for signature
+	// help): Ctrl+Shift+<key> is indistinguishable from plain Ctrl+<key> on
+	// any terminal that isn't reporting the kitty keyboard protocol's full
+	// modifier state (see Ctrl+Shift+r in cmd/kiwi/main.go for the same
+	// caveat) — degrading silently to Ctrl+Space here would fire
+	// autocomplete instead, in the exact scope/mode signature help needs.
+	// Reachable from both Normal and Insert mode — see handleInsertKey.
+	{Trigger: "Ctrl+a", Action: "trigger_signature_help"},
 	// "K" is vim's own "look up what's under the cursor", which is exactly
 	// this gesture — and being a letter, it works on any keyboard layout.
 	{Trigger: "K", Action: "show_diagnostics"},
+	// "I" ("info") is hover's own binding, kept separate from "K" rather
+	// than merged into it — they're different LSP requests with different
+	// popup content decisions, so a dedicated key keeps both independently
+	// testable.
+	{Trigger: "I", Action: "show_hover"},
 	// The three git gestures, all shifted letters for the same
-	// works-on-any-layout reason as "K", and all free of vim's own
+	// works-on-any-layout reason as "K"/"I", and all free of vim's own
 	// meanings for those keys (kiwi binds no operator-pending "d", and
 	// implements neither H/M/L screen motions nor "B").
 	{Trigger: "B", Action: "show_blame"},
 	{Trigger: "D", Action: "show_file_diff"},
 	{Trigger: "H", Action: "show_line_diff"},
+	// "F" ("format") reformats the whole document via the language server.
+	{Trigger: "F", Action: "format_document"},
 	{Trigger: "/", Action: "search_mode"},
 	{Trigger: "n", Action: "search_next"},
 	{Trigger: "N", Action: "search_prev"},
@@ -268,6 +283,17 @@ type View struct {
 	// showDiagnostics.
 	gitPopup []popupLine
 
+	// hoverText holds the language server's answer to "what is this?" at
+	// the cursor ("I"), "" when nothing is showing — see hover.go. Same
+	// tooltip lifetime as showDiagnostics: dismissed by the very next
+	// keypress, not a mode to get stuck in.
+	hoverText string
+
+	// signatureHelp holds the in-progress signature-help popup (Ctrl+a),
+	// nil when none is showing — see signaturehelp.go. Same tooltip
+	// lifetime as hoverText/showDiagnostics.
+	signatureHelp *lsp.SignatureHelp
+
 	// BlameFunc, if set, resolves who last changed path's 1-based line —
 	// enabling the "B" blame tooltip. Left nil (the default), "B" does
 	// nothing, the same way a language-server-less pane simply has no LSP
@@ -369,6 +395,9 @@ type languageServer interface {
 	Close(path string)
 	Definition(path, language string, line, character int, apply func(loc lsp.Location, ok bool)) bool
 	Completion(path, language string, line, character int, apply func(items []lsp.CompletionItem, ok bool)) bool
+	Hover(path, language string, line, character int, apply func(text string, ok bool)) bool
+	SignatureHelp(path, language string, line, character int, apply func(sh lsp.SignatureHelp, ok bool)) bool
+	Formatting(path, language string, tabWidth int, apply func(edits []lsp.TextEdit, ok bool)) bool
 }
 
 // NewView creates an empty editor pane with no tabs open; call Open to
@@ -955,8 +984,8 @@ func (v *View) Render(w layout.Window) {
 	renderBody(w, t, v.tabWidth, cols, bodyRows, 1, v.searchMatches)
 
 	// Popups draw last so they sit on top of the file content. Only one can
-	// be up at a time: completion belongs to Insert mode, the diagnostic and
-	// git tooltips to Normal mode.
+	// be up at a time: completion belongs to Insert mode, the rest
+	// (diagnostic, hover, signature-help, and git tooltips) to Normal mode.
 	if v.completion != nil {
 		if col, row, ok := v.CursorPosition(); ok {
 			v.renderCompletionPopup(w, cols, rows, col, row)
@@ -964,6 +993,19 @@ func (v *View) Render(w layout.Window) {
 	} else if v.showDiagnostics && t != nil {
 		if col, row, ok := v.CursorPosition(); ok {
 			lines := diagnosticPopupLines(t.diagnostics[t.cursorLn], cols-col)
+			renderPopup(w, cols, rows, col, row, lines, -1)
+		}
+	} else if v.hoverText != "" && t != nil {
+		if col, row, ok := v.CursorPosition(); ok {
+			lines := wrapText(v.hoverText, cols-col)
+			if len(lines) > maxHoverPopupRows {
+				lines = lines[:maxHoverPopupRows]
+			}
+			renderPopup(w, cols, rows, col, row, lines, -1)
+		}
+	} else if v.signatureHelp != nil && t != nil {
+		if col, row, ok := v.CursorPosition(); ok {
+			lines := signatureHelpLines(*v.signatureHelp, cols-col)
 			renderPopup(w, cols, rows, col, row, lines, -1)
 		}
 	} else if v.gitPopup != nil {
@@ -1292,12 +1334,15 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return false
 	}
 
-	// The diagnostic and git popups are tooltips, not modes: whatever you
-	// press next dismisses them and is then handled normally.
+	// The diagnostic, hover, signature-help, and git popups are tooltips,
+	// not modes: whatever you press next dismisses them and is then handled
+	// normally.
 	if v.showDiagnostics {
 		v.showDiagnostics = false
 	}
 	v.gitPopup = nil
+	v.hoverText = ""
+	v.signatureHelp = nil
 
 	switch v.mode {
 	case modeInsert:
@@ -1424,6 +1469,12 @@ func (v *View) HandleKey(k layout.Key) bool {
 	case "show_diagnostics":
 		// Only worth a popup if the line actually has something to say.
 		v.showDiagnostics = len(t.diagnostics[t.cursorLn]) > 0
+	case "show_hover":
+		v.triggerHover(t)
+	case "trigger_signature_help":
+		v.triggerSignatureHelp()
+	case "format_document":
+		v.triggerFormat()
 	case "show_blame":
 		v.showBlame(t)
 	case "show_line_diff":
@@ -1583,6 +1634,9 @@ func (v *View) handleInsertKey(k layout.Key) bool {
 		return true
 	case "trigger_autocomplete":
 		v.triggerAutocomplete()
+		return true
+	case "trigger_signature_help":
+		v.triggerSignatureHelp()
 		return true
 	}
 

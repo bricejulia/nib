@@ -236,6 +236,107 @@ func completionItems(raw json.RawMessage) ([]CompletionItem, error) {
 	return items, nil
 }
 
+// hover asks what's at (line, character) — a type signature or doc
+// comment, if the server has one. Blocks until the server answers or
+// requestTimeout elapses, so callers must run it off the UI goroutine.
+// ok=false means "nothing to show", which is a normal answer, not an
+// error.
+func (c *Client) hover(path string, line, character int) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	params := TextDocumentPositionParams{
+		TextDocument: TextDocumentIdentifier{URI: pathToURI(path)},
+		Position:     Position{Line: line, Character: character},
+	}
+	var raw json.RawMessage
+	if err := c.conn.Call(ctx, methodHover, params, &raw); err != nil {
+		return "", false, err
+	}
+	return hoverText(raw)
+}
+
+// hoverText decodes a hover response. Unlike definition/completion, the
+// top-level shape is always an object or null per spec — only Contents'
+// inner shape varies, which decodeDocumentation handles.
+func hoverText(raw json.RawMessage) (string, bool, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", false, nil
+	}
+	var h Hover
+	if err := json.Unmarshal(raw, &h); err != nil {
+		return "", false, fmt.Errorf("hover: unrecognized response shape: %w", err)
+	}
+	text := decodeDocumentation(h.Contents)
+	return text, text != "", nil
+}
+
+// signatureHelp asks what parameters the call enclosing (line, character)
+// takes. Blocks until the server answers or requestTimeout elapses, so
+// callers must run it off the UI goroutine. ok=false means no active call
+// at that position, which is a normal answer, not an error.
+func (c *Client) signatureHelp(path string, line, character int) (SignatureHelp, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	params := TextDocumentPositionParams{
+		TextDocument: TextDocumentIdentifier{URI: pathToURI(path)},
+		Position:     Position{Line: line, Character: character},
+	}
+	var raw json.RawMessage
+	if err := c.conn.Call(ctx, methodSignatureHelp, params, &raw); err != nil {
+		return SignatureHelp{}, false, err
+	}
+	return signatureHelpResult(raw)
+}
+
+// signatureHelpResult decodes a signatureHelp response: always an object or
+// null per spec (never a bare array).
+func signatureHelpResult(raw json.RawMessage) (SignatureHelp, bool, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return SignatureHelp{}, false, nil
+	}
+	var sh SignatureHelp
+	if err := json.Unmarshal(raw, &sh); err != nil {
+		return SignatureHelp{}, false, fmt.Errorf("signatureHelp: unrecognized response shape: %w", err)
+	}
+	return sh, len(sh.Signatures) > 0, nil
+}
+
+// formatting asks the server to reformat path's entire document. tabWidth
+// becomes FormattingOptions.TabSize; InsertSpaces is always false, matching
+// kiwi's own real-tab convention. Blocks until the server answers or
+// requestTimeout elapses, so callers must run it off the UI goroutine. A
+// nil/empty edit slice is a normal "nothing to change" answer, not an
+// error.
+func (c *Client) formatting(path string, tabWidth int) ([]TextEdit, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	params := DocumentFormattingParams{
+		TextDocument: TextDocumentIdentifier{URI: pathToURI(path)},
+		Options:      FormattingOptions{TabSize: tabWidth, InsertSpaces: false},
+	}
+	var raw json.RawMessage
+	if err := c.conn.Call(ctx, methodFormatting, params, &raw); err != nil {
+		return nil, err
+	}
+	return textEdits(raw)
+}
+
+// textEdits decodes a formatting response: always a bare array or null per
+// spec (no object-wrapper form, unlike completion/definition).
+func textEdits(raw json.RawMessage) ([]TextEdit, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var edits []TextEdit
+	if err := json.Unmarshal(raw, &edits); err != nil {
+		return nil, fmt.Errorf("formatting: unrecognized response shape: %w", err)
+	}
+	return edits, nil
+}
+
 // firstLocation extracts the first usable Location from a definition
 // response, accepting either a bare Location object or an array of them
 // (both spec-legal, and different servers pick differently).

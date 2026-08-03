@@ -18,6 +18,7 @@
 package lsp
 
 import (
+	"encoding/json"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,9 @@ const (
 	methodDidClose           = "textDocument/didClose"
 	methodDefinition         = "textDocument/definition"
 	methodCompletion         = "textDocument/completion"
+	methodHover              = "textDocument/hover"
+	methodSignatureHelp      = "textDocument/signatureHelp"
+	methodFormatting         = "textDocument/formatting"
 	methodPublishDiagnostics = "textDocument/publishDiagnostics"
 )
 
@@ -156,6 +160,103 @@ func (c CompletionItem) Order() string {
 type CompletionList struct {
 	IsIncomplete bool             `json:"isIncomplete"`
 	Items        []CompletionItem `json:"items"`
+}
+
+// Hover is a server's answer to "what is this?" at a position — usually a
+// type signature or doc comment. Contents is left as json.RawMessage
+// because its wire shape varies by spec version: a bare string, a
+// {kind,value} MarkupContent object, the older {language,value}
+// MarkedString object, or an array of any of those — decodeDocumentation
+// normalizes all of them to plain text. Range (the span hovered) is
+// omitted: kiwi doesn't highlight it.
+type Hover struct {
+	Contents json.RawMessage `json:"contents"`
+}
+
+// SignatureHelp is a server's answer to "what parameters does this call
+// take?" at a position.
+type SignatureHelp struct {
+	Signatures      []SignatureInformation `json:"signatures"`
+	ActiveSignature int                    `json:"activeSignature"`
+	ActiveParameter int                    `json:"activeParameter"`
+}
+
+// SignatureInformation describes one overload of the call.
+type SignatureInformation struct {
+	Label         string                 `json:"label"`
+	Documentation json.RawMessage        `json:"documentation,omitempty"`
+	Parameters    []ParameterInformation `json:"parameters,omitempty"`
+}
+
+// DocText normalizes Documentation the same way decodeDocumentation
+// normalizes Hover.Contents — see there for the shapes handled.
+func (s SignatureInformation) DocText() string { return decodeDocumentation(s.Documentation) }
+
+// ParameterInformation is one parameter of a SignatureInformation. Only
+// Label is kept: the alternate [start,end] offset-pair form some servers
+// use to slice it out of the signature's own Label isn't handled, since
+// every server kiwi targets (gopls, typescript-language-server,
+// intelephense) sends a plain string label.
+type ParameterInformation struct {
+	Label string `json:"label"`
+}
+
+// decodeDocumentation normalizes the documentation/contents shapes LSP
+// allows (MarkupContent's {kind,value}, the deprecated MarkedString's bare
+// string or {language,value} object, or an array of either) into flat
+// text. Null or empty input yields "".
+func decodeDocumentation(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+
+	var markup struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &markup); err == nil && markup.Value != "" {
+		return markup.Value
+	}
+
+	var list []json.RawMessage
+	if err := json.Unmarshal(raw, &list); err == nil {
+		var parts []string
+		for _, item := range list {
+			if text := decodeDocumentation(item); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n\n")
+	}
+
+	return ""
+}
+
+// FormattingOptions is the minimal per-request formatting preference LSP
+// requires the client to send. InsertSpaces is always false: kiwi's own
+// convention is real tab characters (see "insert_tab"'s handling in
+// internal/ui/editor), so a server that reindents with spaces is told not
+// to.
+type FormattingOptions struct {
+	TabSize      int  `json:"tabSize"`
+	InsertSpaces bool `json:"insertSpaces"`
+}
+
+// DocumentFormattingParams requests a whole-document reformat.
+type DocumentFormattingParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Options      FormattingOptions      `json:"options"`
+}
+
+// TextEdit is one span-replacement a server wants applied to a document —
+// formatting's response shape.
+type TextEdit struct {
+	Range   Range  `json:"range"`
+	NewText string `json:"newText"`
 }
 
 // DiagnosticSeverity ranks a diagnostic; lower numbers are more severe,

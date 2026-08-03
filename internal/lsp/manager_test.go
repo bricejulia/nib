@@ -22,6 +22,20 @@ type fakeClient struct {
 	completionItems []CompletionItem
 	completionErr   error
 	completionCalls int
+
+	hoverResult string
+	hoverFound  bool
+	hoverErr    error
+	hoverCalls  int
+
+	sigHelp      SignatureHelp
+	sigHelpFound bool
+	sigHelpErr   error
+	sigHelpCalls int
+
+	formatEdits []TextEdit
+	formatErr   error
+	formatCalls int
 }
 
 func (f *fakeClient) didOpen(path, _, _ string, version int) error {
@@ -49,6 +63,21 @@ func (f *fakeClient) definition(string, int, int) (Location, bool, error) {
 func (f *fakeClient) completion(string, int, int) ([]CompletionItem, error) {
 	f.completionCalls++
 	return f.completionItems, f.completionErr
+}
+
+func (f *fakeClient) hover(string, int, int) (string, bool, error) {
+	f.hoverCalls++
+	return f.hoverResult, f.hoverFound, f.hoverErr
+}
+
+func (f *fakeClient) signatureHelp(string, int, int) (SignatureHelp, bool, error) {
+	f.sigHelpCalls++
+	return f.sigHelp, f.sigHelpFound, f.sigHelpErr
+}
+
+func (f *fakeClient) formatting(string, int) ([]TextEdit, error) {
+	f.formatCalls++
+	return f.formatEdits, f.formatErr
 }
 
 func (f *fakeClient) Close() error {
@@ -361,6 +390,144 @@ func TestCompletionReturnsFalseWithNoServer(t *testing.T) {
 	}
 	if called {
 		t.Fatal("callback must not run when nothing was dispatched")
+	}
+}
+
+func TestHoverReturnsFalseWithNoServer(t *testing.T) {
+	m := NewManager("/project")
+	called := false
+
+	if m.Hover("/project/a.go", "go", 1, 2, func(string, bool) { called = true }) {
+		t.Fatal("expected Hover to report it could not dispatch")
+	}
+	if called {
+		t.Fatal("callback must not run when nothing was dispatched")
+	}
+}
+
+func TestHoverDeliversResultThroughPost(t *testing.T) {
+	fake := &fakeClient{hoverResult: "func Foo() string", hoverFound: true}
+	m := newTestManager("go", fake)
+	results := make(chan AsyncResult, 1)
+	m.Post = func(ev interface{}) { results <- ev.(AsyncResult) }
+
+	var gotText string
+	var gotOK bool
+	if !m.Hover("/project/a.go", "go", 3, 4, func(text string, ok bool) { gotText, gotOK = text, ok }) {
+		t.Fatal("expected Hover to dispatch")
+	}
+	(<-results).Apply()
+
+	if !gotOK || gotText != "func Foo() string" {
+		t.Errorf("callback got (%q, %v), want (%q, true)", gotText, gotOK, "func Foo() string")
+	}
+}
+
+func TestHoverErrorIsReportedAsNotFound(t *testing.T) {
+	fake := &fakeClient{hoverErr: errors.New("server exploded"), hoverFound: true}
+	m := newTestManager("go", fake)
+	results := make(chan AsyncResult, 1)
+	m.Post = func(ev interface{}) { results <- ev.(AsyncResult) }
+
+	var gotOK bool
+	m.Hover("/project/a.go", "go", 0, 0, func(_ string, ok bool) { gotOK = ok })
+	(<-results).Apply()
+
+	if gotOK {
+		t.Error("expected an errored request to surface as not-found")
+	}
+}
+
+func TestSignatureHelpReturnsFalseWithNoServer(t *testing.T) {
+	m := NewManager("/project")
+	called := false
+
+	if m.SignatureHelp("/project/a.go", "go", 1, 2, func(SignatureHelp, bool) { called = true }) {
+		t.Fatal("expected SignatureHelp to report it could not dispatch")
+	}
+	if called {
+		t.Fatal("callback must not run when nothing was dispatched")
+	}
+}
+
+func TestSignatureHelpDeliversResultThroughPost(t *testing.T) {
+	want := SignatureHelp{Signatures: []SignatureInformation{{Label: "Foo(x int)"}}}
+	fake := &fakeClient{sigHelp: want, sigHelpFound: true}
+	m := newTestManager("go", fake)
+	results := make(chan AsyncResult, 1)
+	m.Post = func(ev interface{}) { results <- ev.(AsyncResult) }
+
+	var got SignatureHelp
+	var gotOK bool
+	if !m.SignatureHelp("/project/a.go", "go", 3, 4, func(sh SignatureHelp, ok bool) { got, gotOK = sh, ok }) {
+		t.Fatal("expected SignatureHelp to dispatch")
+	}
+	(<-results).Apply()
+
+	if !gotOK || len(got.Signatures) != 1 || got.Signatures[0].Label != "Foo(x int)" {
+		t.Errorf("callback got (%+v, %v), want (%+v, true)", got, gotOK, want)
+	}
+}
+
+func TestSignatureHelpErrorIsReportedAsNotFound(t *testing.T) {
+	fake := &fakeClient{sigHelpErr: errors.New("server exploded"), sigHelpFound: true}
+	m := newTestManager("go", fake)
+	results := make(chan AsyncResult, 1)
+	m.Post = func(ev interface{}) { results <- ev.(AsyncResult) }
+
+	var gotOK bool
+	m.SignatureHelp("/project/a.go", "go", 0, 0, func(_ SignatureHelp, ok bool) { gotOK = ok })
+	(<-results).Apply()
+
+	if gotOK {
+		t.Error("expected an errored request to surface as not-found")
+	}
+}
+
+func TestFormattingReturnsFalseWithNoServer(t *testing.T) {
+	m := NewManager("/project")
+	called := false
+
+	if m.Formatting("/project/a.go", "go", 4, func([]TextEdit, bool) { called = true }) {
+		t.Fatal("expected Formatting to report it could not dispatch")
+	}
+	if called {
+		t.Fatal("callback must not run when nothing was dispatched")
+	}
+}
+
+func TestFormattingDeliversEditsThroughPost(t *testing.T) {
+	want := []TextEdit{{Range: Range{Start: Position{Line: 0}, End: Position{Line: 1}}, NewText: "package main\n"}}
+	fake := &fakeClient{formatEdits: want}
+	m := newTestManager("go", fake)
+	results := make(chan AsyncResult, 1)
+	m.Post = func(ev interface{}) { results <- ev.(AsyncResult) }
+
+	var got []TextEdit
+	var gotOK bool
+	if !m.Formatting("/project/a.go", "go", 4, func(edits []TextEdit, ok bool) { got, gotOK = edits, ok }) {
+		t.Fatal("expected Formatting to dispatch")
+	}
+	(<-results).Apply()
+
+	if !gotOK || len(got) != 1 || got[0].NewText != "package main\n" {
+		t.Errorf("callback got (%+v, %v), want (%+v, true)", got, gotOK, want)
+	}
+}
+
+func TestFormattingErrorIsReportedAsNoEdits(t *testing.T) {
+	fake := &fakeClient{formatErr: errors.New("server exploded"), formatEdits: []TextEdit{{NewText: "x"}}}
+	m := newTestManager("go", fake)
+	results := make(chan AsyncResult, 1)
+	m.Post = func(ev interface{}) { results <- ev.(AsyncResult) }
+
+	var gotOK bool
+	var gotEdits []TextEdit
+	m.Formatting("/project/a.go", "go", 4, func(edits []TextEdit, ok bool) { gotEdits, gotOK = edits, ok })
+	(<-results).Apply()
+
+	if gotOK || len(gotEdits) != 0 {
+		t.Errorf("expected an errored request to surface as no edits, got (%+v, %v)", gotEdits, gotOK)
 	}
 }
 

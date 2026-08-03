@@ -188,3 +188,136 @@ func TestFirstLocationHandlesNullAndEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeDocumentationAcceptsPlainString(t *testing.T) {
+	got := decodeDocumentation(json.RawMessage(`"a plain doc comment"`))
+	if got != "a plain doc comment" {
+		t.Errorf("decodeDocumentation = %q", got)
+	}
+}
+
+func TestDecodeDocumentationAcceptsMarkupContentObject(t *testing.T) {
+	got := decodeDocumentation(json.RawMessage(`{"kind":"markdown","value":"**bold** doc"}`))
+	if got != "**bold** doc" {
+		t.Errorf("decodeDocumentation = %q, want the value field", got)
+	}
+}
+
+func TestDecodeDocumentationAcceptsMarkedStringArray(t *testing.T) {
+	raw := json.RawMessage(`[{"language":"go","value":"func Foo()"}, "plain trailer"]`)
+	got := decodeDocumentation(raw)
+	if got != "func Foo()\n\nplain trailer" {
+		t.Errorf("decodeDocumentation = %q", got)
+	}
+}
+
+func TestDecodeDocumentationHandlesNullAndEmpty(t *testing.T) {
+	for _, raw := range []json.RawMessage{json.RawMessage(`null`), json.RawMessage(``)} {
+		if got := decodeDocumentation(raw); got != "" {
+			t.Errorf("decodeDocumentation(%q) = %q, want empty", raw, got)
+		}
+	}
+}
+
+// TestHoverResultDecodesRealServerShape uses gopls's actual wire shape.
+func TestHoverResultDecodesRealServerShape(t *testing.T) {
+	const raw = `{
+		"contents": {"kind":"markdown","value":"` + `func Foo(x int) string` + `"},
+		"range": {"start":{"line":1,"character":0},"end":{"line":1,"character":3}}
+	}`
+	var got Hover
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if text := decodeDocumentation(got.Contents); text != "func Foo(x int) string" {
+		t.Errorf("decodeDocumentation(Contents) = %q", text)
+	}
+}
+
+func TestHoverResultHandlesNullAndEmpty(t *testing.T) {
+	for _, raw := range []string{`null`, ``} {
+		text, ok, err := hoverText(json.RawMessage(raw))
+		if err != nil {
+			t.Errorf("hoverText(%q): unexpected error %v", raw, err)
+		}
+		if ok || text != "" {
+			t.Errorf("hoverText(%q) = (%q, %v), want (\"\", false)", raw, text, ok)
+		}
+	}
+}
+
+func TestSignatureHelpResultDecodesObjectShape(t *testing.T) {
+	const raw = `{
+		"signatures": [{
+			"label": "Foo(x int, y string) bool",
+			"documentation": "does the foo thing",
+			"parameters": [{"label":"x int"},{"label":"y string"}]
+		}],
+		"activeSignature": 0,
+		"activeParameter": 1
+	}`
+	sh, ok, err := signatureHelpResult(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("signatureHelpResult: %v", err)
+	}
+	if !ok || len(sh.Signatures) != 1 {
+		t.Fatalf("got ok=%v signatures=%+v", ok, sh.Signatures)
+	}
+	sig := sh.Signatures[0]
+	if sig.Label != "Foo(x int, y string) bool" {
+		t.Errorf("Label = %q", sig.Label)
+	}
+	if sig.DocText() != "does the foo thing" {
+		t.Errorf("DocText() = %q", sig.DocText())
+	}
+	if len(sig.Parameters) != 2 || sig.Parameters[1].Label != "y string" {
+		t.Errorf("Parameters = %+v", sig.Parameters)
+	}
+	if sh.ActiveParameter != 1 {
+		t.Errorf("ActiveParameter = %d, want 1", sh.ActiveParameter)
+	}
+}
+
+func TestSignatureHelpResultHandlesNullAndEmpty(t *testing.T) {
+	for _, raw := range []string{`null`, ``, `{"signatures":[]}`} {
+		sh, ok, err := signatureHelpResult(json.RawMessage(raw))
+		if err != nil {
+			t.Errorf("signatureHelpResult(%q): unexpected error %v", raw, err)
+		}
+		if ok || len(sh.Signatures) != 0 {
+			t.Errorf("signatureHelpResult(%q) = (%+v, %v), want no signatures and ok=false", raw, sh, ok)
+		}
+	}
+}
+
+func TestTextEditsDecodesArrayShape(t *testing.T) {
+	const raw = `[
+		{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":"package main\n"},
+		{"range":{"start":{"line":5,"character":2},"end":{"line":5,"character":4}},"newText":""}
+	]`
+	edits, err := textEdits(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("textEdits: %v", err)
+	}
+	if len(edits) != 2 {
+		t.Fatalf("got %d edits, want 2", len(edits))
+	}
+	if edits[0].NewText != "package main\n" {
+		t.Errorf("edits[0].NewText = %q", edits[0].NewText)
+	}
+	if edits[1].Range.Start.Line != 5 || edits[1].Range.End.Character != 4 {
+		t.Errorf("edits[1].Range = %+v", edits[1].Range)
+	}
+}
+
+func TestTextEditsHandlesNullAndEmpty(t *testing.T) {
+	for _, raw := range []string{`null`, ``} {
+		edits, err := textEdits(json.RawMessage(raw))
+		if err != nil {
+			t.Errorf("textEdits(%q): unexpected error %v", raw, err)
+		}
+		if len(edits) != 0 {
+			t.Errorf("textEdits(%q) = %+v, want none", raw, edits)
+		}
+	}
+}
