@@ -37,7 +37,7 @@ const watchDebounce = 200 * time.Millisecond
 // mainShortcutsHint is the fixed reminder shown left-aligned in the status
 // bar — see internal/ui/help for the full keybinding reference (opened via
 // "?", included at the end here).
-const mainShortcutsHint = "Tab Switch pane  ·  Ctrl+P Finder  ·  Ctrl+F Find refs  ·  Ctrl+Shift+R Replace  ·  Ctrl+D Debug  ·  ? Help  ·  Ctrl+C Quit  ·  Ctrl+O Config"
+const mainShortcutsHint = "Tab Switch pane  ·  Ctrl+P Finder  ·  Ctrl+F Find refs  ·  Ctrl+R Replace  ·  Ctrl+D Debug  ·  ? Help  ·  Ctrl+C Quit  ·  Ctrl+O Config"
 
 // welcomeKeybinds is the short key-binding reference shown centered in an
 // editor pane that has no tabs open (see editor.View.SetWelcomeInfo) — a
@@ -70,21 +70,20 @@ var globalDefaultKeybinds = config.Defaults{
 	// with the word under the cursor when an editor pane happens to be
 	// focused (see openFindReferences) — global, not editor-scoped, so it
 	// also works from the file tree, unlike every other editor-only
-	// gesture (B/D/H, go-to-definition, ...). A bare Ctrl+<letter>, so
-	// (unlike Ctrl+Shift+r below) it's reliably representable on any
-	// terminal.
+	// gesture (B/D/H, go-to-definition, ...). A bare Ctrl+<letter>, so it's
+	// reliably representable on any terminal.
 	{Trigger: "Ctrl+f", Action: "open_find_references"},
-	// Ctrl+Shift+<letter> is only reliably distinguishable from plain
-	// Ctrl+<letter> on terminals reporting the kitty keyboard protocol's
-	// full modifier state — on everything else this arrives indistinguishable
-	// from "Ctrl+r", which editor's own keymap already claims for redo
-	// whenever an editor pane has focus (layout.Dispatch tries the focused
-	// View before ever falling back to this global map). Trivially remapped
-	// via the user's own config (Ctrl+O) to any Ctrl+<letter> combo that
-	// isn't already claimed by editor's keymap, the same class of
-	// terminal-portability caveat Ctrl+Space and Shift+? already carry
-	// elsewhere in this file/package.
-	{Trigger: "Ctrl+Shift+r", Action: "open_replace"},
+	// Bare Ctrl+r, not Ctrl+Shift+r: the latter is only reliably
+	// distinguishable from plain Ctrl+r on terminals reporting the kitty
+	// keyboard protocol's full modifier state, which tmux doesn't negotiate
+	// (its own "extended-keys" disambiguation defaults to off) — degrading
+	// there to indistinguishable-from-Ctrl+r, which editor's own keymap used
+	// to claim for redo. Redo now lives on bare "r" instead (see
+	// editor.DefaultKeybinds) specifically to free this up: a bare
+	// Ctrl+<letter> needs no modifier disambiguation and no macOS
+	// Option-as-Alt terminal setting, so it's reliably representable
+	// everywhere with zero configuration.
+	{Trigger: "Ctrl+r", Action: "open_replace"},
 	{Trigger: "Ctrl+d", Action: "open_debug"},
 	{Trigger: "?", Action: "open_help"},
 	// Not Ctrl+, (a common "settings" mnemonic elsewhere): outside the
@@ -607,13 +606,15 @@ func run() error {
 		return nil, false
 	}
 
-	replaceView := finder.NewReplaceView(absRoot)
-	replaceView.SetKeymap(cfg.Overrides("replace"))
-	replaceView.OnClose = app.CloseOverlay
+	// Search-and-replace is finder.View's third mode (Tab-cycled, alongside
+	// filename/content search), so it shares finderView's own overlay
+	// rather than getting a separate one — see finder.View.Replace.
+	finderView.Replace().SetKeymap(cfg.Overrides("replace"))
+	finderView.Replace().OnClose = app.CloseOverlay
 	// Reuses the same async plumbing finderView.Post already relies on —
 	// see finder.ReplaceView.refilter.
-	replaceView.Post = app.Post
-	replaceView.OnReplaceAll = func(search, replacement string, occs []editor.Occurrence) {
+	finderView.Replace().Post = app.Post
+	finderView.Replace().OnReplaceAll = func(search, replacement string, occs []editor.Occurrence) {
 		res := editor.Apply(search, replacement, occs, findPane)
 		for path, err := range res.Failed {
 			debuglog.Error("replace in path %s: %v", path, err)
@@ -622,11 +623,13 @@ func run() error {
 		// nib-initiated file mutation updates the tree/finder status
 		// markers immediately rather than waiting on fsnotify's debounce.
 		refreshGitStatus()
-		replaceView.ShowResult(res)
+		finderView.Replace().ShowResult(res)
 	}
+	// openReplace jumps straight into replace mode, the same direct-to-mode
+	// shortcut openFindReferences gives content-search mode.
 	openReplace := func() {
-		replaceView.Open()
-		app.ShowOverlay(replaceView)
+		finderView.OpenReplace()
+		app.ShowOverlay(finderView)
 	}
 
 	// dirtyPaths lists every currently-open file with unsaved changes,
@@ -675,10 +678,6 @@ func run() error {
 	}
 	confirmQuit := func() {
 		dirty := dirtyPaths()
-		if len(dirty) == 0 {
-			app.Quit()
-			return
-		}
 		rel := make([]string, len(dirty))
 		for i, p := range dirty {
 			rel[i] = p
@@ -782,7 +781,7 @@ func run() error {
 		case finder.SearchResult:
 			finderView.ApplyContentResult(e)
 		case finder.ReplaceSearchResult:
-			replaceView.ApplyReplaceSearchResult(e)
+			finderView.Replace().ApplyReplaceSearchResult(e)
 		case lsp.DiagnosticsEvent:
 			// Fanned out to every pane, exactly like refreshLineStatusFor
 			// does for git line status: ApplyDiagnostics is a no-op in panes

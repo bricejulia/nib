@@ -114,6 +114,25 @@ func TestReplaceViewTabCyclesFocus(t *testing.T) {
 	}
 }
 
+// TestReplaceViewEnterAlsoAdvancesFocus checks that Enter, not just Tab,
+// moves through Find -> Replace -> Results — needed once this pane is
+// embedded as finder.View's third mode, where Tab is taken for cycling
+// modes instead (see finder.View.HandleKey), leaving Enter as the only way
+// to move between fields there.
+func TestReplaceViewEnterAlsoAdvancesFocus(t *testing.T) {
+	v := NewReplaceView(t.TempDir())
+	v.Open()
+
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+	if v.focus != focusReplace {
+		t.Errorf("after one Enter, focus = %v, want focusReplace", v.focus)
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+	if v.focus != focusResults {
+		t.Errorf("after two Enters, focus = %v, want focusResults", v.focus)
+	}
+}
+
 func TestReplaceViewTypingGoesToTheFocusedField(t *testing.T) {
 	v := NewReplaceView(t.TempDir())
 	v.Open()

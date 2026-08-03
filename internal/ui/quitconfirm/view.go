@@ -1,5 +1,7 @@
-// Package quitconfirm is a small modal shown when quitting nib would
-// silently discard unsaved changes — see cmd/nib/main.go's confirmQuit.
+// Package quitconfirm is a small modal shown on every quit attempt, as a
+// safety net against an accidental Ctrl+C — with details on what unsaved
+// work is at stake whenever there is any. See cmd/nib/main.go's
+// confirmQuit.
 package quitconfirm
 
 import (
@@ -8,18 +10,22 @@ import (
 	"github.com/bricejulia/nib/internal/layout"
 )
 
-// View lists every unsaved file and offers to save everything and quit,
-// discard and quit anyway, or cancel back to editing. Its keys are fixed
-// rather than user-configurable, unlike finder/help/debug/diffview: it's a
-// safety dialog, so a misconfigured "cancel" binding must never be able to
-// remap itself onto "quit" — the same reasoning behind filetree's
-// hardcoded delete-confirmation prompt.
+// View asks for quit confirmation: with no unsaved files, that's just a
+// plain "quit or cancel"; with unsaved files, it lists them and offers to
+// save everything and quit, discard and quit anyway, or cancel back to
+// editing. Its keys are fixed rather than user-configurable, unlike
+// finder/help/debug/diffview: it's a safety dialog, so a misconfigured
+// "cancel" binding must never be able to remap itself onto "quit" — the
+// same reasoning behind filetree's hardcoded delete-confirmation prompt.
 type View struct {
 	paths []string
 
 	// OnSaveAndQuit is called on "s": save every unsaved file, then quit.
+	// Only offered (and only needed) when there's at least one unsaved
+	// file — see Render.
 	OnSaveAndQuit func()
-	// OnDiscardAndQuit is called on "q": quit without saving.
+	// OnDiscardAndQuit is called on "q": quit, discarding any unsaved
+	// files. With none, there's nothing to discard, so this is just quit.
 	OnDiscardAndQuit func()
 	// OnCancel is called on Esc, dismissing the modal without quitting.
 	OnCancel func()
@@ -30,12 +36,19 @@ type View struct {
 func New() *View { return &View{} }
 
 // Show primes the dialog with the paths of every unsaved file, to be
-// listed as given — the caller decides absolute vs. project-relative.
+// listed as given — the caller decides absolute vs. project-relative. An
+// empty (or nil) paths means "nothing unsaved": Render/Title fall back to
+// a plain quit confirmation with no file list or save option.
 func (v *View) Show(paths []string) {
 	v.paths = paths
 }
 
-func (v *View) Title() string { return "Unsaved changes" }
+func (v *View) Title() string {
+	if len(v.paths) == 0 {
+		return "Quit nib?"
+	}
+	return "Unsaved changes"
+}
 
 func (v *View) Render(w layout.Window) {
 	w.Clear()
@@ -43,6 +56,14 @@ func (v *View) Render(w layout.Window) {
 	line := func(text string, style layout.Style) {
 		w.Println(row, layout.Segment{Text: text, Style: style})
 		row++
+	}
+
+	if len(v.paths) == 0 {
+		line("Quit nib?", layout.Style{Attr: layout.AttrBold})
+		row++
+		line("[q] Quit", layout.Style{})
+		line("[Esc] Cancel", layout.Style{})
+		return
 	}
 
 	noun := "file"

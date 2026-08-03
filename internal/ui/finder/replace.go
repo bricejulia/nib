@@ -410,10 +410,11 @@ func (v *ReplaceView) fireReplace(occs []editor.Occurrence) {
 // Esc and Tab are structural to this pane (close / switch field) rather
 // than remappable actions — the same trade filetree's in-pane prompt makes
 // for Esc — so they're intercepted before v.keymap is ever consulted, and
-// aren't listed in ReplaceDefaultKeybinds. Everything else routes to
-// whichever field has focus (typing, never through the keymap — see
-// textField.handleKey) or, once focus is on the results list, through
-// v.keymap.
+// aren't listed in ReplaceDefaultKeybinds. Enter is likewise structural
+// while focus is off the results list (advance to the next field, same as
+// Tab). Everything else routes to whichever field has focus (typing, never
+// through the keymap — see textField.handleKey) or, once focus is on the
+// results list, through v.keymap.
 func (v *ReplaceView) HandleKey(k layout.Key) bool {
 	if k.EventType == layout.EventRelease {
 		return true
@@ -438,6 +439,16 @@ func (v *ReplaceView) HandleKey(k layout.Key) bool {
 	}
 
 	if v.focus != focusResults {
+		// Enter advances focus the same way Tab does (Find -> Replace ->
+		// Results), so the field-to-field flow still works once this pane
+		// is embedded as finder.View's third mode, where Tab is taken for
+		// cycling modes instead — see View.HandleKey. Additive here: it
+		// doesn't take anything away from Tab's existing behavior when
+		// this pane is shown standalone (Ctrl+R).
+		if k.Named == layout.KeyEnter {
+			v.cycleFocus()
+			return true
+		}
 		field := &v.find
 		if v.focus == focusReplace {
 			field = &v.replace
@@ -604,7 +615,7 @@ func (v *ReplaceView) statusLine() string {
 		return ""
 	default:
 		files, occs := v.counts()
-		return fmt.Sprintf("%d occurrence(s) in %d file(s) — Tab: switch field, Space: toggle, Enter: replace one, a: replace all",
+		return fmt.Sprintf("%d occurrence(s) in %d file(s) — Tab/Enter: switch field, Space: toggle, Enter: replace one, a: replace all",
 			occs, files)
 	}
 }

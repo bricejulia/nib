@@ -21,12 +21,12 @@ var sections = []section{
 	{
 		Title: "Global",
 		Bindings: []binding{
-			{"Ctrl+c", "Quit (asks first if there are unsaved changes)"},
+			{"Ctrl+c", "Quit (asks to confirm first)"},
 			{"Tab", "Focus next pane"},
 			{"Shift+Tab", "Focus previous pane"},
 			{"Ctrl+p", "Open file finder (also: double-tap Shift)"},
 			{"Ctrl+f", "Find references: search file contents (pre-filled with the word under the cursor, if an editor pane is focused)"},
-			{"Ctrl+Shift+r", "Open find & replace in path"},
+			{"Ctrl+r", "Open find & replace in path (also: Tab twice from the file finder)"},
 			{"Ctrl+d", "Open debug log"},
 			{"?", "Open this help"},
 			{"Ctrl+o", "Open config file"},
@@ -63,7 +63,7 @@ var sections = []section{
 			{"Tab", "Insert a tab character (Insert mode)"},
 			{"arrows", "Move cursor (also works in Insert mode)"},
 			{"u", "Undo the last change"},
-			{"Ctrl+r", "Redo"},
+			{"r", "Redo"},
 			{":<N>", "Go to line N: type a number, Enter to jump, Esc to cancel"},
 			{":w", "Save the active tab"},
 			{":q :q!", "Close tab (refuses if unsaved; ! discards)"},
@@ -119,7 +119,7 @@ var sections = []section{
 	{
 		Title: "Finder",
 		Bindings: []binding{
-			{"Tab", "Switch file / content search"},
+			{"Tab", "Cycle file / content / find & replace search"},
 			{"Enter", "Open selection"},
 			{"Up Down", "Move selection"},
 			{"Left Right", "Peek a long line"},
@@ -129,10 +129,10 @@ var sections = []section{
 	{
 		Title: "Find & Replace",
 		Bindings: []binding{
-			{"Tab", "Switch between Find, Replace, and the results list"},
+			{"Tab Enter", "Switch between Find, Replace, and the results list"},
 			{"Up Down", "Move selection (results list)"},
 			{"Space", "Toggle the occurrence, or a whole file's occurrences"},
-			{"Enter", "Replace just this occurrence"},
+			{"Enter", "Replace just this occurrence (results list)"},
 			{"a", "Replace every checked occurrence"},
 			{"Esc", "Close"},
 		},

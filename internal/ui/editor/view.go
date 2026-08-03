@@ -56,7 +56,12 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "Tab", Action: "insert_tab"},
 	{Trigger: "Ctrl+s", Action: "save"},
 	{Trigger: "u", Action: "undo"},
-	{Trigger: "Ctrl+r", Action: "redo"},
+	// Bare "r", not Ctrl+r: frees Ctrl+r up as the GLOBAL "open_replace"
+	// binding (see cmd/nib/main.go), which needs it to be unclaimed here —
+	// layout.Dispatch tries this pane's own keymap before ever falling
+	// back to the global one, so as long as Ctrl+r meant redo here, the
+	// global binding could never fire while an editor pane had focus.
+	{Trigger: "r", Action: "redo"},
 	{Trigger: ":", Action: "command_mode"},
 	{Trigger: "Ctrl+g", Action: "go_to_parent"},
 	{Trigger: "Ctrl+]", Action: "go_to_definition"},
@@ -75,10 +80,10 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "Ctrl+Space", Action: "trigger_autocomplete"},
 	// Not Ctrl+Shift+Space (the more VSCode-familiar chord for signature
 	// help): Ctrl+Shift+<key> is indistinguishable from plain Ctrl+<key> on
-	// any terminal that isn't reporting the kitty keyboard protocol's full
-	// modifier state (see Ctrl+Shift+r in cmd/nib/main.go for the same
-	// caveat) — degrading silently to Ctrl+Space here would fire
-	// autocomplete instead, in the exact scope/mode signature help needs.
+	// any terminal (or multiplexer, e.g. tmux with extended-keys off) that
+	// isn't reporting the kitty keyboard protocol's full modifier state —
+	// degrading silently to Ctrl+Space here would fire autocomplete instead,
+	// in the exact scope/mode signature help needs.
 	// Reachable from both Normal and Insert mode — see handleInsertKey.
 	{Trigger: "Ctrl+a", Action: "trigger_signature_help"},
 	// "K" is vim's own "look up what's under the cursor", which is exactly
@@ -2158,6 +2163,15 @@ func (v *View) onBufferEdited(t *tab) {
 	v.submitHighlight(t.buf, false)
 	if v.lsp != nil {
 		v.lsp.Change(t.path, string(t.buf.Source))
+	}
+	// Unlike the diagnostics refresh below, this runs on every edit
+	// including mid-Insert-session: a stale match highlight sitting on top
+	// of text that no longer reads as the pattern is wrong at every
+	// keystroke, not just once the edit completes. Cheap enough to redo
+	// every time — a linear substring scan, the same cost stepSearch
+	// already pays on every n/N.
+	if v.searchPattern != "" {
+		v.refreshSearchMatchesForPattern()
 	}
 	// Deliberately NOT while typing: mid-edit code is almost always
 	// momentarily unparseable, so refreshing here would flag an error under

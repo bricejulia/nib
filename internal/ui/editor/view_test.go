@@ -1130,8 +1130,8 @@ func TestRedoReappliesUndoneInsertSession(t *testing.T) {
 		t.Fatalf("expected undo to revert to %q, got %q", "abc", v.activeTab().buf.Lines[0])
 	}
 
-	if !v.HandleKey(layout.Key{Text: "r", Mods: layout.ModCtrl}) {
-		t.Fatal("expected Ctrl+r to be consumed")
+	if !v.HandleKey(layout.Key{Text: "r"}) {
+		t.Fatal("expected 'r' to be consumed")
 	}
 	if got := v.activeTab().buf.Lines[0]; got != "abcd" {
 		t.Fatalf("Lines[0] = %q, want %q after redo", got, "abcd")
@@ -1179,8 +1179,8 @@ func TestUndoAndRedoOnEmptyStacksAreNoops(t *testing.T) {
 	if !v.HandleKey(layout.Key{Text: "u"}) {
 		t.Fatal("expected 'u' to still be consumed with an empty undo stack")
 	}
-	if !v.HandleKey(layout.Key{Text: "r", Mods: layout.ModCtrl}) {
-		t.Fatal("expected Ctrl+r to still be consumed with an empty redo stack")
+	if !v.HandleKey(layout.Key{Text: "r"}) {
+		t.Fatal("expected 'r' to still be consumed with an empty redo stack")
 	}
 	if got := v.activeTab().buf.Lines[0]; got != "abc" {
 		t.Fatalf("Lines[0] = %q, want unchanged %q", got, "abc")
@@ -1290,7 +1290,7 @@ func TestUndoSaveRedoShowsDirtyWhenBufferDivergesFromDisk(t *testing.T) {
 	}
 	v.HandleKey(layout.Key{Text: "s", Mods: layout.ModCtrl}) // disk: "original"
 
-	v.HandleKey(layout.Key{Text: "r", Mods: layout.ModCtrl}) // buffer: "original!" again
+	v.HandleKey(layout.Key{Text: "r"}) // buffer: "original!" again
 	if got := v.activeTab().buf.Lines[0]; got != "original!" {
 		t.Fatalf("Lines[0] = %q, want %q after redo", got, "original!")
 	}

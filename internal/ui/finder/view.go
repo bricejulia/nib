@@ -1,8 +1,9 @@
 // Package finder is a fuzzy file finder meant to be shown as a modal
-// overlay (see ui.App.ShowOverlay/CloseOverlay). It has two modes,
-// switched with Tab: find a file by name (fuzzy match), or find a line by
-// its content (via `git grep`). Up/Down moves the selection, Enter opens
-// it, Esc closes without opening anything.
+// overlay (see ui.App.ShowOverlay/CloseOverlay). It has three modes,
+// switched with Tab: find a file by name (fuzzy match), find a line by
+// its content (via `git grep`), or search-and-replace across the project
+// (see ReplaceView). Up/Down moves the selection, Enter opens it, Esc
+// closes without opening anything.
 package finder
 
 import (
@@ -47,6 +48,7 @@ type mode int
 const (
 	modeFiles mode = iota
 	modeContent
+	modeReplace
 )
 
 type scoredItem struct {
@@ -81,6 +83,15 @@ type SearchResult struct {
 type View struct {
 	root string
 	mode mode
+
+	// replace is the search-and-replace mode's entire state and behavior,
+	// delegated to wholesale (Render, HandleKey, Title, CursorPosition,
+	// ScrollState/ScrollTo) rather than folded into View's own fields and
+	// switches — see toggleMode, Render, and HandleKey. It's also reachable
+	// directly via OpenReplace/Replace, for a global shortcut that jumps
+	// straight into this mode (Ctrl+r, see cmd/nib/main.go) the same way
+	// OpenWithQuery jumps straight into content-search mode.
+	replace *ReplaceView
 
 	items          []string // file mode: candidate paths, from listFiles
 	fileMatches    []scoredItem
@@ -123,7 +134,14 @@ type View struct {
 // New creates a finder rooted at absPath. Call Open each time it's about
 // to be shown.
 func New(absPath string) *View {
-	return &View{root: absPath, keymap: DefaultKeybinds.Resolve(nil)}
+	return &View{root: absPath, keymap: DefaultKeybinds.Resolve(nil), replace: NewReplaceView(absPath)}
+}
+
+// Replace returns the replace-mode sub-view, so the host application can
+// wire up its callbacks (OnReplaceAll, Post, OnClose) and keymap overrides
+// once, up front — see cmd/nib/main.go.
+func (v *View) Replace() *ReplaceView {
+	return v.replace
 }
 
 // SetKeymap merges the user config's "finder" scope overrides on top of
@@ -133,10 +151,14 @@ func (v *View) SetKeymap(overrides map[string]string) {
 }
 
 func (v *View) Title() string {
-	if v.mode == modeContent {
+	switch v.mode {
+	case modeContent:
 		return "Find in Files"
+	case modeReplace:
+		return v.replace.Title()
+	default:
+		return "Find File"
 	}
-	return "Find File"
 }
 
 // Open (re)indexes the project's files, resets the query/cursor, and
@@ -165,6 +187,15 @@ func (v *View) OpenWithQuery(query string) {
 	v.refilter()
 }
 
+// OpenReplace opens the finder already in search-and-replace mode — used
+// by the global "find & replace in path" action (Ctrl+R, see cmd/nib/main.go),
+// the same direct-to-mode shortcut OpenWithQuery gives content-search mode.
+func (v *View) OpenReplace() {
+	v.Open()
+	v.mode = modeReplace
+	v.replace.Open()
+}
+
 // ApplyStatus attaches git statuses (repo-relative path -> Status, the
 // same direct per-file map the file tree rolls up) so file-mode matches
 // show a status marker and color. It's fine to call this before Open,
@@ -174,12 +205,23 @@ func (v *View) ApplyStatus(direct map[string]gitstatus.Status) {
 	v.status = direct
 }
 
+// toggleMode cycles Files -> Content -> Replace -> Files. Replace mode
+// keeps its own independent state (query, replacement, results — see
+// ReplaceView), so entering it always starts fresh via replace.Open(),
+// the same way switching into it via OpenReplace does.
 func (v *View) toggleMode() {
 	v.cancelPendingSearch()
-	if v.mode == modeFiles {
+	switch v.mode {
+	case modeFiles:
 		v.mode = modeContent
-	} else {
+	case modeContent:
+		v.mode = modeReplace
+	default:
 		v.mode = modeFiles
+	}
+	if v.mode == modeReplace {
+		v.replace.Open()
+		return
 	}
 	v.cursor = 0
 	v.scrollTop = 0
@@ -308,18 +350,27 @@ func (v *View) promptPrefix() string {
 }
 
 // CursorPosition implements layout.CursorProvider, placing the terminal's
-// native cursor right after the typed query on the prompt row.
+// native cursor right after the typed query on the prompt row — or, in
+// replace mode, wherever ReplaceView.CursorPosition puts it.
 func (v *View) CursorPosition() (int, int, bool) {
+	if v.mode == modeReplace {
+		return v.replace.CursorPosition()
+	}
 	return len(v.promptPrefix()) + len(v.query), 0, true
 }
 
 func (v *View) Render(w layout.Window) {
+	if v.mode == modeReplace {
+		v.replace.Render(w)
+		return
+	}
+
 	cols, rows := w.Size()
 	w.Clear()
 
 	hint := "(Tab: search content, ←→: see full line)"
 	if v.mode == modeContent {
-		hint = "(Tab: search files, ←→: see full line)"
+		hint = "(Tab: find & replace, ←→: see full line)"
 	}
 	w.Println(0, layout.Segment{Text: v.promptPrefix() + string(v.query) + "  " + hint})
 
@@ -386,6 +437,14 @@ func (v *View) Render(w layout.Window) {
 
 // HandleKey always reports the key consumed: a modal should never leak
 // input through to whatever is behind it, matched or not.
+//
+// Close and switch-mode are handled up front, before any mode-specific
+// dispatch, so Esc/Tab always close/cycle regardless of mode — including
+// out of replace mode, where everything else is delegated wholesale to
+// v.replace.HandleKey below rather than threaded through the switches
+// that follow (those are files/content-mode-specific: move_down and
+// friends act on v.cursor/v.fileMatches/v.contentMatches, none of which
+// replace mode uses).
 func (v *View) HandleKey(k layout.Key) bool {
 	if k.EventType == layout.EventRelease {
 		return true
@@ -400,6 +459,13 @@ func (v *View) HandleKey(k layout.Key) bool {
 	case "switch_mode":
 		v.toggleMode()
 		return true
+	}
+
+	if v.mode == modeReplace {
+		return v.replace.HandleKey(k)
+	}
+
+	switch v.keymap[k.String()] {
 	case "open_selection":
 		v.selectCurrent()
 		if v.OnClose != nil {
@@ -442,6 +508,9 @@ func (v *View) HandleKey(k layout.Key) bool {
 
 // ScrollState implements layout.Scrollable.
 func (v *View) ScrollState() layout.ScrollState {
+	if v.mode == modeReplace {
+		return v.replace.ScrollState()
+	}
 	return layout.ScrollState{Top: v.scrollTop, Viewport: v.lastListRows, Total: v.resultCount()}
 }
 
@@ -451,6 +520,10 @@ func (v *View) ScrollState() layout.ScrollState {
 // that leaves the cursor outside the new viewport has to move the cursor
 // too, or the next Render would silently undo it.
 func (v *View) ScrollTo(top int) {
+	if v.mode == modeReplace {
+		v.replace.ScrollTo(top)
+		return
+	}
 	viewport := v.lastListRows
 	total := v.resultCount()
 	maxTop := total - viewport

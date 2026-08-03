@@ -289,6 +289,42 @@ func TestSearchMatchesRenderHighlighted(t *testing.T) {
 	}
 }
 
+// TestSearchHighlightsUpdateWhileEditingAMatch is a regression test for a
+// reported bug: after jumping to a search match, typing into it left the
+// stale highlight rendered over the now-non-matching text until the next
+// "/", "n", or "N" — see onBufferEdited's refreshSearchMatchesForPattern call.
+func TestSearchHighlightsUpdateWhileEditingAMatch(t *testing.T) {
+	v, tb := searchView() // "alpha" on lines 0 and 2
+	v.HandleKey(layout.Key{Text: "/"})
+	for _, r := range "alpha" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyEnter}) // jumps to line 2's match
+
+	if tb.cursorLn != 2 {
+		t.Fatalf("setup: cursorLn = %d, want 2", tb.cursorLn)
+	}
+
+	v.HandleKey(layout.Key{Text: "l"})
+	v.HandleKey(layout.Key{Text: "l"})
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(layout.Key{Text: "Z"}) // buffer: "alZpha three", still mid-Insert session
+
+	if got := tb.buf.Lines[2]; got != "alZpha three" {
+		t.Fatalf("setup: buf.Lines[2] = %q, want %q", got, "alZpha three")
+	}
+
+	w := newFakeWindow(40, 10)
+	v.Render(w)
+
+	if rowHasStyle(w, 3, func(s layout.Style) bool { return s.Attr&layout.AttrReverse != 0 }) {
+		t.Errorf("row 3 (line 2, edited) still shows a match highlight after the match was broken, got %+v", w.segs[3])
+	}
+	if !rowHasStyle(w, 1, func(s layout.Style) bool { return s.Attr&layout.AttrReverse != 0 }) {
+		t.Errorf("row 1 (line 0, untouched) should still be highlighted, got %+v", w.segs[1])
+	}
+}
+
 func TestSearchModeIsNotAffectedByNormalModeLetters(t *testing.T) {
 	// Letters bound to Normal-mode actions ("n", "j", "x"...) must be typed
 	// into the pattern while the prompt is open, not re-trigger their action.

@@ -360,7 +360,7 @@ func TestViewHScrollResetsWhenQueryChanges(t *testing.T) {
 	}
 }
 
-func TestViewTabTogglesModeAndTitle(t *testing.T) {
+func TestViewTabCyclesThroughAllThreeModesAndTitles(t *testing.T) {
 	v := newTestView("main.go")
 	if v.Title() != "Find File" {
 		t.Fatalf("expected initial title %q, got %q", "Find File", v.Title())
@@ -368,15 +368,53 @@ func TestViewTabTogglesModeAndTitle(t *testing.T) {
 
 	v.HandleKey(layout.Key{Named: layout.KeyTab})
 	if v.mode != modeContent {
-		t.Fatal("Tab should switch to content mode")
+		t.Fatal("a first Tab should switch to content mode")
 	}
 	if v.Title() != "Find in Files" {
 		t.Errorf("expected title %q in content mode, got %q", "Find in Files", v.Title())
 	}
 
 	v.HandleKey(layout.Key{Named: layout.KeyTab})
+	if v.mode != modeReplace {
+		t.Fatal("a second Tab should switch to replace mode")
+	}
+	if v.Title() != "Find & Replace in Path" {
+		t.Errorf("expected title %q in replace mode, got %q", "Find & Replace in Path", v.Title())
+	}
+
+	v.HandleKey(layout.Key{Named: layout.KeyTab})
 	if v.mode != modeFiles {
-		t.Fatal("a second Tab should switch back to file mode")
+		t.Fatal("a third Tab should cycle back to file mode")
+	}
+}
+
+// TestViewReplaceModeDelegatesToReplaceView spot-checks that once Tab has
+// cycled into replace mode, View's own Render/HandleKey/CursorPosition
+// hand off to the embedded ReplaceView wholesale, rather than treating it
+// like file/content mode — see View.toggleMode and View.HandleKey.
+func TestViewReplaceModeDelegatesToReplaceView(t *testing.T) {
+	v := newTestView("main.go")
+	v.HandleKey(layout.Key{Named: layout.KeyTab}) // content mode
+	v.HandleKey(layout.Key{Named: layout.KeyTab}) // replace mode
+
+	typeText := "todo"
+	for _, r := range typeText {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	if v.replace.find.String() != typeText {
+		t.Fatalf("typing in replace mode should reach the embedded ReplaceView's Find field, got %q", v.replace.find.String())
+	}
+
+	w := newFakeWindow(60, 10)
+	v.Render(w)
+	if !strings.Contains(w.lines[0], "Find:") {
+		t.Errorf("expected Render to delegate to ReplaceView (Find: label), got %q", w.lines[0])
+	}
+
+	col, row, ok := v.CursorPosition()
+	wantCol, wantRow, wantOK := v.replace.CursorPosition()
+	if col != wantCol || row != wantRow || ok != wantOK {
+		t.Errorf("CursorPosition = (%d, %d, %v), want delegated (%d, %d, %v)", col, row, ok, wantCol, wantRow, wantOK)
 	}
 }
 

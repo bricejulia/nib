@@ -26,7 +26,7 @@ servers — in a codebase small enough to read in an afternoon.
 ## What it does
 
 - **Modal editing** — Normal/Insert/Command modes, `hjkl` navigation, `i`/`a`/`o`,
-  `x`/`X`, `u` + `Ctrl+r` undo/redo with vim's own granularity (one Insert
+  `x`/`X`, `u` + `r` undo/redo with vim's own granularity (one Insert
   session = one undo step).
 - **Syntax highlighting** via tree-sitter, across ~186 languages.
 - **Syntax error detection** for every trusted grammar, with no language
@@ -202,11 +202,11 @@ Press `?` in nib for this list at runtime. Every binding is rebindable
 
 | Key | Action |
 | --- | --- |
-| `Ctrl+C` | Quit (asks first if there are unsaved changes) |
+| `Ctrl+C` | Quit (asks to confirm first) |
 | `Tab` / `Shift+Tab` | Focus next / previous pane |
 | `Ctrl+P` | File finder (also: double-tap `Shift`) |
 | `Ctrl+F` | Find references: search file contents, pre-filled with the word under the cursor in the focused (or last-focused) editor pane |
-| `Ctrl+Shift+R` | Find & replace in path |
+| `Ctrl+R` | Find & replace in path (also: `Tab` twice from the file finder) |
 | `Ctrl+D` | Debug log |
 | `?` | Help |
 | `Ctrl+O` | Open the config file in `$EDITOR` |
@@ -236,7 +236,7 @@ Press `?` in nib for this list at runtime. Every binding is rebindable
 | `dd` / `yy` | Delete (cut) / yank (copy) this line |
 | `p` | Put (paste) after this one — a line, or a fragment if the last copy was a selection |
 | `Enter`, `Backspace`, `Tab` | Newline, delete back, insert a tab (Insert mode) |
-| `u` / `Ctrl+R` | Undo / redo |
+| `u` / `r` | Undo / redo |
 | `Ctrl+S` | Save |
 
 ### Editor — mouse
@@ -329,11 +329,12 @@ marked `-- DELETED --` so `:w` can write the file back.
 
 ### Finder
 
-`Tab` switches between filename and content search · `Enter` opens ·
-`↑`/`↓` selects · `←`/`→` peeks at a long line · `Esc` closes
+`Tab` cycles filename search → content search → find & replace (see below) →
+back to filename search · `Enter` opens · `↑`/`↓` selects · `←`/`→` peeks at a
+long line · `Esc` closes
 
-Both modes show each file's git status marker in the leftmost column, colored
-the same way the file tree colors it.
+The filename and content-search modes show each file's git status marker in
+the leftmost column, colored the same way the file tree colors it.
 
 ### Diff
 
@@ -342,12 +343,15 @@ to the ends · `←`/`→` peeks at a long line · `Esc` closes
 
 ### Find & Replace
 
+The finder's third mode (`Ctrl+P` then `Tab` twice, or jump straight there
+with `Ctrl+R`):
+
 | Key | Action |
 | --- | --- |
-| `Tab` | Switch between Find, Replace, and the results list |
+| `Tab` / `Enter` | Switch between Find, Replace, and the results list (`Enter` only advances focus off the results list — see below) |
 | `Up` / `Down` | Move selection (results list) |
 | `Space` | Toggle an occurrence, or a whole file's occurrences |
-| `Enter` | Replace just the occurrence under the cursor |
+| `Enter` | Replace just the occurrence under the cursor (results list) |
 | `a` | Replace every checked occurrence |
 | `Esc` | Close |
 
@@ -361,10 +365,13 @@ for the whole file, gutter and language-server diagnostics update the same
 as any other edit), left unsaved like any other edit; a file with no open
 pane is rewritten on disk directly, preserving its permissions.
 
-`Ctrl+Shift+R` needs a terminal that reports the Shift modifier on Ctrl
-combos (the kitty keyboard protocol) to be distinguished from plain `Ctrl+R`
-(redo, while an editor pane is focused) — remap it via `Ctrl+O` to any free
-`Ctrl+`letter combo if it doesn't fire on your terminal.
+Bare `Ctrl+R`, not `Ctrl+Shift+R`: the latter is only reliably distinguishable
+from plain `Ctrl+R` on terminals reporting the kitty keyboard protocol's full
+modifier state, which tmux doesn't negotiate by default. Redo lives on bare
+`r` instead of `Ctrl+R` specifically so this binding could move there — a
+plain `Ctrl+`letter needs no modifier disambiguation and no terminal-specific
+configuration, so it's reliably representable everywhere. Remap either one
+via `Ctrl+O` if it collides with something else on your setup.
 
 ## Configuration
 
