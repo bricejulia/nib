@@ -49,7 +49,7 @@ make build          # or: go build -o nib cmd/nib/main.go
 ./nib [directory]  # defaults to the current directory
 ```
 
-Requires Go 1.23+. For LSP features, install the relevant language server —
+Requires Go 1.24+. For LSP features, install the relevant language server —
 `gopls` for Go, `intelephense` or `phpactor` for PHP,
 `typescript-language-server` for TypeScript/JavaScript/JSX/TSX, and any other
 via one config line (see [Language servers](#language-servers)). nib finds
