@@ -4,7 +4,7 @@ builds:
   - main: ./cmd/nib
     binary: nib
     ldflags:
-      - -s -w -X main.version={{.Version}}
+      - -s -w -X github.com/bricejulia/nib/internal/version.Version={{.Version}}
     env:
       - CGO_ENABLED=0
     goos:
