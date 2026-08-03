@@ -7,8 +7,8 @@ package help
 import (
 	"fmt"
 
-	"github.com/bricejulia/kiwi/internal/config"
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/config"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // DefaultKeybinds are the help overlay's built-in keybindings,
@@ -54,7 +54,7 @@ func (v *View) Title() string { return "Help" }
 // changes at runtime.
 func buildLines(version string) [][]layout.Segment {
 	lines := [][]layout.Segment{
-		{{Text: "kiwi " + version}},
+		{{Text: "nib " + version}},
 	}
 	for _, sec := range sections {
 		lines = append(lines, nil) // blank separator

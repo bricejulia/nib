@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // goBuffer returns a Go buffer holding lines, already highlighted, so a
@@ -353,7 +353,7 @@ func TestHighlightSourceReportsAParseThatRanOutOfTime(t *testing.T) {
 }
 
 // End to end, the way the real app is wired: a pane with a worker, results
-// coming back through a Post that stands in for cmd/kiwi's event loop. What
+// coming back through a Post that stands in for cmd/nib's event loop. What
 // a user experiences is that typing never waits, and a moment after they
 // stop, real colors are back on the line they were editing.
 func TestTypingThenPausingRestoresRealHighlighting(t *testing.T) {
@@ -401,7 +401,7 @@ func TestTypingThenPausingRestoresRealHighlighting(t *testing.T) {
 }
 
 // drainInto applies every highlight result that arrives within d, the way
-// cmd/kiwi's event loop does. Returns once the channel has been quiet for d.
+// cmd/nib's event loop does. Returns once the channel has been quiet for d.
 func drainInto(t *testing.T, results <-chan HighlightResult, d time.Duration) {
 	t.Helper()
 	for {

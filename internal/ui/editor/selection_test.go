@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // selectionView builds a pane holding lines, sized so Render's own
@@ -492,7 +492,7 @@ func TestYankWithNoSelectionStillNeedsDoubling(t *testing.T) {
 
 func TestCopySelectionWorksWithoutACopyFunc(t *testing.T) {
 	// CopyFunc is optional — the register half must still work, so "p"
-	// inside kiwi is unaffected by a terminal that can't take OSC 52.
+	// inside nib is unaffected by a terminal that can't take OSC 52.
 	v, tb := selectionView("hello world")
 	g := gutterFor(tb)
 

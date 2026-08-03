@@ -3,8 +3,8 @@ package debug
 import (
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/debuglog"
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/debuglog"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 func fakeEntries(n int) []debuglog.Entry {

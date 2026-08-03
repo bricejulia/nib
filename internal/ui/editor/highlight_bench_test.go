@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // benchFile writes the first n lines of view.go (this package's own

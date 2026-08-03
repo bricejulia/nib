@@ -4,8 +4,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/lsp"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/lsp"
 )
 
 // maxCompletionCandidates caps how many autocomplete candidates are kept

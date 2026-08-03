@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/ui/gitstyle"
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/ui/gitstyle"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 type fakeWindow struct {
@@ -653,9 +653,17 @@ func TestPlaceholderMessageIsDimmed(t *testing.T) {
 	w := newFakeWindow(60, 10)
 	v.Render(w)
 
-	if len(w.segs[0]) != 1 || w.segs[0][0].Style.Attr&layout.AttrDim == 0 {
-		t.Errorf("expected the \"No file open\" placeholder to be dim-styled, got %+v", w.segs[0])
+	for _, segs := range w.segs {
+		for _, s := range segs {
+			if strings.Contains(s.Text, "No file open") {
+				if s.Style.Attr&layout.AttrDim == 0 {
+					t.Errorf("expected the \"No file open\" placeholder to be dim-styled, got %+v", s)
+				}
+				return
+			}
+		}
 	}
+	t.Errorf("\"No file open\" placeholder not found in any rendered row: %+v", w.segs)
 }
 
 func TestBracketKeysSwitchTabs(t *testing.T) {
@@ -1708,7 +1716,7 @@ func TestOnAllTabsClosedFiresViaColonQ(t *testing.T) {
 }
 
 // sharedPanes opens path in two Views that share one BufferStore — the
-// split-pane-on-the-same-file scenario cmd/kiwi/main.go sets up.
+// split-pane-on-the-same-file scenario cmd/nib/main.go sets up.
 func sharedPanes(t *testing.T, path string) (v1, v2 *View) {
 	t.Helper()
 	store := NewBufferStore()

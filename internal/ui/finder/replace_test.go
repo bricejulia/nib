@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/ui/editor"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/ui/editor"
 )
 
 // newReplaceTestRepo builds a small git repo with the query "todo"

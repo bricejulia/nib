@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bricejulia/kiwi/internal/textfile"
+	"github.com/bricejulia/nib/internal/textfile"
 )
 
 // LineStatus is the per-line git diff marker shown in the editor gutter —

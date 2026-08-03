@@ -1,4 +1,4 @@
-# kiwi
+# nib
 
 A terminal code editor in Go. Modal editing in the vim tradition, real
 syntax awareness from tree-sitter, and real semantic features from language
@@ -15,7 +15,7 @@ servers — in a codebase small enough to read in an afternoon.
 │                          ││       constant) as int value [compiler]      │
 │                          ││   6 }                                        │
 └──────────────────────────┘└──────────────────────────────────────────────┘
- Tab Switch pane · Ctrl+P Finder · ? Help    Ln 4, Col 5   go ●   main   kiwi
+ Tab Switch pane · Ctrl+P Finder · ? Help    Ln 4, Col 5   go ●   main   nib
 ```
 
 ## What it does
@@ -45,14 +45,14 @@ servers — in a codebase small enough to read in an afternoon.
 ## Getting started
 
 ```sh
-make build          # or: go build -o kiwi cmd/kiwi/main.go
-./kiwi [directory]  # defaults to the current directory
+make build          # or: go build -o nib cmd/nib/main.go
+./nib [directory]  # defaults to the current directory
 ```
 
 Requires Go 1.23+. For LSP features, install the relevant language server —
 `gopls` for Go, `intelephense` or `phpactor` for PHP,
 `typescript-language-server` for TypeScript/JavaScript/JSX/TSX, and any other
-via one config line (see [Language servers](#language-servers)). kiwi finds
+via one config line (see [Language servers](#language-servers)). nib finds
 it on `PATH` and degrades gracefully to its tree-sitter features if it isn't
 there.
 
@@ -61,7 +61,7 @@ there.
 The dependency direction is the main thing to understand:
 
 ```
-cmd/kiwi          wiring: builds the pane tree, owns the callbacks between panes
+cmd/nib          wiring: builds the pane tree, owns the callbacks between panes
      │
      ├── internal/ui          the ONLY package that imports vaxis (the terminal)
      │        └── app.go      event loop, focus, overlays, key translation
@@ -81,7 +81,7 @@ Three rules hold the whole thing together:
 
 **1. Only `internal/ui` knows about the terminal.** Every pane is a
 `layout.View` — `Render(Window)`, `HandleKey(Key)`, `Title()` — and talks in
-kiwi's own `Key`/`Segment`/`Style` types. `internal/ui/app.go` is the single
+nib's own `Key`/`Segment`/`Style` types. `internal/ui/app.go` is the single
 seam that translates vaxis events in and vaxis draw calls out. Panes are
 therefore testable against a fake `Window` with no terminal at all, which is
 how essentially all of the UI is tested.
@@ -94,7 +94,7 @@ confined to exactly two packages — `lsp.Manager` (server threads write to it)
 and `debuglog` (anything may log from anywhere) — and no UI state needs any.
 
 **3. Panes don't know about each other.** A pane exposes a callback field —
-`OnOpen`, `OnFindReferences`, `OnAllTabsClosed` — and `cmd/kiwi/main.go` wires
+`OnOpen`, `OnFindReferences`, `OnAllTabsClosed` — and `cmd/nib/main.go` wires
 them together. The editor doesn't import the finder to show search results; it
 calls `OnFindReferences` and main.go decides that means "open the finder".
 
@@ -164,7 +164,7 @@ renders as `�`.
 
 ## Keybindings
 
-Press `?` in kiwi for this list at runtime. Every binding is rebindable
+Press `?` in nib for this list at runtime. Every binding is rebindable
 (see [Configuration](#configuration)).
 
 ### Global
@@ -229,17 +229,17 @@ took with `yy` and were about to `p`. Pressing `y` is how you ask for both.
 rewrite the clipboard at each one.)
 
 Copying prefers a native helper — `pbcopy`, `wl-copy`, `xclip`, `xsel`, or
-`clip` — and falls back to the OSC 52 escape sequence when kiwi is running over
+`clip` — and falls back to the OSC 52 escape sequence when nib is running over
 ssh or no helper is installed. Two mechanisms because neither works everywhere:
 OSC 52 is the only one that can reach the clipboard of the machine you're
 actually sitting at, but it is widely blocked (tmux ignores it from
 applications unless `set -g set-clipboard on`, and some terminals disable it
 outright since it lets a remote program write your clipboard), while a helper
-is reliable but sets the clipboard of whatever machine kiwi runs on. `Ctrl+D`
+is reliable but sets the clipboard of whatever machine nib runs on. `Ctrl+D`
 shows which one was chosen, and warns if a copy failed.
 
-Note that kiwi asks the terminal for mouse reporting, which means the
-terminal's *own* click-drag selection doesn't apply inside kiwi. Most
+Note that nib asks the terminal for mouse reporting, which means the
+terminal's *own* click-drag selection doesn't apply inside nib. Most
 terminals bypass this while a modifier is held (`Option` on macOS).
 
 ### Editor — code intelligence
@@ -359,7 +359,7 @@ keybind = editor:ctrl+t = go_to_definition
 keybind = editor:ctrl+y = jump_back
 ```
 
-A malformed line is skipped rather than fatal, so a typo can't stop kiwi from
+A malformed line is skipped rather than fatal, so a typo can't stop nib from
 starting. Changes take effect on the next launch.
 
 ### Language servers
@@ -370,7 +370,7 @@ Register a server for any language with an `lsp` line — no rebuild needed:
 lsp = <language> = <command args...>
 ```
 
-The language name is the one kiwi's grammar detection reports, which is shown
+The language name is the one nib's grammar detection reports, which is shown
 in the status bar. These merge over the built-in defaults (`go` → `gopls`,
 `php` → `intelephense --stdio`, `javascript`/`typescript`/`tsx` →
 `typescript-language-server --stdio`), so a config line wins:
@@ -385,7 +385,7 @@ lsp = rust   = rust-analyzer
 `jsx` grammar), so `lsp = javascript = ...` covers them too.
 
 The command must be on your `PATH` and speak LSP over stdin/stdout. A language
-with no entry, or whose binary is missing, simply falls back to kiwi's
+with no entry, or whose binary is missing, simply falls back to nib's
 tree-sitter features — the reason is logged (`Ctrl+D`), and the status bar tells
 you which case you're in:
 
@@ -416,7 +416,7 @@ because the wire format and CLI output are exactly what a mock would get wrong.
 
 ## Status
 
-kiwi is a work in progress and a learning project. Known gaps, deliberately:
+nib is a work in progress and a learning project. Known gaps, deliberately:
 no rope (large-file editing will suffer), one language server configured out of
 the box, full re-parse per keystroke, no auto-restart of a crashed server, and
 `Ctrl+X` closes a pane without checking for unsaved changes (unlike `:q`).

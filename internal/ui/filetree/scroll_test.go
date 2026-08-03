@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // manyRows returns n placeholder rows, for tests that need a tree taller

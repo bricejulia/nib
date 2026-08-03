@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // fakeWindow is an in-memory layout.Window double so View.Render is

@@ -7,9 +7,9 @@ package debug
 import (
 	"fmt"
 
-	"github.com/bricejulia/kiwi/internal/config"
-	"github.com/bricejulia/kiwi/internal/debuglog"
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/config"
+	"github.com/bricejulia/nib/internal/debuglog"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // minLevels is the cycle order Tab steps through: everything, then

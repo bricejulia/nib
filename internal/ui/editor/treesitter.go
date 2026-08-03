@@ -7,8 +7,8 @@ import (
 	"github.com/odvcencio/gotreesitter"
 	"github.com/odvcencio/gotreesitter/grammars"
 
-	"github.com/bricejulia/kiwi/internal/debuglog"
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/debuglog"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // languageFor returns the language name for path, or "" if no grammar
@@ -34,7 +34,7 @@ func languageFor(path string) string {
 // A deny list rather than an allow list, unlike syntaxCheckedLanguages
 // next door in diagnostics.go: 206 of the registry's grammars ship a
 // highlight query, so an allow list would silently drop highlighting for
-// most languages kiwi supports, whereas that one guards correctness
+// most languages nib supports, whereas that one guards correctness
 // (invented error markers) and so has to fail closed. Both are data, not
 // code — one more line covers one more language.
 var nonCodeGrammars = map[string]bool{

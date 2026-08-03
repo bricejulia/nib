@@ -17,8 +17,8 @@ package editor
 // characters foo", and nothing in the text itself can tell them apart.
 //
 // This is deliberately NOT the operating system clipboard: nothing here
-// shells out to pbcopy or speaks OSC 52, so kiwi's cut/copy/put stay
-// entirely inside kiwi, the same way its git and language-server work is
+// shells out to pbcopy or speaks OSC 52, so nib's cut/copy/put stay
+// entirely inside nib, the same way its git and language-server work is
 // kept out of this package (see View.BlameFunc). Reaching the OS clipboard
 // too is the caller's job, done alongside a Set here rather than underneath
 // it (see View.copySelection and View.CopyFunc), so that a terminal which

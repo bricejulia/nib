@@ -9,9 +9,9 @@ import (
 
 	"go.rockorager.dev/vaxis"
 
-	"github.com/bricejulia/kiwi/internal/clipboard"
-	"github.com/bricejulia/kiwi/internal/debuglog"
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/clipboard"
+	"github.com/bricejulia/nib/internal/debuglog"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // vaxisWindow adapts a vaxis.Window to layout.Window.
@@ -174,7 +174,7 @@ func namedSpace(k vaxis.Key) string {
 		// decodes NUL as Ctrl+@ — the two are literally the same byte on
 		// the wire, so they cannot be told apart. Reporting it as Space is
 		// the useful reading: Ctrl+Space is a real binding people press,
-		// while Ctrl+@ is not something kiwi binds at all.
+		// while Ctrl+@ is not something nib binds at all.
 		return layout.KeySpace
 	default:
 		return ""
@@ -240,7 +240,7 @@ func translateMouseButton(b vaxis.MouseButton) layout.MouseButton {
 	case vaxis.MouseWheelRight:
 		return layout.MouseWheelRight
 	default:
-		// vaxis.MouseNoButton, plus any button 8-11 kiwi doesn't bind: a
+		// vaxis.MouseNoButton, plus any button 8-11 nib doesn't bind: a
 		// motion event with nothing held reports MouseNoButton, and that is
 		// the reading a View needs in order to ignore bare hover.
 		return layout.MouseNone
@@ -503,7 +503,7 @@ func (a *App) Post(ev interface{}) {
 
 // SuspendAndRun takes the terminal out of fullscreen mode, runs fn (e.g.
 // to shell out to an interactive subprocess like $EDITOR that needs the
-// real terminal to itself), then restores kiwi's own fullscreen state
+// real terminal to itself), then restores nib's own fullscreen state
 // regardless of whether fn succeeded. Run's event loop redraws
 // unconditionally after the key handler that calls this returns, so no
 // explicit redraw is needed here.
@@ -517,7 +517,7 @@ func (a *App) SuspendAndRun(fn func() error) error {
 
 // CopyToClipboard puts s on the system clipboard, by whichever mechanism
 // internal/clipboard resolved at startup — a native helper (pbcopy and
-// friends) when kiwi is local, OSC 52 when it is not. See that package for
+// friends) when nib is local, OSC 52 when it is not. See that package for
 // why neither works everywhere on its own.
 //
 // This used to call vaxis's ClipboardPush directly, i.e. OSC 52
@@ -526,7 +526,7 @@ func (a *App) SuspendAndRun(fn func() error) error {
 // sends it. A copy that fails invisibly is the worst possible outcome, hence
 // both the helper preference and the warning below.
 //
-// Panes reach this through a func field wired in cmd/kiwi/main.go, never by
+// Panes reach this through a func field wired in cmd/nib/main.go, never by
 // importing this package.
 func (a *App) CopyToClipboard(s string) {
 	if err := a.clip.Copy(s); err != nil {

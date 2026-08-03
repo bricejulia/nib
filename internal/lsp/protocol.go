@@ -9,7 +9,7 @@
 // data (language name -> command to run). Adding a language means adding a
 // map entry, never new code.
 //
-// Only the small slice of the protocol kiwi actually uses is implemented
+// Only the small slice of the protocol nib actually uses is implemented
 // here (see protocol.go's types), hand-written rather than pulled from a
 // full protocol library: the alternative (go.lsp.dev/protocol) drags in a
 // logging framework and a fast-JSON library, and would force this module's
@@ -43,7 +43,7 @@ const (
 
 // Position is a zero-based line/character pair. Note that LSP's
 // "character" is an offset in UTF-16 code units by default, not runes or
-// bytes; kiwi sends and receives rune offsets, which agree with UTF-16 for
+// bytes; nib sends and receives rune offsets, which agree with UTF-16 for
 // everything in the Basic Multilingual Plane (i.e. everything except
 // emoji and a few rare scripts). That's an accepted simplification: a
 // cursor sitting after an astral-plane character on the same line could
@@ -168,7 +168,7 @@ type CompletionList struct {
 // {kind,value} MarkupContent object, the older {language,value}
 // MarkedString object, or an array of any of those — decodeDocumentation
 // normalizes all of them to plain text. Range (the span hovered) is
-// omitted: kiwi doesn't highlight it.
+// omitted: nib doesn't highlight it.
 type Hover struct {
 	Contents json.RawMessage `json:"contents"`
 }
@@ -195,7 +195,7 @@ func (s SignatureInformation) DocText() string { return decodeDocumentation(s.Do
 // ParameterInformation is one parameter of a SignatureInformation. Only
 // Label is kept: the alternate [start,end] offset-pair form some servers
 // use to slice it out of the signature's own Label isn't handled, since
-// every server kiwi targets (gopls, typescript-language-server,
+// every server nib targets (gopls, typescript-language-server,
 // intelephense) sends a plain string label.
 type ParameterInformation struct {
 	Label string `json:"label"`
@@ -237,7 +237,7 @@ func decodeDocumentation(raw json.RawMessage) string {
 }
 
 // FormattingOptions is the minimal per-request formatting preference LSP
-// requires the client to send. InsertSpaces is always false: kiwi's own
+// requires the client to send. InsertSpaces is always false: nib's own
 // convention is real tab characters (see "insert_tab"'s handling in
 // internal/ui/editor), so a server that reindents with spaces is told not
 // to.
@@ -288,7 +288,7 @@ type PublishDiagnosticsParams struct {
 }
 
 // InitializeParams is the opening handshake. Capabilities is deliberately
-// sparse: kiwi advertises only what it actually implements, and servers
+// sparse: nib advertises only what it actually implements, and servers
 // are required to degrade gracefully for everything omitted.
 type InitializeParams struct {
 	ProcessID    int                `json:"processId"`
@@ -310,7 +310,7 @@ type TextDocumentClientCapabilities struct {
 }
 
 // SynchronizationCapabilities declares which document-sync notifications
-// the client sends. WillSave/DidSave are omitted (false) — kiwi doesn't
+// the client sends. WillSave/DidSave are omitted (false) — nib doesn't
 // send them.
 type SynchronizationCapabilities struct {
 	DynamicRegistration bool `json:"dynamicRegistration"`
@@ -324,14 +324,14 @@ type DefinitionCapabilities struct {
 }
 
 // PublishDiagnosticsCapabilities declares how much diagnostic detail the
-// client can render. Everything here is off: kiwi shows a gutter marker
+// client can render. Everything here is off: nib shows a gutter marker
 // keyed on severity, with no related-information or tag handling.
 type PublishDiagnosticsCapabilities struct {
 	RelatedInformation bool `json:"relatedInformation"`
 }
 
 // InitializeResult is the server's handshake reply. Its capabilities are
-// mostly ignored — kiwi asks for definitions and reads diagnostics
+// mostly ignored — nib asks for definitions and reads diagnostics
 // regardless, and a server that doesn't support one simply answers empty.
 type InitializeResult struct {
 	Capabilities map[string]any `json:"capabilities"`
@@ -347,7 +347,7 @@ func pathToURI(path string) string {
 }
 
 // uriToPath is pathToURI's inverse, for turning a server's response
-// locations back into paths kiwi can open. A URI that isn't a parseable
+// locations back into paths nib can open. A URI that isn't a parseable
 // file:// URI yields "" — callers treat that as "no usable location"
 // rather than guessing.
 func uriToPath(uri string) string {
@@ -356,7 +356,7 @@ func uriToPath(uri string) string {
 		return ""
 	}
 	// url.Parse puts a Windows-style "/C:/x" in Path; on Unix this is a
-	// no-op, and it keeps the function honest if kiwi is ever built for
+	// no-op, and it keeps the function honest if nib is ever built for
 	// Windows.
 	p := u.Path
 	if len(p) > 2 && p[0] == '/' && p[2] == ':' {

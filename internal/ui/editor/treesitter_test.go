@@ -5,7 +5,7 @@ import (
 
 	"github.com/odvcencio/gotreesitter"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 func TestComputeLineBoundsEmptySource(t *testing.T) {

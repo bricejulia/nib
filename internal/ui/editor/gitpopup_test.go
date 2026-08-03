@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/vcs/gitblame"
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/vcs/gitblame"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 func popupText(lines []popupLine) string {
@@ -45,7 +45,7 @@ func TestBlamePopupLinesUncommittedSaysSoAndHidesGitsPlaceholder(t *testing.T) {
 		t.Errorf("expected the popup to say the line isn't committed, got %q", got)
 	}
 	// git's placeholder author must not be echoed verbatim — the popup says
-	// it in kiwi's own words instead (note the lowercase "committed").
+	// it in nib's own words instead (note the lowercase "committed").
 	if strings.Contains(got, info.Author) {
 		t.Errorf("git's placeholder author %q leaked into the popup: %q", info.Author, got)
 	}

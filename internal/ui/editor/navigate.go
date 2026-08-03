@@ -3,8 +3,8 @@ package editor
 import (
 	"github.com/odvcencio/gotreesitter"
 
-	"github.com/bricejulia/kiwi/internal/debuglog"
-	"github.com/bricejulia/kiwi/internal/lsp"
+	"github.com/bricejulia/nib/internal/debuglog"
+	"github.com/bricejulia/nib/internal/lsp"
 )
 
 // jumpLocation is a saved cursor position on View.jumpStack — a file plus a

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/textwidth"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/textwidth"
 )
 
 // renderPopup draws lines as a floating box on the rows directly below

@@ -5,8 +5,8 @@
 package gitstyle
 
 import (
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 // Marker is the single-character indicator shown next to a path.

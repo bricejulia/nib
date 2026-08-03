@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 // manyLines returns n placeholder lines, for tests that need a buffer

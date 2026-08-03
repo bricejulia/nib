@@ -1,5 +1,5 @@
 // Package textfile owns charset and line-ending detection/conversion at
-// the boundary between a file's on-disk bytes and kiwi's in-memory,
+// the boundary between a file's on-disk bytes and nib's in-memory,
 // always-UTF-8-with-LF representation — the same split
 // internal/textwidth makes for display-width math. Nothing outside a
 // Buffer's Load/Save should need to know a file's charset or EOL style;

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/lsp"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/lsp"
 )
 
 // formatFixture builds a Go tab with the two lines: "package main" and

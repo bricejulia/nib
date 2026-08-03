@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/textwidth"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/textwidth"
 )
 
 type fakeWindow struct {
@@ -76,7 +76,7 @@ func TestViewTruncatesTextWiderThanWindow(t *testing.T) {
 func TestViewTruncationDoesNotSplitMultiByteGlyphs(t *testing.T) {
 	v := New()
 	v.Hint = "Tab Switch · Ctrl+P Finder · Ctrl+D Debug · ? Help"
-	v.TextFunc = func() string { return "Ln 1, Col 1   go ●   kiwi dev" }
+	v.TextFunc = func() string { return "Ln 1, Col 1   go ●   nib dev" }
 
 	// Sweep widths so the truncation point lands inside a multi-byte glyph
 	// at some of them.

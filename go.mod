@@ -1,4 +1,4 @@
-module github.com/bricejulia/kiwi
+module github.com/bricejulia/nib
 
 go 1.23
 

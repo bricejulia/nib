@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 // commonIgnoredDirNames is the fallback ignore list used only when root

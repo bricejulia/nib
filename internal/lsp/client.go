@@ -73,7 +73,7 @@ func newClient(rootDir string, command []string, onDiagnostics func(PublishDiagn
 	cmd.Dir = rootDir
 	// Server stderr is discarded for now: it's useful for diagnosing a
 	// misbehaving server, but plumbing it into debuglog is deferred (see
-	// the plan's deferred list) and leaving it unset would inherit kiwi's
+	// the plan's deferred list) and leaving it unset would inherit nib's
 	// own stderr and scribble over the rendered UI.
 	cmd.Stderr = nil
 
@@ -108,7 +108,7 @@ func newClient(rootDir string, command []string, onDiagnostics func(PublishDiagn
 // Handle implements jsonrpc2.Handler, receiving server-initiated requests
 // and notifications. Only publishDiagnostics is acted on; everything else
 // is ignored, which is protocol-legal for notifications and for the
-// server-to-client requests kiwi never opts into.
+// server-to-client requests nib never opts into.
 func (c *Client) Handle(_ context.Context, _ *jsonrpc2.Conn, req *jsonrpc2.Request) {
 	if req.Method != methodPublishDiagnostics || req.Params == nil || c.onDiagnostics == nil {
 		return
@@ -305,7 +305,7 @@ func signatureHelpResult(raw json.RawMessage) (SignatureHelp, bool, error) {
 
 // formatting asks the server to reformat path's entire document. tabWidth
 // becomes FormattingOptions.TabSize; InsertSpaces is always false, matching
-// kiwi's own real-tab convention. Blocks until the server answers or
+// nib's own real-tab convention. Blocks until the server answers or
 // requestTimeout elapses, so callers must run it off the UI goroutine. A
 // nil/empty edit slice is a normal "nothing to change" answer, not an
 // error.
@@ -363,7 +363,7 @@ func firstLocation(raw json.RawMessage) (Location, bool, error) {
 // Close shuts the server down as politely as time allows: the spec's
 // shutdown request then exit notification, falling back to killing the
 // process if it doesn't oblige promptly. Always reaps the subprocess, so
-// quitting kiwi never leaves an orphaned language server behind.
+// quitting nib never leaves an orphaned language server behind.
 func (c *Client) Close() error {
 	if c.conn != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)

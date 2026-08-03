@@ -1,4 +1,4 @@
-// Command kiwi is the terminal editor's entrypoint. Step 0 wires up the
+// Command nib is the terminal editor's entrypoint. Step 0 wires up the
 // window tree, focus routing, and a two-pane split (file tree | editor).
 package main
 
@@ -11,23 +11,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bricejulia/kiwi/internal/config"
-	"github.com/bricejulia/kiwi/internal/debuglog"
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/lsp"
-	"github.com/bricejulia/kiwi/internal/ui"
-	"github.com/bricejulia/kiwi/internal/ui/debug"
-	"github.com/bricejulia/kiwi/internal/ui/diffview"
-	"github.com/bricejulia/kiwi/internal/ui/editor"
-	"github.com/bricejulia/kiwi/internal/ui/filetree"
-	"github.com/bricejulia/kiwi/internal/ui/finder"
-	"github.com/bricejulia/kiwi/internal/ui/help"
-	"github.com/bricejulia/kiwi/internal/ui/quitconfirm"
-	"github.com/bricejulia/kiwi/internal/ui/statusbar"
-	"github.com/bricejulia/kiwi/internal/vcs/gitblame"
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
-	"github.com/bricejulia/kiwi/internal/vcs/watch"
-	"github.com/bricejulia/kiwi/internal/version"
+	"github.com/bricejulia/nib/internal/config"
+	"github.com/bricejulia/nib/internal/debuglog"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/lsp"
+	"github.com/bricejulia/nib/internal/ui"
+	"github.com/bricejulia/nib/internal/ui/debug"
+	"github.com/bricejulia/nib/internal/ui/diffview"
+	"github.com/bricejulia/nib/internal/ui/editor"
+	"github.com/bricejulia/nib/internal/ui/filetree"
+	"github.com/bricejulia/nib/internal/ui/finder"
+	"github.com/bricejulia/nib/internal/ui/help"
+	"github.com/bricejulia/nib/internal/ui/quitconfirm"
+	"github.com/bricejulia/nib/internal/ui/statusbar"
+	"github.com/bricejulia/nib/internal/vcs/gitblame"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/vcs/watch"
+	"github.com/bricejulia/nib/internal/version"
 )
 
 // watchDebounce is the quiet period after the last observed filesystem
@@ -39,7 +39,21 @@ const watchDebounce = 200 * time.Millisecond
 // "?", included at the end here).
 const mainShortcutsHint = "Tab Switch pane  ·  Ctrl+P Finder  ·  Ctrl+F Find refs  ·  Ctrl+Shift+R Replace  ·  Ctrl+D Debug  ·  ? Help  ·  Ctrl+C Quit  ·  Ctrl+O Config"
 
-// globalDefaultKeybinds are kiwi's built-in global keybindings,
+// welcomeKeybinds is the short key-binding reference shown centered in an
+// editor pane that has no tabs open (see editor.View.SetWelcomeInfo) — a
+// subset of globalDefaultKeybinds/editor.DefaultKeybinds picked for a
+// first-time user staring at an empty pane, not the full reference (that's
+// "?"/internal/ui/help).
+var welcomeKeybinds = []editor.WelcomeKeybind{
+	{Key: "Tab", Desc: "Switch pane"},
+	{Key: "Ctrl+P", Desc: "Finder"},
+	{Key: "Ctrl+F", Desc: "Find references"},
+	{Key: "Ctrl+S", Desc: "Save"},
+	{Key: "?", Desc: "Help"},
+	{Key: "Ctrl+C", Desc: "Quit"},
+}
+
+// globalDefaultKeybinds are nib's built-in global keybindings,
 // overridable via the user config's "global" scope (see internal/config).
 // Each trigger's action name must have a matching entry in the actions
 // map built in run(), or the (default or user-configured) binding for it
@@ -107,9 +121,9 @@ func rebuildAndFocus(app *ui.App, id layout.LeafID) {
 	app.FocusLeaf(id)
 }
 
-// mergedLSPServers combines kiwi's built-in language-server registry with
+// mergedLSPServers combines nib's built-in language-server registry with
 // any "lsp" lines from the user's config, with the config winning — so a
-// user can both add a language kiwi ships no default for and replace one
+// user can both add a language nib ships no default for and replace one
 // it does (e.g. swapping PHP's Intelephense for Phpactor).
 func mergedLSPServers(cfg *config.Config) map[string][]string {
 	servers := make(map[string][]string, len(lsp.DefaultServers))
@@ -139,7 +153,7 @@ var configTemplateScopes = []config.Scope{
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "kiwi:", err)
+		fmt.Fprintln(os.Stderr, "nib:", err)
 		os.Exit(1)
 	}
 }
@@ -218,6 +232,17 @@ func run() error {
 	// out to on every render, which would run `git` on every keystroke.
 	var gitBranch, gitSummary string
 
+	// applyWelcomeInfo wires up the empty-pane welcome screen (see
+	// editor.View.SetWelcomeInfo): the opened folder's base name, plus a
+	// closure over gitBranch above so a pane sitting empty still reflects the
+	// current branch after refreshGitStatus updates it. Applied to every
+	// editor pane, not just the first — see trySplit below, which can leave
+	// a freshly split pane with no tab open too.
+	applyWelcomeInfo := func(v *editor.View) {
+		v.SetWelcomeInfo(version.Version, filepath.Base(absRoot), func() string { return gitBranch }, welcomeKeybinds)
+	}
+	applyWelcomeInfo(editorView)
+
 	fileTreeLeaf := &layout.LeafNode{ID: 1, View: treeView}
 	editorLeaf := &layout.LeafNode{ID: 2, View: editorView}
 	statusBarLeaf := &layout.LeafNode{ID: 3, View: statusBarView}
@@ -281,7 +306,7 @@ func run() error {
 			}
 			parts = append(parts, branch)
 		}
-		parts = append(parts, "kiwi "+version.Version)
+		parts = append(parts, "nib "+version.Version)
 		return strings.Join(parts, "   ")
 	}
 
@@ -434,8 +459,8 @@ func run() error {
 		// Copying a mouse selection reaches the system clipboard through
 		// here — the editor pane speaks no OSC 52 itself, same arrangement
 		// as the git callbacks above. The yank register (SetRegister) is what
-		// makes an in-kiwi "p" work, and is filled independently, so a
-		// terminal that ignores OSC 52 costs only the crossing-out-of-kiwi
+		// makes an in-nib "p" work, and is filled independently, so a
+		// terminal that ignores OSC 52 costs only the crossing-out-of-nib
 		// half of the copy.
 		v.CopyFunc = app.CopyToClipboard
 	}
@@ -443,7 +468,7 @@ func run() error {
 
 	// open_config shells out to the user's editor, so it needs the real
 	// terminal to itself — see ui.App.SuspendAndRun. Keybinding changes
-	// only take effect on kiwi's next start (the config template says
+	// only take effect on nib's next start (the config template says
 	// so), so there's no need to reload anything on return.
 	openConfig := func() {
 		if cfgPath == "" {
@@ -501,6 +526,7 @@ func run() error {
 		newView.SetBufferStore(bufferStore)
 		newView.SetRegister(yankRegister)
 		newView.SetLSPManager(lspManager)
+		applyWelcomeInfo(newView)
 		wireEditorPane(newView)
 		newLeaf := &layout.LeafNode{ID: nextLeafID, View: newView}
 		if !layout.Split(tree, target.leaf, dir, newLeaf) {
@@ -585,7 +611,7 @@ func run() error {
 			debuglog.Error("replace in path %s: %v", path, err)
 		}
 		// Same call treeView.OnMutated already makes: a direct,
-		// kiwi-initiated file mutation updates the tree/finder status
+		// nib-initiated file mutation updates the tree/finder status
 		// markers immediately rather than waiting on fsnotify's debounce.
 		refreshGitStatus()
 		replaceView.ShowResult(res)

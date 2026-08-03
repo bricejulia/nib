@@ -13,7 +13,7 @@ type binding struct {
 }
 
 // sections is the full keybinding reference shown in the help overlay.
-// Hand-maintained: kiwi has no runtime keymap registry to introspect (the
+// Hand-maintained: nib has no runtime keymap registry to introspect (the
 // global keymap is a plain map[string]func() with no description slot, and
 // each pane's HandleKey matches on hardcoded key literals), so this list
 // must be updated by hand whenever a binding changes elsewhere.

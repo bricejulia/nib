@@ -216,7 +216,7 @@ func TestDefaultServersCoverJSAndTS(t *testing.T) {
 }
 
 func TestStatusDistinguishesUnconfiguredFromNotRunning(t *testing.T) {
-	// The whole point of ServerStatus: "kiwi has no server for this
+	// The whole point of ServerStatus: "nib has no server for this
 	// language" and "the configured server isn't running" look identical
 	// internally (no client), but mean very different things to a user
 	// wondering why they get no diagnostics.

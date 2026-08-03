@@ -3,8 +3,8 @@ package editor
 import (
 	"github.com/odvcencio/gotreesitter"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/lsp"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/lsp"
 )
 
 // diagnosticMarker and diagnosticStyle are the editor gutter's

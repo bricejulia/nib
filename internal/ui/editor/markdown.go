@@ -22,7 +22,7 @@ var markdownBoldRe = regexp.MustCompile(`\*\*([^*]+)\*\*`)
 
 // stripMarkdown renders s — a server's hover/signature-help text, which is
 // routinely LSP MarkupContent with kind "markdown" (gopls always sends
-// markdown) — as plain text fit for kiwi's popup, which has no markdown
+// markdown) — as plain text fit for nib's popup, which has no markdown
 // renderer of its own: code-fence delimiters, links, horizontal rules, and
 // bold markers are removed, while the underlying text (a fenced sample's
 // code, a link's label) is kept.

@@ -1,11 +1,11 @@
-// Package quitconfirm is a small modal shown when quitting kiwi would
-// silently discard unsaved changes — see cmd/kiwi/main.go's confirmQuit.
+// Package quitconfirm is a small modal shown when quitting nib would
+// silently discard unsaved changes — see cmd/nib/main.go's confirmQuit.
 package quitconfirm
 
 import (
 	"fmt"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // View lists every unsaved file and offers to save everything and quit,

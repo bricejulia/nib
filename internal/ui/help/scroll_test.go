@@ -3,7 +3,7 @@ package help
 import (
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 func TestHelpScrollStateMirrorsTopAndLineCount(t *testing.T) {

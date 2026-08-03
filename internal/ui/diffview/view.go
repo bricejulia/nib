@@ -1,7 +1,7 @@
 // Package diffview is a read-only pane that renders a unified diff —
 // meant to be shown as a modal overlay (see ui.App.ShowOverlay/CloseOverlay)
 // so "what have I changed in this file?" can be answered without leaving
-// kiwi for a shell.
+// nib for a shell.
 //
 // It only displays lines handed to it via Show; producing them is the
 // caller's job (see gitstatus.FileDiff), the same division of labor the
@@ -11,9 +11,9 @@ package diffview
 import (
 	"strings"
 
-	"github.com/bricejulia/kiwi/internal/config"
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/textwidth"
+	"github.com/bricejulia/nib/internal/config"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/textwidth"
 )
 
 // DefaultKeybinds are the diff pane's built-in keybindings, overridable via

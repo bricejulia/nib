@@ -1,9 +1,9 @@
 package editor
 
 import (
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/ui/gitstyle"
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/ui/gitstyle"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 // scrollTabBarRows is how many rows sit above the scrollable text — row 0

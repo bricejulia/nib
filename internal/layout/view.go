@@ -70,7 +70,7 @@ const (
 	MouseRight
 	// MouseNone is what a bare motion event carries: the pointer moved with
 	// nothing held down. Terminals in all-motion tracking mode (which is
-	// what kiwi runs — see App's vaxis setup) report these continuously as
+	// what nib runs — see App's vaxis setup) report these continuously as
 	// the pointer crosses the screen, so a View that only cares about drags
 	// must check for this and ignore it.
 	MouseNone

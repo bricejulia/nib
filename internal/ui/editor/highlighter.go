@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // highlightDebounce is how long the worker waits for typing to stop before
@@ -89,7 +89,7 @@ type highlightJob struct {
 
 // HighlightResult is a finished highlight on its way back to the UI
 // goroutine, where ApplyHighlightResult stores it. It crosses the event
-// loop like lsp.DiagnosticsEvent does — see cmd/kiwi/main.go's handler.
+// loop like lsp.DiagnosticsEvent does — see cmd/nib/main.go's handler.
 type HighlightResult struct {
 	buf   *Buffer
 	rev   uint64
@@ -153,7 +153,7 @@ func (h *Highlighter) submit(buf *Buffer, immediate bool) {
 }
 
 // Close stops the worker and waits for an in-flight parse to finish, so
-// nothing is still running once kiwi exits. Idempotent.
+// nothing is still running once nib exits. Idempotent.
 func (h *Highlighter) Close() {
 	if h == nil {
 		return
@@ -284,7 +284,7 @@ func (h *Highlighter) superseded(job highlightJob) bool {
 // snapshot, so a stale result would only paint the wrong colors for a
 // moment before being replaced.
 //
-// Must be called on the UI goroutine; cmd/kiwi/main.go's event loop is
+// Must be called on the UI goroutine; cmd/nib/main.go's event loop is
 // where that happens. A result for a buffer no pane holds anymore (closed
 // while the parse was running) writes to an object nothing will read and
 // is harmless.

@@ -3,7 +3,7 @@ package lsp
 import (
 	"sync"
 
-	"github.com/bricejulia/kiwi/internal/debuglog"
+	"github.com/bricejulia/nib/internal/debuglog"
 )
 
 // DefaultServers maps a language name (as reported by
@@ -14,15 +14,15 @@ import (
 // This map is the ONLY per-language knowledge in this package, and it's
 // data rather than code: supporting another language is one more entry,
 // never a new code path. Users add or override entries with "lsp" lines in
-// kiwi's config file (see internal/config), which merge over these — so
+// nib's config file (see internal/config), which merge over these — so
 // this list only needs to cover sensible defaults, not every language.
 //
 // An entry whose binary isn't installed costs nothing: the failure is
-// logged once and that language falls back to kiwi's tree-sitter features.
+// logged once and that language falls back to nib's tree-sitter features.
 //
 // PHP defaults to Intelephense as the most widely used option; its free
-// tier covers everything kiwi asks for (diagnostics, definitions,
-// completion — the paid features are refactorings kiwi doesn't do).
+// tier covers everything nib asks for (diagnostics, definitions,
+// completion — the paid features are refactorings nib doesn't do).
 // Phpactor is a fully open-source alternative, one config line away.
 //
 // TypeScript, JavaScript, and TSX share one server, typescript-language-server,
@@ -57,7 +57,7 @@ type AsyncResult struct {
 // ServerStatus describes what language-server support exists for a
 // language, for display in the UI (see editor.View.LanguageStatus).
 // Distinguishing "none configured" from "configured but not running"
-// matters: the first means kiwi was never set up for that language, while
+// matters: the first means nib was never set up for that language, while
 // the second usually means the server binary is missing or failed to
 // start — very different things for someone wondering why they're not
 // getting diagnostics.
@@ -102,7 +102,7 @@ type openFile struct {
 // Manager owns one language server per language, spawned on demand, plus
 // the bookkeeping of which documents are open and at what version.
 //
-// Unlike most state in kiwi, this IS touched from more than one goroutine:
+// Unlike most state in nib, this IS touched from more than one goroutine:
 // diagnostics arrive on the JSON-RPC read goroutine and definition
 // requests run on their own goroutines, so the maps are mutex-guarded.
 // Results always cross back onto the UI goroutine through Post before
@@ -112,7 +112,7 @@ type Manager struct {
 	servers map[string][]string
 
 	// Post marshals a value onto the UI event loop (wired to ui.App.Post
-	// by cmd/kiwi/main.go — the same field shape finder.View.Post uses).
+	// by cmd/nib/main.go — the same field shape finder.View.Post uses).
 	// Anything arriving from a server goroutine must go through this
 	// rather than touching editor state directly. A nil Post silently
 	// drops async results, which is what makes the Manager safe to use in
@@ -217,7 +217,7 @@ func (m *Manager) Status(language string) ServerStatus {
 
 // Ready reports whether language has a running server — i.e. whether
 // LSP-backed features can be attempted for it, as opposed to falling back
-// to kiwi's own tree-sitter equivalents.
+// to nib's own tree-sitter equivalents.
 func (m *Manager) Ready(language string) bool {
 	return m.Status(language) == StatusRunning
 }
@@ -433,7 +433,7 @@ func (m *Manager) Formatting(path, language string, tabWidth int, apply func(edi
 }
 
 // Shutdown stops every running server and forgets all state. Called from
-// cmd/kiwi/main.go on exit, so quitting kiwi never leaves orphaned
+// cmd/nib/main.go on exit, so quitting nib never leaves orphaned
 // language server processes behind.
 func (m *Manager) Shutdown() {
 	m.mu.Lock()

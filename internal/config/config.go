@@ -1,6 +1,6 @@
-// Package config parses kiwi's user config file: a flat, hand-editable
+// Package config parses nib's user config file: a flat, hand-editable
 // text format (in the spirit of Ghostty's config, not TOML/YAML), letting
-// the user override kiwi's defaults without recompiling.
+// the user override nib's defaults without recompiling.
 //
 // Two directives, sharing one three-field shape:
 //
@@ -11,7 +11,7 @@
 //
 //	lsp = php = intelephense --stdio
 //
-// which is how a language kiwi doesn't ship a default for gets one. See
+// which is how a language nib doesn't ship a default for gets one. See
 // internal/lsp.DefaultServers for the built-ins these merge over.
 //
 // scope is one of "global" (or omitted, e.g. "keybind = ctrl+p = ..."),
@@ -20,7 +20,7 @@
 // key description like "ctrl+p", "shift+left", or a bare character like
 // "x"; see Normalize for exactly what's accepted. Blank lines and lines
 // starting with "#" are ignored; malformed lines are skipped rather than
-// erroring, so a typo in the config can't stop kiwi from starting.
+// erroring, so a typo in the config can't stop nib from starting.
 package config
 
 import (
@@ -83,9 +83,9 @@ func (c *Config) Overrides(scope string) map[string]string {
 	return c.keybinds[scope]
 }
 
-// Parse reads kiwi's config format from r. It never returns an error:
+// Parse reads nib's config format from r. It never returns an error:
 // unparseable lines are silently skipped, since a broken config line
-// shouldn't prevent kiwi from starting (worst case, that one override is
+// shouldn't prevent nib from starting (worst case, that one override is
 // just ignored).
 func Parse(r io.Reader) *Config {
 	cfg := &Config{

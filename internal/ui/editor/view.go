@@ -6,14 +6,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bricejulia/kiwi/internal/config"
-	"github.com/bricejulia/kiwi/internal/debuglog"
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/lsp"
-	"github.com/bricejulia/kiwi/internal/textwidth"
-	"github.com/bricejulia/kiwi/internal/ui/gitstyle"
-	"github.com/bricejulia/kiwi/internal/vcs/gitblame"
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/config"
+	"github.com/bricejulia/nib/internal/debuglog"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/lsp"
+	"github.com/bricejulia/nib/internal/textwidth"
+	"github.com/bricejulia/nib/internal/ui/gitstyle"
+	"github.com/bricejulia/nib/internal/vcs/gitblame"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 // DefaultKeybinds are the editor pane's built-in keybindings, overridable
@@ -68,7 +68,7 @@ var DefaultKeybinds = config.Defaults{
 	// collision.
 	{Trigger: "Ctrl+b", Action: "jump_back"},
 	// Not bound here: Ctrl+f ("find references") is a GLOBAL binding (see
-	// cmd/kiwi/main.go's globalDefaultKeybinds) so it works regardless of
+	// cmd/nib/main.go's globalDefaultKeybinds) so it works regardless of
 	// which pane has focus — the global handler asks this pane for
 	// WordUnderCursor when it happens to be the focused one, rather than
 	// this pane owning the trigger itself.
@@ -76,7 +76,7 @@ var DefaultKeybinds = config.Defaults{
 	// Not Ctrl+Shift+Space (the more VSCode-familiar chord for signature
 	// help): Ctrl+Shift+<key> is indistinguishable from plain Ctrl+<key> on
 	// any terminal that isn't reporting the kitty keyboard protocol's full
-	// modifier state (see Ctrl+Shift+r in cmd/kiwi/main.go for the same
+	// modifier state (see Ctrl+Shift+r in cmd/nib/main.go for the same
 	// caveat) — degrading silently to Ctrl+Space here would fire
 	// autocomplete instead, in the exact scope/mode signature help needs.
 	// Reachable from both Normal and Insert mode — see handleInsertKey.
@@ -91,7 +91,7 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "I", Action: "show_hover"},
 	// The three git gestures, all shifted letters for the same
 	// works-on-any-layout reason as "K"/"I", and all free of vim's own
-	// meanings for those keys (kiwi binds no operator-pending "d", and
+	// meanings for those keys (nib binds no operator-pending "d", and
 	// implements neither H/M/L screen motions nor "B").
 	{Trigger: "B", Action: "show_blame"},
 	{Trigger: "D", Action: "show_file_diff"},
@@ -170,7 +170,7 @@ type tab struct {
 	// or discarded by exitInsertMode. Deliberately per-tab rather than on
 	// Buffer, unlike the committed undoStack/redoStack: it's the
 	// not-yet-committed half of an edit, scoped to whichever single pane
-	// is mid-session — cmd/kiwi/main.go's focus-change wiring (see
+	// is mid-session — cmd/nib/main.go's focus-change wiring (see
 	// View.ExitEditingModes) guarantees at most one pane is ever
 	// mid-session on a given buffer at a time, which is what makes this
 	// split safe.
@@ -205,7 +205,7 @@ type tab struct {
 	// diagnostics is this tab's language-server problems, keyed by the
 	// 0-based line each one starts on — set by ApplyDiagnostics, exactly
 	// as lineStatus is set by ApplyLineStatus (the View never talks to a
-	// server itself; results flow in from cmd/kiwi/main.go's event loop).
+	// server itself; results flow in from cmd/nib/main.go's event loop).
 	// The full Diagnostic is kept, not just its severity: the gutter only
 	// needs severity today, but the message is what a near-future "show
 	// the problem under the cursor" step needs.
@@ -223,7 +223,7 @@ type tab struct {
 // scroll/cursor position and modal (Normal/Insert) editing state — see
 // editMode. A tab's Buffer is not necessarily private to it: opening the
 // same path from more than one View sharing a BufferStore (see
-// SetBufferStore, e.g. split panes in cmd/kiwi/main.go) gives both tabs
+// SetBufferStore, e.g. split panes in cmd/nib/main.go) gives both tabs
 // the SAME Buffer, so edits/dirty state/undo are shared exactly like
 // vim's buffers-vs-windows model. The pane shows the terminal's real
 // cursor (see CursorPosition) at the current position.
@@ -260,7 +260,7 @@ type View struct {
 	// OnAllTabsClosed, if set, is called whenever CloseTab/CloseAllTabs
 	// (directly, or via the ":q"/":qa" family — see closeActiveTab/
 	// closeAllTabsCmd) leaves this pane with zero open tabs. Set by
-	// cmd/kiwi/main.go to refocus the file tree — same plain-callback
+	// cmd/nib/main.go to refocus the file tree — same plain-callback
 	// pattern as finder.View.OnClose/debug.View.OnClose.
 	OnAllTabsClosed func()
 
@@ -307,7 +307,7 @@ type View struct {
 	HunkFunc func(path string, line int) (hunk gitstatus.Hunk, ok bool, err error)
 
 	// OnShowFileDiff, if set, is called with the active tab's path when "D"
-	// fires — set by cmd/kiwi/main.go to open the diff overlay (see
+	// fires — set by cmd/nib/main.go to open the diff overlay (see
 	// internal/ui/diffview). A whole-file diff is a scrollable document
 	// rather than a tooltip, so it belongs in an overlay the app owns, not
 	// in a popup this pane draws. Same plain-callback pattern as
@@ -340,11 +340,11 @@ type View struct {
 	register *Register
 
 	// CopyFunc, when set, puts text on the system clipboard — wired to
-	// App.CopyToClipboard in cmd/kiwi/main.go. A func field rather than an
+	// App.CopyToClipboard in cmd/nib/main.go. A func field rather than an
 	// import for the same reason BlameFunc and HunkFunc are: this package
 	// stays free of the terminal and of the OS, and is testable without
 	// either. nil (the default) means a copy still fills the yank register,
-	// so "p" works and only the crossing-out-of-kiwi half is missing.
+	// so "p" works and only the crossing-out-of-nib half is missing.
 	CopyFunc func(string)
 
 	// dragging is true between a left-button press in the text area and its
@@ -383,6 +383,27 @@ type View struct {
 	// concrete type purely so this package's tests can substitute a fake
 	// instead of spawning real language server subprocesses.
 	lsp languageServer
+
+	// welcomeVersion/welcomeFolder/welcomeBranch are the static context shown
+	// centered in this pane when it has no tabs open — see SetWelcomeInfo and
+	// renderWelcome. welcomeBranch is a func rather than a plain string
+	// because the current branch can change after this pane was already
+	// showing the empty state (e.g. a checkout via an external tool while
+	// nib is running) — reading it live each Render, the same closure-over-a-
+	// var pattern cmd/nib/main.go's statusBarView.TextFunc already uses for
+	// gitBranch, keeps this pane from needing its own git plumbing or a
+	// setter called on every refresh.
+	welcomeVersion  string
+	welcomeFolder   string
+	welcomeBranch   func() string
+	welcomeKeybinds []WelcomeKeybind
+}
+
+// WelcomeKeybind is one entry in the empty-pane welcome screen's key
+// reference — see SetWelcomeInfo.
+type WelcomeKeybind struct {
+	Key  string
+	Desc string
 }
 
 // languageServer is the slice of lsp.Manager the editor pane actually uses
@@ -418,7 +439,7 @@ func (v *View) SetBufferStore(s *BufferStore) {
 // SetRegister replaces this pane's yank/delete register, so "dd"/"yy" in one
 // pane and "p" in another share one clipboard — vim's own registers-are-
 // global behavior. Every pane should be given the SAME register (see
-// cmd/kiwi/main.go); a nil argument is ignored rather than leaving the pane
+// cmd/nib/main.go); a nil argument is ignored rather than leaving the pane
 // with no register to put from.
 func (v *View) SetRegister(r *Register) {
 	if r == nil {
@@ -429,7 +450,7 @@ func (v *View) SetRegister(r *Register) {
 
 // SetHighlighter gives this pane a background highlight worker, so
 // keystrokes stop paying for a tree-sitter re-parse. Every pane should
-// share ONE (see cmd/kiwi/main.go): highlights are stored on the shared
+// share ONE (see cmd/nib/main.go): highlights are stored on the shared
 // Buffer, and one worker is also what keeps the tree-sitter parsers it
 // uses single-goroutine (see highlighterCache).
 //
@@ -464,7 +485,7 @@ func (v *View) submitHighlight(buf *Buffer, immediate bool) {
 
 // SetLSPManager gives this pane a language-server manager, enabling
 // LSP-backed features for languages it has a server for. Every pane should
-// share ONE manager (see cmd/kiwi/main.go), so a file open in two split
+// share ONE manager (see cmd/nib/main.go), so a file open in two split
 // panes is announced to the server once and its diagnostics reach both.
 // Call before opening any tabs — an already-open tab was never registered
 // with the server, so it won't retroactively be.
@@ -480,6 +501,19 @@ func (v *View) SetLSPManager(m *lsp.Manager) {
 // DefaultKeybinds, replacing the pane's active keymap.
 func (v *View) SetKeymap(overrides map[string]string) {
 	v.keymap = DefaultKeybinds.Resolve(overrides)
+}
+
+// SetWelcomeInfo supplies the context shown centered in this pane whenever
+// it has no tabs open (see renderWelcome): nibVersion and folder, fixed for
+// the session, plus branchFunc, re-read on every Render so the branch shown
+// stays current even while the pane is sitting empty (e.g. across a
+// checkout made outside nib) — see welcomeBranch. keybinds is the reference
+// list shown below the message; nil/empty omits it.
+func (v *View) SetWelcomeInfo(nibVersion, folder string, branchFunc func() string, keybinds []WelcomeKeybind) {
+	v.welcomeVersion = nibVersion
+	v.welcomeFolder = folder
+	v.welcomeBranch = branchFunc
+	v.welcomeKeybinds = keybinds
 }
 
 func (v *View) Title() string { return "Editor" }
@@ -504,7 +538,7 @@ func (v *View) activeTab() *tab {
 
 // WordUnderCursor returns the identifier-like word touching the active
 // tab's cursor, or "" if there's no active tab or the cursor isn't
-// touching one — the query cmd/kiwi/main.go pre-fills the finder's content
+// touching one — the query cmd/nib/main.go pre-fills the finder's content
 // search with when the global "find references" binding (Ctrl+F) fires
 // while this pane happens to be focused.
 func (v *View) WordUnderCursor() string {
@@ -516,7 +550,7 @@ func (v *View) WordUnderCursor() string {
 }
 
 // OpenPaths returns the paths of every open tab, for the caller
-// (cmd/kiwi/main.go) to compute per-file git line status against — the
+// (cmd/nib/main.go) to compute per-file git line status against — the
 // View has no git/repo knowledge of its own; see ApplyLineStatus.
 func (v *View) OpenPaths() []string {
 	paths := make([]string, len(v.tabs))
@@ -901,7 +935,7 @@ func (v *View) StatusText() string {
 
 // Glyphs for the language-server indicator in LanguageStatus. A filled dot
 // reads as "on", a hollow one as "set up but not on", and no glyph at all
-// as "kiwi has no server for this language" — see lsp.ServerStatus for why
+// as "nib has no server for this language" — see lsp.ServerStatus for why
 // those last two are worth telling apart.
 const (
 	lspRunningGlyph    = "●"
@@ -909,9 +943,9 @@ const (
 )
 
 // LanguageStatus is the active tab's detected language plus a compact
-// language-server indicator, for the status bar (see cmd/kiwi/main.go):
+// language-server indicator, for the status bar (see cmd/nib/main.go):
 // "go ●" when a server is running, "go ○" when one is configured but not
-// running, plain "go" when kiwi has no server for that language, and "" if
+// running, plain "go" when nib has no server for that language, and "" if
 // no file is open or no grammar recognizes it.
 func (v *View) LanguageStatus() string {
 	t := v.activeTab()
@@ -956,8 +990,7 @@ func (v *View) Render(w layout.Window) {
 	w.Clear()
 
 	if len(v.tabs) == 0 {
-		msg := "No file open — select a file in the tree and press Enter"
-		w.Println(0, layout.Segment{Text: msg, Style: layout.Style{Attr: layout.AttrDim}})
+		v.renderWelcome(w, cols, rows)
 		return
 	}
 
@@ -1012,6 +1045,83 @@ func (v *View) Render(w layout.Window) {
 		if col, row, ok := v.CursorPosition(); ok {
 			renderStyledPopup(w, cols, rows, col, row, v.gitPopup, -1)
 		}
+	}
+}
+
+// renderWelcome draws this pane's empty-tab-list state: nib's name and
+// version, the open folder and its git branch (if either SetWelcomeInfo
+// supplied), the usual "no file open" prompt, and a short key-binding
+// reference — all centered in the pane, since there is no document content
+// or tab bar to anchor to instead.
+func (v *View) renderWelcome(w layout.Window, cols, rows int) {
+	bold := layout.Style{Attr: layout.AttrBold}
+	dim := layout.Style{Attr: layout.AttrDim}
+
+	var lines [][]layout.Segment
+
+	header := "nib"
+	if v.welcomeVersion != "" {
+		header += " " + v.welcomeVersion
+	}
+	lines = append(lines, []layout.Segment{{Text: header, Style: bold}})
+
+	if v.welcomeFolder != "" {
+		loc := v.welcomeFolder
+		if v.welcomeBranch != nil {
+			if branch := v.welcomeBranch(); branch != "" {
+				loc += " (" + branch + ")"
+			}
+		}
+		lines = append(lines, []layout.Segment{{Text: loc, Style: dim}})
+	}
+
+	lines = append(lines,
+		nil,
+		[]layout.Segment{{Text: "No file open — select a file in the tree and press Enter", Style: dim}},
+	)
+
+	if len(v.welcomeKeybinds) > 0 {
+		lines = append(lines, nil)
+		for _, kb := range v.welcomeKeybinds {
+			lines = append(lines, []layout.Segment{
+				{Text: kb.Key, Style: bold},
+				{Text: "  " + kb.Desc, Style: dim},
+			})
+		}
+	}
+
+	renderCenteredLines(w, cols, rows, lines)
+}
+
+// renderCenteredLines draws lines vertically centered within rows and each
+// line horizontally centered within cols, by measuring its segments'
+// combined display width (textwidth.DisplayWidth, so wide runes are
+// accounted for) and padding on the left with plain spaces — w.Clear()
+// (already called by Render before this runs) takes care of the right-hand
+// side, so no trailing pad is needed. A nil entry in lines is a blank
+// separator row.
+func renderCenteredLines(w layout.Window, cols, rows int, lines [][]layout.Segment) {
+	top := (rows - len(lines)) / 2
+	if top < 0 {
+		top = 0
+	}
+	for i, segs := range lines {
+		row := top + i
+		if row < 0 || row >= rows {
+			continue
+		}
+		if len(segs) == 0 {
+			continue
+		}
+		width := 0
+		for _, s := range segs {
+			width += textwidth.DisplayWidth(s.Text)
+		}
+		pad := (cols - width) / 2
+		if pad > 0 {
+			segs = append([]layout.Segment{{Text: strings.Repeat(" ", pad)}}, segs...)
+		}
+		w.Println(row, segs...)
 	}
 }
 
@@ -1824,7 +1934,7 @@ func (v *View) exitInsertMode() {
 // nothing was typed) an in-progress Insert session — exactly what Esc
 // would do in any of the three. Meant to be called when focus moves away
 // from this pane
-// (see cmd/kiwi/main.go's focus-change wiring): a mouse click can switch
+// (see cmd/nib/main.go's focus-change wiring): a mouse click can switch
 // focus without ever routing a key through the losing pane's HandleKey
 // (unlike Tab-cycling, which Insert mode's own key-trap already blocks),
 // so without this a pane could be left "stuck" mid-Insert-session
@@ -2107,7 +2217,7 @@ func (v *View) saveTab(t *tab) error {
 }
 
 // DirtyPaths returns the paths of every tab open in this pane whose
-// buffer has unsaved changes — used by cmd/kiwi/main.go to warn before
+// buffer has unsaved changes — used by cmd/nib/main.go to warn before
 // quitting would silently discard them.
 func (v *View) DirtyPaths() []string {
 	var paths []string

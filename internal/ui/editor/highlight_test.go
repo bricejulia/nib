@@ -3,7 +3,7 @@ package editor
 import (
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 func segText(segs []layout.Segment) string {

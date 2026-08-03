@@ -3,8 +3,8 @@ package editor
 import (
 	"strings"
 
-	"github.com/bricejulia/kiwi/internal/debuglog"
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/debuglog"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // searchHighlightStyle marks every match of the active pattern. Reverse

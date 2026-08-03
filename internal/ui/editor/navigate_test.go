@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 func TestWordUnderCursorFindsTheTouchedIdentifier(t *testing.T) {
@@ -251,7 +251,7 @@ func TestGoToDefinitionNoMatchIsNoop(t *testing.T) {
 }
 
 // TestViewWordUnderCursorDelegatesToTheActiveTab guards the View-level
-// wrapper cmd/kiwi/main.go's global "find references" (Ctrl+F) handler
+// wrapper cmd/nib/main.go's global "find references" (Ctrl+F) handler
 // actually calls — the word-touching logic itself is covered by
 // TestWordUnderCursorFindsTheTouchedIdentifier above; this only needs to
 // confirm the wrapper resolves the active tab and tabWidth correctly.

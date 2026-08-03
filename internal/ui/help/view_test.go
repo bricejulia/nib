@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // fakeWindow is an in-memory layout.Window double so View.Render is
@@ -41,7 +41,7 @@ func TestRenderShowsVersionAndBindings(t *testing.T) {
 	v.Render(w)
 
 	joined := strings.Join(w.lines, "\n")
-	for _, want := range []string{"kiwi 1.2.3", "Global", "Ctrl+c", "Editor", "Finder"} {
+	for _, want := range []string{"nib 1.2.3", "Global", "Ctrl+c", "Editor", "Finder"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("expected help text to contain %q, got:\n%s", want, joined)
 		}
@@ -76,13 +76,13 @@ func TestScrollDownThenHomeReturnsToTop(t *testing.T) {
 		v.HandleKey(layout.Key{Named: layout.KeyDown})
 	}
 	v.Render(w)
-	if strings.Contains(w.lines[0], "kiwi dev") {
+	if strings.Contains(w.lines[0], "nib dev") {
 		t.Errorf("expected the header to have scrolled out of view, got %q", w.lines[0])
 	}
 
 	v.HandleKey(layout.Key{Named: layout.KeyHome})
 	v.Render(w)
-	if !strings.Contains(w.lines[0], "kiwi dev") {
+	if !strings.Contains(w.lines[0], "nib dev") {
 		t.Errorf("expected Home to scroll back to the top, got %q", w.lines[0])
 	}
 }

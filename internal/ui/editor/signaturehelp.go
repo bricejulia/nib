@@ -1,6 +1,6 @@
 package editor
 
-import "github.com/bricejulia/kiwi/internal/lsp"
+import "github.com/bricejulia/nib/internal/lsp"
 
 // maxSignatureHelpPopupRows bounds the signature-help popup, the same
 // "don't let it cover the whole pane" rule as maxDiagnosticPopupRows.
@@ -11,7 +11,7 @@ const maxSignatureHelpPopupRows = 8
 // lifetime as hover/diagnostics (dismissed by the next keypress). Reachable
 // from both Normal and Insert mode (see view.go's dispatch), since it's
 // useful both mid-typing a call's arguments and parked on one in Normal
-// mode. No tree-sitter fallback: kiwi has no syntax-only substitute for a
+// mode. No tree-sitter fallback: nib has no syntax-only substitute for a
 // call's signature.
 func (v *View) triggerSignatureHelp() {
 	t := v.activeTab()

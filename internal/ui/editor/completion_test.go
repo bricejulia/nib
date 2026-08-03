@@ -3,7 +3,7 @@ package editor
 import (
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // ctrlSpace builds the Ctrl+Space key the way App.translateKey actually

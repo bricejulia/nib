@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // promptFixture builds a small on-disk tree in a temp dir (never the shared

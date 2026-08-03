@@ -1,4 +1,4 @@
-BINARY   := kiwi
+BINARY   := nib
 GO       := go
 GOLANGCI := golangci-lint
 GOVULNCHECK := govulncheck
@@ -9,15 +9,15 @@ all: build
 
 ## build: compile the binary
 build:
-	$(GO) build -o $(BINARY) cmd/kiwi/main.go
+	$(GO) build -o $(BINARY) cmd/nib/main.go
 
 ## installl: install the binary
 install:
-	$(GO) install ./cmd/kiwi
+	$(GO) install ./cmd/nib
 
 ## run: run the server (loads env from .env)
 run:
-	$(GO) run cmd/kiwi/main.go
+	$(GO) run cmd/nib/main.go
 
 ## vet: run go vet
 vet:

@@ -3,8 +3,8 @@ package editor
 import (
 	"strings"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/textwidth"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/textwidth"
 )
 
 // selectionStyle marks the selected range. A background colour rather than
@@ -122,13 +122,13 @@ func lineAt(t *tab, ln int) string {
 }
 
 // copySelection copies the selection to both the yank register (so "p" puts
-// it back inside kiwi) and, if wired, the system clipboard. Reports whether
+// it back inside nib) and, if wired, the system clipboard. Reports whether
 // there was anything to copy. This is the explicit "y" gesture.
 //
 // Both, not either: a clipboard write can fail invisibly (see
 // internal/clipboard), so relying on it alone would make "p" mysteriously
 // fail for some users; and the register alone would make the copy useless
-// outside kiwi, which is usually the point of selecting with the mouse.
+// outside nib, which is usually the point of selecting with the mouse.
 // Marked charwise, since a selection is a fragment — unlike "yy", which is
 // whole lines.
 func (v *View) copySelection(t *tab) bool {

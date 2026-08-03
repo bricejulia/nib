@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // pressKeys sends each rune of s as its own Normal-mode keypress, so a

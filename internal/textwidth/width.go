@@ -12,7 +12,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // ExpandTabs replaces each tab in line with spaces up to the next tab stop,

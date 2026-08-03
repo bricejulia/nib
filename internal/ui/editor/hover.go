@@ -8,7 +8,7 @@ const maxHoverPopupRows = 12
 // triggerHover implements "I": asks the language server for documentation/
 // type info at the cursor and shows it as a transient popup, dismissed by
 // the next keypress — same lifetime as the diagnostic-details popup ("K").
-// No tree-sitter fallback: kiwi has no syntax-only substitute for "what is
+// No tree-sitter fallback: nib has no syntax-only substitute for "what is
 // the type/doc of this symbol", so this is simply a no-op without a ready
 // server.
 //

@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"unicode"
 
-	"github.com/bricejulia/kiwi/internal/debuglog"
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/textwidth"
+	"github.com/bricejulia/nib/internal/debuglog"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/textwidth"
 )
 
 // promptMode is which file operation, if any, is currently asking the user
@@ -35,7 +35,7 @@ const (
 
 // promptCaretStyle keeps the prompt row visually distinct from the tree rows
 // above it; promptErrStyle marks a refusal, which is shown inline because
-// everything else in kiwi reports errors only to the debug log (Ctrl+D).
+// everything else in nib reports errors only to the debug log (Ctrl+D).
 var (
 	promptStyle    = layout.Style{Attr: layout.AttrBold}
 	promptErrStyle = layout.Style{Foreground: layout.ColorRed}
@@ -135,7 +135,7 @@ func (v *View) openPrompt(mode promptMode, prefill string) {
 }
 
 // CancelPrompt abandons any prompt in progress, leaving the filesystem
-// untouched. Exported for cmd/kiwi's focus-change wiring: a pane left
+// untouched. Exported for cmd/nib's focus-change wiring: a pane left
 // mid-prompt when focus moves away (e.g. a mouse click elsewhere, which
 // never routes a key through this pane's own HandleKey) would otherwise
 // still be swallowing every key the next time the tree got focus back —

@@ -6,7 +6,7 @@
 // package exists rather than a one-line call somewhere:
 //
 // OSC 52 is the only thing that works over ssh — the terminal at the user's
-// keyboard owns the clipboard, not the host kiwi runs on — but it is
+// keyboard owns the clipboard, not the host nib runs on — but it is
 // routinely blocked. tmux ignores it from applications unless its
 // set-clipboard option is "on" (the default is "external", which does not),
 // and some terminals disable it deliberately, since it lets a remote program
@@ -14,11 +14,11 @@
 // tell whether it worked.
 //
 // A native helper is unconditionally reliable and reports errors, but sets
-// the clipboard of the machine kiwi is running on — the wrong machine
+// the clipboard of the machine nib is running on — the wrong machine
 // whenever that isn't the one at the keyboard.
 //
-// So: a native helper when kiwi is running locally, OSC 52 when it isn't or
-// when no helper is installed. This mirrors how the rest of kiwi reaches
+// So: a native helper when nib is running locally, OSC 52 when it isn't or
+// when no helper is installed. This mirrors how the rest of nib reaches
 // outside itself (see internal/vcs/gitblame, internal/ui/finder's grep):
 // a small package that shells out, with the terminal-specific half injected
 // by internal/ui, the only package allowed to touch vaxis.
@@ -118,7 +118,7 @@ func nativeCommand() []string {
 
 // Mechanism names what Copy will use — a helper's command name, or OSC52.
 // Reported to the debug log at startup so "the copy silently did nothing"
-// is diagnosable from inside kiwi rather than by reading its source.
+// is diagnosable from inside nib rather than by reading its source.
 func (w *Writer) Mechanism() string {
 	if len(w.native) == 0 {
 		return OSC52

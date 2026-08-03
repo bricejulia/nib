@@ -5,11 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bricejulia/kiwi/internal/config"
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/textwidth"
-	"github.com/bricejulia/kiwi/internal/ui/gitstyle"
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/config"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/textwidth"
+	"github.com/bricejulia/nib/internal/ui/gitstyle"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 // DefaultKeybinds are the file tree pane's built-in keybindings,
@@ -75,7 +75,7 @@ type View struct {
 	lastHeight int
 
 	// OnOpen is called with the absolute path when the cursor activates a
-	// file row. Set by the caller (cmd/kiwi/main.go) to wire in the
+	// file row. Set by the caller (cmd/nib/main.go) to wire in the
 	// editor pane.
 	OnOpen func(path string)
 

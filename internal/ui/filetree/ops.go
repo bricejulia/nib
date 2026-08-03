@@ -8,7 +8,7 @@ import (
 )
 
 // File and directory modes for entries created from the tree, matching the
-// two places kiwi already writes to the filesystem: editor.defaultSaveMode
+// two places nib already writes to the filesystem: editor.defaultSaveMode
 // for files, and config.EnsureFile's os.MkdirAll for directories.
 const (
 	newFileMode = 0o644
@@ -124,7 +124,7 @@ func movePath(src, dst string) error {
 // deletePath removes abs. A directory that still has entries in it is only
 // removed when recursive is true — the caller is expected to have asked for
 // a stronger confirmation first (see beginDelete), since this is
-// permanent: kiwi has no trash and no undo for it.
+// permanent: nib has no trash and no undo for it.
 //
 // Symlinks need no special case. os.ReadDir reports a symlink to a
 // directory as a plain file, so the tree already treats it as one, and

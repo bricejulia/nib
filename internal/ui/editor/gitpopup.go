@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bricejulia/kiwi/internal/debuglog"
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/textwidth"
-	"github.com/bricejulia/kiwi/internal/vcs/gitblame"
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/debuglog"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/textwidth"
+	"github.com/bricejulia/nib/internal/vcs/gitblame"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 // This file is the editor pane's two git tooltips: "who last changed this

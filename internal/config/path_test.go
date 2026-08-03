@@ -8,7 +8,7 @@ func TestPathUsesXDGConfigHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Path: %v", err)
 	}
-	want := "/xdg-home/kiwi/config"
+	want := "/xdg-home/nib/config"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -21,7 +21,7 @@ func TestPathFallsBackToDotConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Path: %v", err)
 	}
-	want := "/home/testuser/.config/kiwi/config"
+	want := "/home/testuser/.config/nib/config"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

@@ -21,7 +21,7 @@ type Scope struct {
 // worked examples of the "lsp" directive.
 func Template(scopes []Scope) string {
 	var b strings.Builder
-	b.WriteString(`# kiwi config
+	b.WriteString(`# nib config
 #
 # Uncomment and edit a line below to override that keybinding, or add a
 # new "keybind" line entirely. Format:
@@ -38,7 +38,7 @@ func Template(scopes []Scope) string {
 # backspace, space). Modifier names and named keys are case-insensitive; a
 # single-character key is not (x and X are different keys).
 #
-# Restart kiwi after editing this file for changes to take effect.
+# Restart nib after editing this file for changes to take effect.
 
 
 # --- language servers ---
@@ -47,7 +47,7 @@ func Template(scopes []Scope) string {
 #
 #   lsp = <language> = <command args...>
 #
-# The language name is the one kiwi's grammar detection reports, shown in
+# The language name is the one nib's grammar detection reports, shown in
 # the status bar next to the file's LSP indicator:
 #
 #   go ●   server running
@@ -55,13 +55,13 @@ func Template(scopes []Scope) string {
 #   go     no server configured for this language
 #
 # The command must be on your PATH and speak LSP over stdin/stdout. These
-# merge over kiwi's built-in defaults, so a line here wins.
+# merge over nib's built-in defaults, so a line here wins.
 #
-# PHP — pick one (kiwi defaults to intelephense; uncomment to change):
+# PHP — pick one (nib defaults to intelephense; uncomment to change):
 #   lsp = php = intelephense --stdio         # npm i -g intelephense
 #   lsp = php = phpactor language-server     # fully open source alternative
 #
-# TypeScript/JavaScript/JSX/TSX — pick one (kiwi defaults to
+# TypeScript/JavaScript/JSX/TSX — pick one (nib defaults to
 # typescript-language-server; uncomment to change). The same command covers
 # all four; set it once per language name if you want different servers:
 #   lsp = typescript = typescript-language-server --stdio   # npm i -g typescript-language-server typescript

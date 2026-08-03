@@ -3,8 +3,8 @@ package gitstyle
 import (
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 func TestMarkerCoversEveryStatus(t *testing.T) {

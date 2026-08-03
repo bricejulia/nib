@@ -6,10 +6,10 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/bricejulia/kiwi/internal/config"
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/textwidth"
-	"github.com/bricejulia/kiwi/internal/ui/editor"
+	"github.com/bricejulia/nib/internal/config"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/textwidth"
+	"github.com/bricejulia/nib/internal/ui/editor"
 )
 
 // ReplaceDefaultKeybinds are the replace-in-path overlay's built-in
@@ -165,7 +165,7 @@ type ReplaceView struct {
 	OnClose func()
 	// OnReplaceAll is called with the search/replacement strings and every
 	// CHECKED occurrence (or, from "replace_current", just the one under
-	// the cursor) — the host application (cmd/kiwi/main.go) is what
+	// the cursor) — the host application (cmd/nib/main.go) is what
 	// actually knows how to reach open editor panes, so it owns calling
 	// editor.Apply and reporting back via ShowResult.
 	OnReplaceAll func(search, replacement string, occurrences []editor.Occurrence)

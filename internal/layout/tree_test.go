@@ -94,7 +94,7 @@ func TestCloseCollapsesToSibling(t *testing.T) {
 		{Node: target, Hint: Ratio(1)},
 	}}
 	// splitPair (the direct parent of target) needs its own parent for
-	// Close to collapse into — matching kiwi's real shape, where the
+	// Close to collapse into — matching nib's real shape, where the
 	// editor's pane-pair is always nested under a further outer split.
 	outer := &SplitNode{Dir: Vertical, Children: []Child{{Node: splitPair, Hint: Ratio(1)}}}
 

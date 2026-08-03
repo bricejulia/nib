@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 // writeTemp creates dir/name (creating intermediate directories) with body,

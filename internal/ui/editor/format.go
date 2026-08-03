@@ -4,12 +4,12 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bricejulia/kiwi/internal/lsp"
+	"github.com/bricejulia/nib/internal/lsp"
 )
 
 // triggerFormat implements "F": asks the language server to reformat the
 // active tab's whole document and applies the edits it returns as ONE
-// undoable change. No tree-sitter fallback — kiwi has no syntax-only
+// undoable change. No tree-sitter fallback — nib has no syntax-only
 // reformatter — so this is a no-op without a ready server.
 //
 // Format-on-save is deliberately out of scope: saveActive/saveTab are

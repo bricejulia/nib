@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 // withFastDebounce shrinks contentSearchDebounce for the duration of a

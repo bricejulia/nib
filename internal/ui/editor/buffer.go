@@ -4,8 +4,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/textfile"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/textfile"
 )
 
 // defaultSaveMode is the permission Save falls back to when Load couldn't

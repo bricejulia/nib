@@ -5,7 +5,7 @@ import (
 
 	"go.rockorager.dev/vaxis"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 func TestTranslateKeyArrowKeys(t *testing.T) {
@@ -157,7 +157,7 @@ func TestTranslateKeyStripsShiftFromPunctuationText(t *testing.T) {
 
 // TestDoubleShiftIgnoredWhenTerminalUnfocused guards a real bug: some
 // terminals/multiplexers (observed with Ghostty tabs) can deliver a stray
-// bare-Shift keypress to a kiwi session running in a tab that isn't even
+// bare-Shift keypress to a nib session running in a tab that isn't even
 // the active one, which would otherwise pop the finder open behind the
 // user's back. FocusOut must disable the double-shift detector.
 func TestDoubleShiftIgnoredWhenTerminalUnfocused(t *testing.T) {

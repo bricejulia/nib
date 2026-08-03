@@ -11,11 +11,11 @@ import (
 	"sort"
 	"time"
 
-	"github.com/bricejulia/kiwi/internal/config"
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/textwidth"
-	"github.com/bricejulia/kiwi/internal/ui/gitstyle"
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/config"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/textwidth"
+	"github.com/bricejulia/nib/internal/ui/gitstyle"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 // DefaultKeybinds are the finder's built-in keybindings, overridable via
@@ -155,7 +155,7 @@ func (v *View) Open() {
 
 // OpenWithQuery opens the finder already in content-search mode with
 // query pre-filled and searched — used by the global "find references"
-// action (Ctrl+F, see cmd/kiwi/main.go's openFindReferences and
+// action (Ctrl+F, see cmd/nib/main.go's openFindReferences and
 // editor.View.WordUnderCursor) so the user doesn't have to retype the
 // identifier under their cursor.
 func (v *View) OpenWithQuery(query string) {

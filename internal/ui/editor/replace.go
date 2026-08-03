@@ -187,7 +187,7 @@ func RewriteFile(path, search, replacement string, edits map[int][]int) (replace
 
 // Apply groups occurrences by file and, for each, replaces through the
 // shared open Buffer if findPane reports one, else writes straight to
-// disk — findPane is how the caller (cmd/kiwi/main.go, which owns the
+// disk — findPane is how the caller (cmd/nib/main.go, which owns the
 // registry of live editor panes) answers "is this path open anywhere,
 // and in which pane" without this package needing to know about panes,
 // leaves, or the window tree at all.

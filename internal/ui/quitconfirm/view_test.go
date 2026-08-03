@@ -3,7 +3,7 @@ package quitconfirm
 import (
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 func TestHandleKeySaveAndQuit(t *testing.T) {

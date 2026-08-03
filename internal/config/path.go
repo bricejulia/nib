@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 )
 
-// Path returns kiwi's config file location: $XDG_CONFIG_HOME/kiwi/config,
-// or ~/.config/kiwi/config if XDG_CONFIG_HOME is unset — the same
+// Path returns nib's config file location: $XDG_CONFIG_HOME/nib/config,
+// or ~/.config/nib/config if XDG_CONFIG_HOME is unset — the same
 // ~/.config convention terminal tools (git, nvim, ghostty on Linux) use
 // regardless of OS, rather than os.UserConfigDir's platform-specific
 // (and, on macOS, GUI-app-oriented) locations.
@@ -19,5 +19,5 @@ func Path() (string, error) {
 		}
 		base = filepath.Join(home, ".config")
 	}
-	return filepath.Join(base, "kiwi", "config"), nil
+	return filepath.Join(base, "nib", "config"), nil
 }

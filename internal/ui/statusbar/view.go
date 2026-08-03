@@ -6,8 +6,8 @@ package statusbar
 import (
 	"strings"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/textwidth"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/textwidth"
 )
 
 // View displays a static left-aligned Hint (e.g. a shortcuts reminder)

@@ -1,6 +1,6 @@
 package editor
 
-import "github.com/bricejulia/kiwi/internal/layout"
+import "github.com/bricejulia/nib/internal/layout"
 
 // highlightLine is a placeholder, language-agnostic heuristic highlighter:
 // it recognizes single-line comments, quoted strings, and numbers by

@@ -307,7 +307,7 @@ func TestLoadStripsCRLFAndSaveWritesItBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No trailing "\r\n" on the last line: kiwi already drops a file's
+	// No trailing "\r\n" on the last line: nib already drops a file's
 	// final newline on save regardless of EOL style (a pre-existing,
 	// unrelated behavior — see Buffer.Save's doc comment) — this just
 	// confirms CRLF is used between lines instead of "\n".

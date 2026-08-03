@@ -1,5 +1,5 @@
 // This file deliberately lives in the external test package so it can import
-// the editor alongside the file tree: it stands in for cmd/kiwi's own wiring
+// the editor alongside the file tree: it stands in for cmd/nib's own wiring
 // (which has no test harness) and checks the two panes agree end to end when
 // a file is renamed or deleted from the tree.
 package filetree_test
@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/ui/editor"
-	"github.com/bricejulia/kiwi/internal/ui/filetree"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/ui/editor"
+	"github.com/bricejulia/nib/internal/ui/filetree"
 )
 
 // nullWindow is just enough layout.Window to let Render populate the tree's
@@ -23,7 +23,7 @@ func (w nullWindow) Size() (int, int)             { return w.cols, w.rows }
 func (nullWindow) Println(int, ...layout.Segment) {}
 func (nullWindow) Clear()                         {}
 
-// wire mirrors cmd/kiwi/main.go: the tree's mutation callbacks fanned out
+// wire mirrors cmd/nib/main.go: the tree's mutation callbacks fanned out
 // over the editor panes sharing one buffer store.
 func wire(tree *filetree.View, panes ...*editor.View) {
 	tree.OnPathMoved = func(oldPath, newPath string) {

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bricejulia/kiwi/internal/layout"
-	"github.com/bricejulia/kiwi/internal/lsp"
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/lsp"
 )
 
 // fakeLSP stands in for *lsp.Manager (see View.lsp / languageServer) so the

@@ -4,7 +4,7 @@
 //
 // Deliberately one line per call, via `git blame -L n,n`, rather than
 // blaming the whole file and caching it: blame walks history and is by far
-// the most expensive git query kiwi makes, whole-file results go stale on
+// the most expensive git query nib makes, whole-file results go stale on
 // every edit, and the popup only ever displays one line's worth. A
 // single-line blame stays cheap enough to run on the keypress that asks
 // for it.

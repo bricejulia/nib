@@ -1,7 +1,7 @@
 // Package debuglog is a small in-process ring buffer that any package can
 // append messages to via Debug/Info/Warn/Error, without importing the UI
 // layer. The debug view (internal/ui/debug) reads it back out to render a
-// log pane toggled by a keyboard shortcut — see cmd/kiwi/main.go.
+// log pane toggled by a keyboard shortcut — see cmd/nib/main.go.
 package debuglog
 
 import (

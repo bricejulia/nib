@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bricejulia/kiwi/internal/vcs/gitstatus"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 // Node is one entry in the file tree. Children is nil until Loaded, so
