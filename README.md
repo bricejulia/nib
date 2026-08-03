@@ -42,6 +42,30 @@ servers — in a codebase small enough to read in an afternoon.
   line; finishing a selection copies it to the system clipboard automatically.
 - **Everything rebindable** through a plain-text config file.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bricejulia/nib/main/install.sh | sh
+```
+
+Or with Homebrew:
+
+```bash
+brew install bricejulia/tap/nib
+```
+
+> **macOS:** if Gatekeeper blocks the binary on first run, remove the quarantine attribute:
+> `xattr -d com.apple.quarantine $(which nib)`, or allow it manually in
+> System Settings → Privacy & Security.
+
+Or with Go:
+
+```bash
+go install github.com/bricejulia/nib/cmd/nib@latest
+```
+
+You can also download the latest binaries from the [release page](https://github.com/bricejulia/nib/releases). If you use this method, don't forget to check for updates regularly!
+
 ## Getting started
 
 ```sh
