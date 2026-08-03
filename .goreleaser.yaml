@@ -1,0 +1,43 @@
+version: 2
+
+builds:
+  - main: ./cmd/nib
+    binary: nib
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+homebrew_casks:
+  - name: nib
+    skip_upload: auto
+    repository:
+      owner: bricejulia
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/bricejulia/nib"
+    description: "A terminal code editor in Go. Modal editing in the vim tradition, real syntax awareness from tree-sitter, and real semantic features from language servers"
+    directory: Casks

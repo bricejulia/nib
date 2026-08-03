@@ -86,12 +86,14 @@ seam that translates vaxis events in and vaxis draw calls out. Panes are
 therefore testable against a fake `Window` with no terminal at all, which is
 how essentially all of the UI is tested.
 
-**2. Everything happens on one goroutine.** Background work — the filesystem
-watcher, `git grep`, every LSP request — runs on its own goroutine but is
-forbidden from touching editor state. Results are marshalled back onto the
-event loop through `App.Post`, and only then applied. This is why locks are
-confined to exactly two packages — `lsp.Manager` (server threads write to it)
-and `debuglog` (anything may log from anywhere) — and no UI state needs any.
+**2. State only changes on one goroutine.** Background work — the filesystem
+watcher, `git grep`, syntax highlighting, every LSP request — each runs on its
+own goroutine but is forbidden from touching editor state directly. Results
+are marshalled back onto the event loop through `App.Post`, and only applied
+there. This is why locks are confined to exactly three packages — `lsp.Manager`
+(server threads write to it), the editor's `Highlighter` (its worker and the UI
+goroutine share a pending-jobs queue), and `debuglog` (anything may log from
+anywhere) — and no other UI state needs any.
 
 **3. Panes don't know about each other.** A pane exposes a callback field —
 `OnOpen`, `OnFindReferences`, `OnAllTabsClosed` — and `cmd/nib/main.go` wires
@@ -174,13 +176,13 @@ Press `?` in nib for this list at runtime. Every binding is rebindable
 | `Ctrl+C` | Quit (asks first if there are unsaved changes) |
 | `Tab` / `Shift+Tab` | Focus next / previous pane |
 | `Ctrl+P` | File finder (also: double-tap `Shift`) |
-| `Ctrl+F` | Find references: search file contents, pre-filled with the word under the cursor if an editor pane is focused |
+| `Ctrl+F` | Find references: search file contents, pre-filled with the word under the cursor in the focused (or last-focused) editor pane |
 | `Ctrl+Shift+R` | Find & replace in path |
 | `Ctrl+D` | Debug log |
 | `?` | Help |
 | `Ctrl+O` | Open the config file in `$EDITOR` |
-| `Ctrl+W` / `Ctrl+E` | Split the focused editor pane right / down |
-| `Ctrl+X` | Close the focused editor pane |
+| `Ctrl+W` / `Ctrl+E` | Split the focused (or last-focused) editor pane right / down |
+| `Ctrl+X` | Close the focused (or last-focused) editor pane |
 
 ### Editor — moving
 
@@ -418,5 +420,4 @@ because the wire format and CLI output are exactly what a mock would get wrong.
 
 nib is a work in progress and a learning project. Known gaps, deliberately:
 no rope (large-file editing will suffer), one language server configured out of
-the box, full re-parse per keystroke, no auto-restart of a crashed server, and
-`Ctrl+X` closes a pane without checking for unsaved changes (unlike `:q`).
+the box, full re-parse per keystroke, and no auto-restart of a crashed server.

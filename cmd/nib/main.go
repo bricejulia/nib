@@ -490,17 +490,17 @@ func run() error {
 	}
 
 	// targetPane resolves the editor pane an action driven by CURRENT focus
-	// should act on: the one currently focused, or ok=false if focus isn't
-	// on any known editor pane (e.g. it's on the file tree) — in which case
-	// split/close are simply no-ops, and openFindReferences below falls
-	// back to an empty query.
+	// should act on: the one currently focused, or activeEditorPane (the
+	// last editor pane that genuinely had focus) when focus is elsewhere
+	// entirely (e.g. the file tree) — so Ctrl+W/E/X and Ctrl+F act on "the
+	// editor pane you were just in" rather than silently no-op'ing.
 	targetPane := func() (*editorPane, bool) {
-		id, ok := app.FocusedLeaf()
-		if !ok {
-			return nil, false
+		if id, ok := app.FocusedLeaf(); ok {
+			if p, ok := editorPanes[id]; ok {
+				return p, true
+			}
 		}
-		p, ok := editorPanes[id]
-		return p, ok
+		return activeEditorPane, true
 	}
 	// openFindReferences is Ctrl+F's global handler (see
 	// globalDefaultKeybinds): it opens the finder's content search,
@@ -547,6 +547,14 @@ func run() error {
 		target, ok := targetPane()
 		if !ok || len(editorPanes) == 1 {
 			return // not in an editor pane, or it's the last one: no-op
+		}
+		// Refuse exactly like ":qa" would (see View.closeAllTabsCmd):
+		// closing the pane releases these tabs' Buffer references, and an
+		// unsaved buffer not held open by another pane loses its edits for
+		// good.
+		if dirty := target.view.DirtyPaths(); len(dirty) > 0 {
+			debuglog.Warn("close pane: %d unsaved file(s) (save first): %s", len(dirty), strings.Join(dirty, ", "))
+			return
 		}
 		// Release every open tab's Buffer reference before the pane
 		// itself is discarded — otherwise bufferStore would keep each of

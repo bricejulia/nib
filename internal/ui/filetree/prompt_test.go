@@ -189,6 +189,38 @@ func TestPromptCreateTrailingSlashMakesADirectory(t *testing.T) {
 	}
 }
 
+func TestPromptCreateOpensTheNewFile(t *testing.T) {
+	v, root, _ := promptFixture(t)
+	selectRow(t, v, "a.txt")
+
+	var opened string
+	v.OnOpen = func(path string) { opened = path }
+
+	v.HandleKey(layout.Key{Text: "a"})
+	typeKeys(v, "new.go")
+	v.HandleKey(enterKey())
+
+	if want := filepath.Join(root, "new.go"); opened != want {
+		t.Errorf("OnOpen called with %q, want %q", opened, want)
+	}
+}
+
+func TestPromptCreateDirectoryDoesNotOpenIt(t *testing.T) {
+	v, _, _ := promptFixture(t)
+	selectRow(t, v, "a.txt")
+
+	var opened string
+	v.OnOpen = func(path string) { opened = path }
+
+	v.HandleKey(layout.Key{Text: "a"})
+	typeKeys(v, "pkg/")
+	v.HandleKey(enterKey())
+
+	if opened != "" {
+		t.Errorf("OnOpen called with %q, want no call for a directory", opened)
+	}
+}
+
 // A create prefilled from a collapsed directory has to expand the ancestors
 // and land the cursor on the new entry — Refresh alone would not even
 // re-read a collapsed-but-loaded folder.

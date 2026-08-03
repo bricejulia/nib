@@ -272,6 +272,12 @@ func (v *View) commitCreate() {
 	v.cancelPrompt()
 	v.syncAfter(abs, filepath.Dir(abs))
 	v.notifyMutated()
+	// A newly created file is opened immediately, the same as pressing
+	// Enter on it would do — same reasoning as activate(). A directory has
+	// nothing to open; syncAfter above already left the cursor on it.
+	if !isDir && v.OnOpen != nil {
+		v.OnOpen(abs)
+	}
 }
 
 func (v *View) commitRename() {
