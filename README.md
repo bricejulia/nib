@@ -1,5 +1,10 @@
 # nib
 
+[![CI](https://github.com/bricejulia/nib/actions/workflows/ci.yml/badge.svg)](https://github.com/bricejulia/nib/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+![nib banner](https://github.com/bricejulia/nib/blob/main/assets/nib.png?raw=true)
+
 A terminal code editor in Go. Modal editing in the vim tradition, real
 syntax awareness from tree-sitter, and real semantic features from language
 servers — in a codebase small enough to read in an afternoon.
