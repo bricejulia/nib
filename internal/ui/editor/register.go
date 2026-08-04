@@ -152,7 +152,7 @@ func (v *View) deleteRange(t *tab, startLn, startCol, endLn, endCol int) {
 	before := snapshotTab(t)
 	v.register.SetCharwise(t.buf.DeleteRange(startLn, startCol, endLn, endCol))
 	t.cursorLn = startLn
-	t.cursorCol = expandedColForRawIndex(t.buf.Lines[startLn], startCol, v.tabWidth)
+	t.cursorCol = expandedColForRawIndex(t.buf.Lines[startLn], startCol, tabWidthOf(t))
 	v.pushUndoIfChanged(t, before)
 	v.onBufferEdited(t)
 	v.clamp(t)
@@ -182,7 +182,7 @@ func (v *View) changeRange(t *tab, startLn, startCol, endLn, endCol int) {
 	}
 	v.register.SetCharwise(t.buf.DeleteRange(startLn, startCol, endLn, endCol))
 	t.cursorLn = startLn
-	t.cursorCol = expandedColForRawIndex(t.buf.Lines[startLn], startCol, v.tabWidth)
+	t.cursorCol = expandedColForRawIndex(t.buf.Lines[startLn], startCol, tabWidthOf(t))
 	v.onBufferEdited(t)
 	v.clamp(t)
 }
@@ -229,7 +229,7 @@ func (v *View) putAfter(t *tab) {
 func (v *View) putCharwise(t *tab, lines []string) {
 	line := t.buf.Lines[t.cursorLn]
 	runes := []rune(line)
-	at := rawIndexForExpandedCol(line, t.cursorCol, v.tabWidth)
+	at := rawIndexForExpandedCol(line, t.cursorCol, tabWidthOf(t))
 	// "After the cursor" — except at end of line (or on an empty line),
 	// where there is no character to go after and the cursor position is
 	// already the insertion point.
@@ -239,7 +239,7 @@ func (v *View) putCharwise(t *tab, lines []string) {
 
 	if len(lines) == 1 {
 		end := t.buf.InsertText(t.cursorLn, at, lines[0])
-		t.cursorCol = lastPutColumn(v, t.buf.Lines[t.cursorLn], at, end)
+		t.cursorCol = lastPutColumn(t, t.buf.Lines[t.cursorLn], at, end)
 		return
 	}
 
@@ -258,17 +258,17 @@ func (v *View) putCharwise(t *tab, lines []string) {
 	last := lines[len(lines)-1]
 	end := t.buf.InsertText(lastLn, 0, last)
 	t.cursorLn = lastLn
-	t.cursorCol = lastPutColumn(v, t.buf.Lines[lastLn], 0, end)
+	t.cursorCol = lastPutColumn(t, t.buf.Lines[lastLn], 0, end)
 }
 
 // lastPutColumn converts the raw rune index just past a freshly inserted
 // fragment into the cursorCol (tab-expanded) index of the fragment's last
 // character. An empty fragment has no last character, so the cursor stays at
 // the insertion point.
-func lastPutColumn(v *View, line string, at, end int) int {
+func lastPutColumn(t *tab, line string, at, end int) int {
 	raw := end - 1
 	if raw < at {
 		raw = at
 	}
-	return expandedColForRawIndex(line, raw, v.tabWidth)
+	return expandedColForRawIndex(line, raw, tabWidthOf(t))
 }

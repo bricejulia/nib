@@ -140,7 +140,7 @@ func TestGoToParentDoesNotGetStuckOnSameStartByteAncestors(t *testing.T) {
 	line := lines[5] // "\thelper()"
 	rawIdx := strings.Index(line, "helper") + 1
 	tb.cursorLn = 5
-	tb.cursorCol = expandedColForRawIndex(line, rawIdx, v.tabWidth)
+	tb.cursorCol = expandedColForRawIndex(line, rawIdx, tabWidthOf(tb))
 
 	seen := map[[2]int]bool{{tb.cursorLn, tb.cursorCol}: true}
 	moved := 0
@@ -221,7 +221,7 @@ func TestGoToDefinitionJumpsToDeclaration(t *testing.T) {
 	line := tb.buf.Lines[6] // "\thelper()"
 	rawIdx := strings.Index(line, "helper") + 1
 	tb.cursorLn = 6
-	tb.cursorCol = expandedColForRawIndex(line, rawIdx, v.tabWidth)
+	tb.cursorCol = expandedColForRawIndex(line, rawIdx, tabWidthOf(tb))
 
 	if !v.HandleKey(ctrlKey("]")) {
 		t.Fatal("expected Ctrl+] to be consumed")

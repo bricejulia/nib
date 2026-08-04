@@ -69,7 +69,7 @@ func (v *View) showLineDiff(t *tab) {
 		return
 	}
 
-	v.gitPopup = hunkPopupLines(h, v.tabWidth, v.popupWidth())
+	v.gitPopup = hunkPopupLines(h, tabWidthOf(t), v.popupWidth())
 	// Same caveat as blame: hunks are computed from the file on disk (see
 	// gitstatus.FileHunkList), so unsaved edits can shift which hunk the
 	// cursor's line really belongs to.

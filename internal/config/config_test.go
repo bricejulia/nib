@@ -219,3 +219,67 @@ func TestColorOverridesOnNilConfig(t *testing.T) {
 		t.Errorf("expected nil color overrides from a nil *Config, got %v", got)
 	}
 }
+
+func TestParseTabModeDirective(t *testing.T) {
+	src := `
+tabmode = yaml = spaces:2
+tabmode = default = tabs:4
+tabmode = python = spaces
+keybind = editor:ctrl+t = go_to_definition
+`
+	cfg := Parse(strings.NewReader(src))
+	modes := cfg.TabModes()
+
+	if got, want := modes["yaml"], (TabMode{UseSpaces: true, Width: 2}); got != want {
+		t.Errorf("modes[yaml] = %+v, want %+v", got, want)
+	}
+	if got, want := modes["default"], (TabMode{UseSpaces: false, Width: 4}); got != want {
+		t.Errorf("modes[default] = %+v, want %+v", got, want)
+	}
+	if got, want := modes["python"], (TabMode{UseSpaces: true, Width: 0}); got != want {
+		t.Errorf("modes[python] = %+v, want %+v (no width suffix)", got, want)
+	}
+	// The three-field directive must not swallow the surrounding keybind.
+	if got := cfg.Overrides("editor")["Ctrl+t"]; got != "go_to_definition" {
+		t.Errorf("keybind parsing broke alongside tabmode: got %q", got)
+	}
+}
+
+func TestParseTabModeSkipsMalformedLines(t *testing.T) {
+	src := `
+tabmode = yaml
+tabmode = yaml = sideways
+tabmode = yaml = spaces:zero
+tabmode = yaml = spaces:0
+tabmode = yaml = spaces:-2
+`
+	if modes := Parse(strings.NewReader(src)).TabModes(); len(modes) != 0 {
+		t.Errorf("expected no tab modes from malformed input, got %v", modes)
+	}
+}
+
+func TestTabModesOnNilConfig(t *testing.T) {
+	var cfg *Config
+	if got := cfg.TabModes(); got != nil {
+		t.Errorf("expected nil tab modes from a nil *Config, got %v", got)
+	}
+}
+
+func TestParseWhitespaceDirective(t *testing.T) {
+	if got := Parse(strings.NewReader("whitespace = true\n")).ShowWhitespace(); !got {
+		t.Errorf("ShowWhitespace() = %v, want true", got)
+	}
+	if got := Parse(strings.NewReader("whitespace = yes\n")).ShowWhitespace(); got {
+		t.Errorf(`ShowWhitespace() = %v, want false for "yes"`, got)
+	}
+	if got := Parse(strings.NewReader("")).ShowWhitespace(); got {
+		t.Errorf("ShowWhitespace() = %v, want false when unset", got)
+	}
+}
+
+func TestShowWhitespaceOnNilConfig(t *testing.T) {
+	var cfg *Config
+	if got := cfg.ShowWhitespace(); got {
+		t.Errorf("expected false from a nil *Config, got %v", got)
+	}
+}

@@ -24,7 +24,7 @@ func (v *View) triggerHover(t *tab) {
 	if lang == "" || !v.lsp.Ready(lang) {
 		return
 	}
-	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
 	v.lsp.Hover(t.path, lang, t.cursorLn, raw, func(text string, ok bool) {
 		if v.activeTab() != t {
 			return // the user moved on while the server was thinking

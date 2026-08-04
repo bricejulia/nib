@@ -71,7 +71,8 @@ func TestDefaultThemeMatchesHardcodedColors(t *testing.T) {
 
 		FiletreePromptError: layout.ColorRed,
 
-		EditorSelection: layout.ColorBrightBlack,
+		EditorSelection:  layout.ColorBrightBlack,
+		EditorWhitespace: layout.ColorBrightBlack,
 
 		UIFocusBorder: layout.ColorCyan,
 	}

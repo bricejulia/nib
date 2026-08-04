@@ -29,7 +29,8 @@ var Default = Theme{
 
 	FiletreePromptError: layout.ColorRed,
 
-	EditorSelection: layout.ColorBrightBlack,
+	EditorSelection:  layout.ColorBrightBlack,
+	EditorWhitespace: layout.ColorBrightBlack,
 
 	UIFocusBorder: layout.ColorCyan,
 }
@@ -60,7 +61,8 @@ var Ocean = Theme{
 
 	FiletreePromptError: layout.ColorBrightRed,
 
-	EditorSelection: layout.ColorBlue,
+	EditorSelection:  layout.ColorBlue,
+	EditorWhitespace: layout.ColorBrightBlack,
 
 	UIFocusBorder: layout.ColorBrightBlue,
 }
@@ -93,7 +95,8 @@ var Mono = Theme{
 
 	FiletreePromptError: layout.ColorRed,
 
-	EditorSelection: layout.ColorBrightBlack,
+	EditorSelection:  layout.ColorBrightBlack,
+	EditorWhitespace: layout.ColorBrightBlack,
 
 	UIFocusBorder: layout.ColorWhite,
 }
@@ -123,7 +126,8 @@ var Amber = Theme{
 
 	FiletreePromptError: layout.ColorBrightRed,
 
-	EditorSelection: layout.ColorBrightBlack,
+	EditorSelection:  layout.ColorBrightBlack,
+	EditorWhitespace: layout.ColorBrightBlack,
 
 	UIFocusBorder: layout.ColorBrightYellow,
 }

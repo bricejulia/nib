@@ -66,6 +66,10 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "Backspace", Action: "insert_backspace"},
 	{Trigger: "Tab", Action: "insert_tab"},
 	{Trigger: "Ctrl+s", Action: "save"},
+	// Flips the current file's Tab behavior (spaces vs. a literal tab
+	// character) without touching the config's per-language default — see
+	// the "tabmode" directive in internal/config.
+	{Trigger: "Ctrl+Alt+t", Action: "toggle_tab_mode"},
 	{Trigger: "u", Action: "undo"},
 	// Bare "r", not Ctrl+r: frees Ctrl+r up as the GLOBAL "open_replace"
 	// binding (see cmd/nib/main.go), which needs it to be unclaimed here —
@@ -244,9 +248,21 @@ type tab struct {
 // vim's buffers-vs-windows model. The pane shows the terminal's real
 // cursor (see CursorPosition) at the current position.
 type View struct {
-	tabs     []*tab
-	active   int // index into tabs; meaningless when len(tabs) == 0
-	tabWidth int
+	tabs   []*tab
+	active int // index into tabs; meaningless when len(tabs) == 0
+
+	// tabModes is the language->indent-style config each buffer's
+	// IndentUseSpaces/IndentWidth are derived from the first time Open
+	// sees that buffer — see tabModeFor. Set via SetTabModeDefaults,
+	// mirroring how SetKeymap supplies keybinding overrides. nil (a bare
+	// NewView(), e.g. in tests) means every buffer defaults to real tabs,
+	// width 4 — today's unconditional behavior before this setting
+	// existed.
+	tabModes map[string]config.TabMode
+
+	// showWhitespace is true when the user config has "whitespace = true"
+	// — see SetShowWhitespace and renderBody's dot/arrow substitution.
+	showWhitespace bool
 
 	lastWidth, lastHeight int
 
@@ -439,13 +455,13 @@ type languageServer interface {
 	Completion(path, language string, line, character int, apply func(items []lsp.CompletionItem, ok bool)) bool
 	Hover(path, language string, line, character int, apply func(text string, ok bool)) bool
 	SignatureHelp(path, language string, line, character int, apply func(sh lsp.SignatureHelp, ok bool)) bool
-	Formatting(path, language string, tabWidth int, apply func(edits []lsp.TextEdit, ok bool)) bool
+	Formatting(path, language string, tabWidth int, insertSpaces bool, apply func(edits []lsp.TextEdit, ok bool)) bool
 }
 
 // NewView creates an empty editor pane with no tabs open; call Open to
 // load a file into it.
 func NewView() *View {
-	return &View{tabWidth: 4, keymap: DefaultKeybinds.Resolve(nil), store: NewBufferStore(), register: NewRegister()}
+	return &View{keymap: DefaultKeybinds.Resolve(nil), store: NewBufferStore(), register: NewRegister()}
 }
 
 // SetBufferStore replaces this pane's BufferStore, so it shares loaded
@@ -524,6 +540,47 @@ func (v *View) SetKeymap(overrides map[string]string) {
 	v.keymap = DefaultKeybinds.Resolve(overrides)
 }
 
+// SetTabModeDefaults installs the language->indent-style config Open
+// derives each newly opened buffer's IndentUseSpaces/IndentWidth from —
+// see tabModeFor. modes is keyed by language name (matching the "lsp"
+// directive and languageFor), plus an optional "default" entry for any
+// language without its own. Already-open tabs are unaffected — like
+// SetKeymap, this only changes what happens from here on.
+func (v *View) SetTabModeDefaults(modes map[string]config.TabMode) {
+	v.tabModes = modes
+}
+
+// tabModeFor resolves lang's indent style: lang's own tabModes entry if
+// there is one (inheriting the "default" entry's width when it didn't
+// specify its own), else the "default" entry, else a hardcoded
+// {UseSpaces: false, Width: 4} — nib's original, unconfigured behavior.
+func (v *View) tabModeFor(lang string) config.TabMode {
+	def, hasDefault := v.tabModes["default"]
+	defWidth := def.Width
+	if defWidth <= 0 {
+		defWidth = 4
+	}
+	if lang != "" {
+		if mode, ok := v.tabModes[lang]; ok {
+			if mode.Width <= 0 {
+				mode.Width = defWidth
+			}
+			return mode
+		}
+	}
+	if hasDefault {
+		return config.TabMode{UseSpaces: def.UseSpaces, Width: defWidth}
+	}
+	return config.TabMode{UseSpaces: false, Width: 4}
+}
+
+// SetShowWhitespace turns rendering of spaces/tab-fill as visible glyphs
+// on or off — see renderBody. Derived from the user config's
+// "whitespace = true" line.
+func (v *View) SetShowWhitespace(show bool) {
+	v.showWhitespace = show
+}
+
 // SetWelcomeInfo supplies the context shown centered in this pane whenever
 // it has no tabs open (see renderWelcome): nibVersion and folder, fixed for
 // the session, plus branchFunc, re-read on every Render so the branch shown
@@ -567,7 +624,7 @@ func (v *View) WordUnderCursor() string {
 	if t == nil {
 		return ""
 	}
-	return wordUnderCursor(t, v.tabWidth)
+	return wordUnderCursor(t, tabWidthOf(t))
 }
 
 // OpenPaths returns the paths of every open tab, for the caller
@@ -628,6 +685,14 @@ func (v *View) Open(path string) {
 	}
 
 	buf, err := v.store.Open(path)
+	lang := languageFor(path)
+	if buf != nil && buf.IndentWidth == 0 {
+		// Not derived yet (BufferStore caches by path, so this only runs
+		// once per file — see Buffer.IndentWidth's doc).
+		mode := v.tabModeFor(lang)
+		buf.IndentUseSpaces = mode.UseSpaces
+		buf.IndentWidth = mode.Width
+	}
 	t := &tab{path: path, buf: buf, err: err}
 	if buf != nil && buf.highlighted == nil {
 		// Already highlighted if another pane opened this path first.
@@ -643,10 +708,8 @@ func (v *View) Open(path string) {
 	// file of its language) so it can start analyzing and publishing
 	// diagnostics. Reference-counted inside the Manager, so the same file
 	// open in two panes registers once — mirroring BufferStore above.
-	if v.lsp != nil && buf != nil {
-		if lang := languageFor(path); lang != "" {
-			v.lsp.Open(path, lang, string(buf.Source))
-		}
+	if v.lsp != nil && buf != nil && lang != "" {
+		v.lsp.Open(path, lang, string(buf.Source))
 	}
 	// Instant parse-error markers, without waiting for (or needing) a
 	// language server — see refreshSyntaxDiagnostics.
@@ -990,6 +1053,19 @@ func (v *View) LanguageStatus() string {
 	}
 }
 
+// TabModeStatus is the active tab's indent style, for the status bar (see
+// cmd/nib/main.go): "spaces:2", "tabs:4", or "" if no file is open.
+func (v *View) TabModeStatus() string {
+	t := v.activeTab()
+	if t == nil || t.buf == nil {
+		return ""
+	}
+	if t.buf.IndentUseSpaces {
+		return fmt.Sprintf("spaces:%d", tabWidthOf(t))
+	}
+	return fmt.Sprintf("tabs:%d", tabWidthOf(t))
+}
+
 // CursorPosition implements layout.CursorProvider: it reports where, in
 // this View's own Window coordinates, the terminal's native cursor should
 // be shown. It is only meaningful right after Render has run (Render is
@@ -1000,7 +1076,7 @@ func (v *View) CursorPosition() (int, int, bool) {
 	if t == nil || t.buf == nil {
 		return 0, 0, false
 	}
-	col := gutterWidthFor(t) + cursorDisplayColumn(t, v.tabWidth) - t.leftCol
+	col := gutterWidthFor(t) + cursorDisplayColumn(t, tabWidthOf(t)) - t.leftCol
 	row := 1 + (t.cursorLn - t.topLine) // +1: row 0 is the tab bar
 	return col, row, true
 }
@@ -1035,7 +1111,7 @@ func (v *View) Render(w layout.Window) {
 	// tab bar; layout.Window has no sub-window primitive of its own (that
 	// lives one level down, on the real vaxis.Window), so the offset is
 	// applied directly to the row index passed to Println instead.
-	renderBody(w, t, v.tabWidth, cols, bodyRows, 1, v.searchMatches)
+	renderBody(w, t, tabWidthOf(t), cols, bodyRows, 1, v.searchMatches, v.showWhitespace)
 
 	// Popups draw last so they sit on top of the file content. Only one can
 	// be up at a time: completion belongs to Insert mode, the rest
@@ -1257,7 +1333,7 @@ func disambiguatePaths(paths []string) []string {
 	}
 }
 
-func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, searchMatches []searchMatch) {
+func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, searchMatches []searchMatch, showWhitespace bool) {
 	if t == nil {
 		return
 	}
@@ -1328,7 +1404,12 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 				raw = applyHighlightRanges(raw, selRanges, selectionStyle())
 			}
 		}
-		expandedSegs := textwidth.ExpandTabsSegments(raw, tabWidth)
+		var expandedSegs []layout.Segment
+		if showWhitespace {
+			expandedSegs = expandTabsForDisplay(raw, tabWidth)
+		} else {
+			expandedSegs = textwidth.ExpandTabsSegments(raw, tabWidth)
+		}
 		visible := textwidth.SliceSegmentsByDisplayColumn(expandedSegs, t.leftCol, contentWidth)
 		if selToEOL {
 			// A line whose selection runs past its last rune has the line
@@ -1385,6 +1466,18 @@ func gutterWidthFor(t *tab) int {
 		return 3
 	}
 	return len(fmt.Sprintf("%d", len(t.buf.Lines))) + 3
+}
+
+// tabWidthOf returns t's buffer's configured indent width — see
+// Buffer.IndentWidth — or 4 (nib's own long-standing default, matching
+// tabModeFor's own fallback) if t or its buffer is nil, or the width was
+// never derived (e.g. a *tab/*Buffer built directly in a test, bypassing
+// View.Open).
+func tabWidthOf(t *tab) int {
+	if t == nil || t.buf == nil || t.buf.IndentWidth <= 0 {
+		return 4
+	}
+	return t.buf.IndentWidth
 }
 
 // currentLineRunes returns the expanded (tabs-to-spaces) runes of t's
@@ -1611,6 +1704,13 @@ func (v *View) HandleKey(k layout.Key) bool {
 	case "show_diagnostics":
 		// Only worth a popup if the line actually has something to say.
 		v.showDiagnostics = len(t.diagnostics[t.cursorLn]) > 0
+	case "toggle_tab_mode":
+		// Flips just this file's spaces-vs-tabs choice, leaving its
+		// configured width untouched — see the "insert_tab" case in
+		// handleInsertKey for where this takes effect.
+		if t.buf != nil {
+			t.buf.IndentUseSpaces = !t.buf.IndentUseSpaces
+		}
 	case "show_hover":
 		v.triggerHover(t)
 	case "trigger_signature_help":
@@ -1722,16 +1822,16 @@ func (v *View) applyMovement(t *tab, action string, count int) bool {
 	case "line_start":
 		t.cursorCol = 0
 	case "line_end":
-		t.cursorCol = len(currentLineRunes(t, t.cursorLn, v.tabWidth))
+		t.cursorCol = len(currentLineRunes(t, t.cursorLn, tabWidthOf(t)))
 	case "first_line":
 		t.cursorLn = 0
 	case "last_line":
 		t.cursorLn = len(t.buf.Lines) - 1
 	case "word_forward", "word_backward", "word_end":
-		raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+		raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
 		newLn, newRaw := motionDestination(t.buf, t.cursorLn, raw, action, count)
 		t.cursorLn = newLn
-		t.cursorCol = expandedColForRawIndex(t.buf.Lines[newLn], newRaw, v.tabWidth)
+		t.cursorCol = expandedColForRawIndex(t.buf.Lines[newLn], newRaw, tabWidthOf(t))
 	default:
 		return false
 	}
@@ -1782,7 +1882,11 @@ func (v *View) handleInsertKey(k layout.Key) bool {
 		// Tab arrives as a Named key with no Text (same as Enter/Esc/
 		// Backspace), so the printable-text fallback below never sees
 		// it — it needs its own action, same as those.
-		v.insertText("\t")
+		if t := v.activeTab(); t != nil && t.buf != nil && t.buf.IndentUseSpaces {
+			v.insertText(strings.Repeat(" ", tabWidthOf(t)))
+		} else {
+			v.insertText("\t")
+		}
 		return true
 	case "trigger_autocomplete":
 		v.triggerAutocomplete()
@@ -2093,9 +2197,9 @@ func (v *View) insertText(s string) {
 	if t == nil || t.buf == nil {
 		return
 	}
-	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
 	newRaw := t.buf.InsertText(t.cursorLn, raw, s)
-	t.cursorCol = expandedColForRawIndex(t.buf.Lines[t.cursorLn], newRaw, v.tabWidth)
+	t.cursorCol = expandedColForRawIndex(t.buf.Lines[t.cursorLn], newRaw, tabWidthOf(t))
 	v.onBufferEdited(t)
 	v.clamp(t)
 }
@@ -2107,7 +2211,7 @@ func (v *View) insertNewline() {
 	if t == nil || t.buf == nil {
 		return
 	}
-	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
 	t.buf.SplitLine(t.cursorLn, raw)
 	t.cursorLn++
 	t.cursorCol = 0
@@ -2123,10 +2227,10 @@ func (v *View) deleteBackward() {
 	if t == nil || t.buf == nil {
 		return
 	}
-	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
 	newLn, newRaw := t.buf.DeleteBackward(t.cursorLn, raw)
 	t.cursorLn = newLn
-	t.cursorCol = expandedColForRawIndex(t.buf.Lines[newLn], newRaw, v.tabWidth)
+	t.cursorCol = expandedColForRawIndex(t.buf.Lines[newLn], newRaw, tabWidthOf(t))
 	v.onBufferEdited(t)
 	v.clamp(t)
 }
@@ -2140,13 +2244,13 @@ func (v *View) deleteCharForward(t *tab) {
 	if t.buf == nil {
 		return
 	}
-	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
 	if raw >= len([]rune(t.buf.Lines[t.cursorLn])) {
 		return
 	}
 	before := snapshotTab(t)
 	_, newRaw := t.buf.DeleteBackward(t.cursorLn, raw+1) // deletes exactly the rune at raw
-	t.cursorCol = expandedColForRawIndex(t.buf.Lines[t.cursorLn], newRaw, v.tabWidth)
+	t.cursorCol = expandedColForRawIndex(t.buf.Lines[t.cursorLn], newRaw, tabWidthOf(t))
 	v.pushUndoIfChanged(t, before)
 	v.onBufferEdited(t)
 }
@@ -2160,10 +2264,10 @@ func (v *View) deleteCharBackward(t *tab) {
 		return
 	}
 	before := snapshotTab(t)
-	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
 	newLn, newRaw := t.buf.DeleteBackward(t.cursorLn, raw)
 	t.cursorLn = newLn
-	t.cursorCol = expandedColForRawIndex(t.buf.Lines[newLn], newRaw, v.tabWidth)
+	t.cursorCol = expandedColForRawIndex(t.buf.Lines[newLn], newRaw, tabWidthOf(t))
 	v.pushUndoIfChanged(t, before)
 	v.onBufferEdited(t)
 }
@@ -2324,7 +2428,7 @@ func (v *View) clamp(t *tab) {
 	if t.cursorCol < 0 {
 		t.cursorCol = 0
 	}
-	if max := len(currentLineRunes(t, t.cursorLn, v.tabWidth)); t.cursorCol > max {
+	if max := len(currentLineRunes(t, t.cursorLn, tabWidthOf(t))); t.cursorCol > max {
 		t.cursorCol = max
 	}
 }

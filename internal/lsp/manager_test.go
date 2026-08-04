@@ -75,7 +75,7 @@ func (f *fakeClient) signatureHelp(string, int, int) (SignatureHelp, bool, error
 	return f.sigHelp, f.sigHelpFound, f.sigHelpErr
 }
 
-func (f *fakeClient) formatting(string, int) ([]TextEdit, error) {
+func (f *fakeClient) formatting(string, int, bool) ([]TextEdit, error) {
 	f.formatCalls++
 	return f.formatEdits, f.formatErr
 }
@@ -488,7 +488,7 @@ func TestFormattingReturnsFalseWithNoServer(t *testing.T) {
 	m := NewManager("/project")
 	called := false
 
-	if m.Formatting("/project/a.go", "go", 4, func([]TextEdit, bool) { called = true }) {
+	if m.Formatting("/project/a.go", "go", 4, false, func([]TextEdit, bool) { called = true }) {
 		t.Fatal("expected Formatting to report it could not dispatch")
 	}
 	if called {
@@ -505,7 +505,7 @@ func TestFormattingDeliversEditsThroughPost(t *testing.T) {
 
 	var got []TextEdit
 	var gotOK bool
-	if !m.Formatting("/project/a.go", "go", 4, func(edits []TextEdit, ok bool) { got, gotOK = edits, ok }) {
+	if !m.Formatting("/project/a.go", "go", 4, false, func(edits []TextEdit, ok bool) { got, gotOK = edits, ok }) {
 		t.Fatal("expected Formatting to dispatch")
 	}
 	(<-results).Apply()
@@ -523,7 +523,7 @@ func TestFormattingErrorIsReportedAsNoEdits(t *testing.T) {
 
 	var gotOK bool
 	var gotEdits []TextEdit
-	m.Formatting("/project/a.go", "go", 4, func(edits []TextEdit, ok bool) { gotEdits, gotOK = edits, ok })
+	m.Formatting("/project/a.go", "go", 4, false, func(edits []TextEdit, ok bool) { gotEdits, gotOK = edits, ok })
 	(<-results).Apply()
 
 	if gotOK || len(gotEdits) != 0 {

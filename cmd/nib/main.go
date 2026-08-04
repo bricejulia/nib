@@ -150,6 +150,19 @@ func mergedLSPServers(cfg *config.Config) map[string][]string {
 	return servers
 }
 
+// derivedTabModes merges the user config's "tabmode" lines over nib's own
+// unconfigured default (real tabs, width 4), the same "config wins"
+// shape mergedLSPServers uses for language servers — see
+// editor.View.SetTabModeDefaults, which every editor pane's Open derives
+// each newly opened file's indent style from.
+func derivedTabModes(cfg *config.Config) map[string]config.TabMode {
+	modes := map[string]config.TabMode{"default": {UseSpaces: false, Width: 4}}
+	for lang, mode := range cfg.TabModes() {
+		modes[lang] = mode
+	}
+	return modes
+}
+
 // resolveTheme merges the user's "theme = <name>" pick and any "color ="
 // overrides into the theme every View's Render reads from — see
 // internal/theme. Unknown role names (a color line with a typo'd role) are
@@ -260,6 +273,8 @@ func run() error {
 
 	editorView := editor.NewView()
 	editorView.SetKeymap(cfg.Overrides("editor"))
+	editorView.SetTabModeDefaults(derivedTabModes(cfg))
+	editorView.SetShowWhitespace(cfg.ShowWhitespace())
 	editorView.SetBufferStore(bufferStore)
 	editorView.SetRegister(yankRegister)
 	editorView.SetLSPManager(lspManager)
@@ -329,9 +344,13 @@ func run() error {
 	}
 
 	statusBarView.TextFunc = func() string {
-		parts := make([]string, 0, 4)
+		parts := make([]string, 0, 5)
 		if cursor := activeEditorPane.view.StatusText(); cursor != "" {
 			parts = append(parts, cursor)
+		}
+		// The active file's indent style — see editor.View.TabModeStatus.
+		if tabMode := activeEditorPane.view.TabModeStatus(); tabMode != "" {
+			parts = append(parts, tabMode)
 		}
 		// The active file's language plus whether a language server is
 		// running for it — see editor.View.LanguageStatus.
@@ -586,6 +605,8 @@ func run() error {
 		}
 		newView := editor.NewView()
 		newView.SetKeymap(cfg.Overrides("editor"))
+		newView.SetTabModeDefaults(derivedTabModes(cfg))
+		newView.SetShowWhitespace(cfg.ShowWhitespace())
 		newView.SetBufferStore(bufferStore)
 		newView.SetRegister(yankRegister)
 		newView.SetLSPManager(lspManager)
@@ -807,6 +828,8 @@ func run() error {
 		treeView.SetKeymap(cfg.Overrides("filetree"))
 		for _, p := range editorPanes {
 			p.view.SetKeymap(cfg.Overrides("editor"))
+			p.view.SetTabModeDefaults(derivedTabModes(cfg))
+			p.view.SetShowWhitespace(cfg.ShowWhitespace())
 		}
 		finderView.SetKeymap(cfg.Overrides("finder"))
 		finderView.Replace().SetKeymap(cfg.Overrides("replace"))

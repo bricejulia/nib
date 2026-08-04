@@ -304,18 +304,19 @@ func signatureHelpResult(raw json.RawMessage) (SignatureHelp, bool, error) {
 }
 
 // formatting asks the server to reformat path's entire document. tabWidth
-// becomes FormattingOptions.TabSize; InsertSpaces is always false, matching
-// nib's own real-tab convention. Blocks until the server answers or
-// requestTimeout elapses, so callers must run it off the UI goroutine. A
-// nil/empty edit slice is a normal "nothing to change" answer, not an
-// error.
-func (c *Client) formatting(path string, tabWidth int) ([]TextEdit, error) {
+// becomes FormattingOptions.TabSize; insertSpaces becomes InsertSpaces,
+// matching the file's own actual indent style (see editor.Buffer.
+// IndentUseSpaces) rather than a fixed convention. Blocks until the
+// server answers or requestTimeout elapses, so callers must run it off
+// the UI goroutine. A nil/empty edit slice is a normal "nothing to
+// change" answer, not an error.
+func (c *Client) formatting(path string, tabWidth int, insertSpaces bool) ([]TextEdit, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 
 	params := DocumentFormattingParams{
 		TextDocument: TextDocumentIdentifier{URI: pathToURI(path)},
-		Options:      FormattingOptions{TabSize: tabWidth, InsertSpaces: false},
+		Options:      FormattingOptions{TabSize: tabWidth, InsertSpaces: insertSpaces},
 	}
 	var raw json.RawMessage
 	if err := c.conn.Call(ctx, methodFormatting, params, &raw); err != nil {

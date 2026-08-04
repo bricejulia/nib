@@ -136,7 +136,7 @@ func (v *View) applyTextObject(t *tab, op pendingOperator) {
 		return
 	}
 	line := t.buf.Lines[t.cursorLn]
-	raw := rawIndexForExpandedCol(line, t.cursorCol, v.tabWidth)
+	raw := rawIndexForExpandedCol(line, t.cursorCol, tabWidthOf(t))
 
 	var start, end int
 	var ok bool
@@ -182,7 +182,7 @@ func (v *View) applyCharwiseOperatorMotion(t *tab, op, action string, count int)
 		return
 	}
 	cursorLn, cursorCol := t.cursorLn, t.cursorCol
-	cursorRaw := rawIndexForExpandedCol(t.buf.Lines[cursorLn], cursorCol, v.tabWidth)
+	cursorRaw := rawIndexForExpandedCol(t.buf.Lines[cursorLn], cursorCol, tabWidthOf(t))
 
 	motionAction := action
 	inclusive := operatorMotions[action] == motionInclusive

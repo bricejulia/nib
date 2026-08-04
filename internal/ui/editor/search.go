@@ -262,7 +262,7 @@ func (v *View) stepSearch(forward bool) {
 		debuglog.Warn("search: no match for %q", v.searchPattern)
 		return
 	}
-	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
 	v.jumpToMatch(v.matchIndexFrom(t.cursorLn, raw, forward))
 }
 
@@ -295,6 +295,6 @@ func (v *View) jumpToMatch(i int) {
 	}
 	m := v.searchMatches[i]
 	t.cursorLn = m.ln
-	t.cursorCol = expandedColForRawIndexIn(t.buf, m.ln, m.start, v.tabWidth)
+	t.cursorCol = expandedColForRawIndexIn(t.buf, m.ln, m.start, tabWidthOf(t))
 	v.clamp(t)
 }

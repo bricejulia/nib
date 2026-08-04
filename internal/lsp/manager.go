@@ -85,7 +85,7 @@ type serverClient interface {
 	completion(path string, line, character int) ([]CompletionItem, error)
 	hover(path string, line, character int) (string, bool, error)
 	signatureHelp(path string, line, character int) (SignatureHelp, bool, error)
-	formatting(path string, tabWidth int) ([]TextEdit, error)
+	formatting(path string, tabWidth int, insertSpaces bool) ([]TextEdit, error)
 	Close() error
 }
 
@@ -410,7 +410,7 @@ func (m *Manager) SignatureHelp(path, language string, line, character int, appl
 // if no request could be made at all (no server for that language).
 //
 // Same async shape as Definition/Completion.
-func (m *Manager) Formatting(path, language string, tabWidth int, apply func(edits []TextEdit, ok bool)) bool {
+func (m *Manager) Formatting(path, language string, tabWidth int, insertSpaces bool, apply func(edits []TextEdit, ok bool)) bool {
 	m.mu.Lock()
 	c := m.clients[language]
 	m.mu.Unlock()
@@ -419,7 +419,7 @@ func (m *Manager) Formatting(path, language string, tabWidth int, apply func(edi
 	}
 
 	go func() {
-		edits, err := c.formatting(path, tabWidth)
+		edits, err := c.formatting(path, tabWidth, insertSpaces)
 		if err != nil {
 			debuglog.Warn("lsp: formatting %s: %v", path, err)
 			edits = nil
