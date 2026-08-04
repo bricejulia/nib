@@ -60,6 +60,62 @@ func wordRangeAt(line string, pos int) (start, end int, ok bool) {
 	return start, end, true
 }
 
+// wordObjectRange returns the half-open RAW rune range of the word/
+// punctuation/blank run touching rune index rawCol in line — vim's "iw"
+// ("inner word"). A sibling of wordRangeAt, not a generalization of it:
+// wordRangeAt is deliberately identifier-only (isIdentRune), and
+// TestDoubleClickOffAWordSelectsNothing depends on that for double-click
+// selection, whereas "iw" needs the three-way classification the word
+// motions use (classifyRune) so a punctuation run is its own object too —
+// vim's own "iw" on "foo.bar" with the cursor on "." selects just the ".".
+// ok is false only for a rawCol outside line's own bounds.
+func wordObjectRange(line string, rawCol int) (start, end int, ok bool) {
+	runes := []rune(line)
+	if rawCol < 0 || rawCol >= len(runes) {
+		return 0, 0, false
+	}
+	class := classifyRune(runes[rawCol])
+	start, end = rawCol, rawCol+1
+	for start > 0 && classifyRune(runes[start-1]) == class {
+		start--
+	}
+	for end < len(runes) && classifyRune(runes[end]) == class {
+		end++
+	}
+	return start, end, true
+}
+
+// aWordObjectRange returns the half-open RAW rune range of the word/
+// punctuation run touching rawCol PLUS one adjacent run of blanks — vim's
+// "aw" ("a word"): trailing whitespace if there is any, otherwise leading
+// whitespace. A rawCol sitting ON whitespace instead selects that blank
+// run plus the word that follows it, matching vim's own "aw on blank" rule.
+// ok mirrors wordObjectRange's.
+func aWordObjectRange(line string, rawCol int) (start, end int, ok bool) {
+	runes := []rune(line)
+	start, end, ok = wordObjectRange(line, rawCol)
+	if !ok {
+		return 0, 0, false
+	}
+
+	if classifyRune(runes[rawCol]) == classBlank {
+		for end < len(runes) && classifyRune(runes[end]) != classBlank {
+			end++
+		}
+		return start, end, true
+	}
+	if end < len(runes) && classifyRune(runes[end]) == classBlank {
+		for end < len(runes) && classifyRune(runes[end]) == classBlank {
+			end++
+		}
+		return start, end, true
+	}
+	for start > 0 && classifyRune(runes[start-1]) == classBlank {
+		start--
+	}
+	return start, end, true
+}
+
 // byteOffsetForPosition converts a (line, raw rune column) position into a
 // byte offset into buf.Source — the units gotreesitter's Tree/Node and
 // DefinitionSpan/CallRef all use. Valid because Source is exactly

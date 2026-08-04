@@ -466,8 +466,8 @@ func TestYankCopiesTheSelectionOnTheFirstPress(t *testing.T) {
 	if tb.hasSel {
 		t.Error("the selection should be consumed by the copy")
 	}
-	if v.pendingAction != "" {
-		t.Errorf("pendingAction = %q, want empty — a selection yank must not arm a doubled operator", v.pendingAction)
+	if v.pendingOp.action != "" {
+		t.Errorf("pendingOp.action = %q, want empty — a selection yank must not arm a doubled operator", v.pendingOp.action)
 	}
 }
 
@@ -476,8 +476,8 @@ func TestYankWithNoSelectionStillNeedsDoubling(t *testing.T) {
 	v, tb := selectionView("hello", "world")
 
 	v.HandleKey(layout.Key{Text: "y"})
-	if v.pendingAction != "yank_line" {
-		t.Fatalf("pendingAction = %q, want yank_line after one press", v.pendingAction)
+	if v.pendingOp.action != "yank_line" {
+		t.Fatalf("pendingOp.action = %q, want yank_line after one press", v.pendingOp.action)
 	}
 	v.HandleKey(layout.Key{Text: "y"})
 

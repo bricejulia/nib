@@ -31,6 +31,137 @@ func TestDeleteLineDoubledDeletesTheCursorLine(t *testing.T) {
 	}
 }
 
+func TestCountedDDDeletesThatManyLinesFromTheCursor(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"one", "two", "three", "four", "five"}}}}
+	v.active = 0
+	v.activeTab().cursorLn = 1
+
+	pressKeys(v, "3dd")
+
+	if got := strings.Join(v.activeTab().buf.Lines, "|"); got != "one|five" {
+		t.Fatalf("Lines = %q, want %q", got, "one|five")
+	}
+}
+
+func TestDCountDDeletesThatManyLinesFromTheCursor(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"one", "two", "three", "four", "five"}}}}
+	v.active = 0
+	v.activeTab().cursorLn = 1
+
+	pressKeys(v, "d3d")
+
+	if got := strings.Join(v.activeTab().buf.Lines, "|"); got != "one|five" {
+		t.Fatalf("Lines = %q, want %q", got, "one|five")
+	}
+}
+
+func TestCountsBeforeAndAfterTheOperatorMultiply(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"1", "2", "3", "4", "5", "6", "7"}}}}
+	v.active = 0
+
+	pressKeys(v, "2d3d") // 2 * 3 = 6 lines, vim's own count-multiplication rule
+
+	if got := strings.Join(v.activeTab().buf.Lines, "|"); got != "7" {
+		t.Fatalf("Lines = %q, want %q", got, "7")
+	}
+}
+
+func TestCountedYYYanksThatManyLinesWithoutDeleting(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"one", "two", "three"}}}}
+	v.active = 0
+
+	pressKeys(v, "2yy")
+
+	if got := strings.Join(v.activeTab().buf.Lines, "|"); got != "one|two|three" {
+		t.Fatalf("yank changed the buffer: %q", got)
+	}
+	if got := strings.Join(v.register.Lines(), "|"); got != "one|two" {
+		t.Fatalf("register = %q, want %q", got, "one|two")
+	}
+}
+
+func TestCCClearsTheLineAndEntersInsertMode(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"one", "two", "three"}}}}
+	v.active = 0
+	v.activeTab().cursorLn = 1
+
+	pressKeys(v, "cc")
+
+	if got := strings.Join(v.activeTab().buf.Lines, "|"); got != "one||three" {
+		t.Fatalf("Lines = %q, want %q (the middle line cleared, not removed)", got, "one||three")
+	}
+	if v.mode != modeInsert {
+		t.Fatalf("mode = %v, want modeInsert", v.mode)
+	}
+	if got := strings.Join(v.register.Lines(), "|"); got != "two" {
+		t.Fatalf("register = %q, want the cleared text %q", got, "two")
+	}
+}
+
+func TestCountedCCClearsThatManyLines(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"one", "two", "three", "four"}}}}
+	v.active = 0
+	v.activeTab().cursorLn = 1
+
+	pressKeys(v, "2cc")
+
+	if got := strings.Join(v.activeTab().buf.Lines, "|"); got != "one||four" {
+		t.Fatalf("Lines = %q, want %q", got, "one||four")
+	}
+}
+
+func TestCCOnEntireBufferLeavesExactlyOneBlankLine(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"one", "two"}}}}
+	v.active = 0
+
+	pressKeys(v, "2cc")
+
+	if got := strings.Join(v.activeTab().buf.Lines, "|"); got != "" {
+		t.Fatalf("Lines = %q, want a single empty line", got)
+	}
+	if len(v.activeTab().buf.Lines) != 1 {
+		t.Fatalf("Lines = %+v, want exactly one empty line, not two", v.activeTab().buf.Lines)
+	}
+}
+
+func TestCCIsOneUndoEntryCoveringClearAndRetype(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"one", "two", "three"}}}}
+	v.active = 0
+	v.activeTab().cursorLn = 1
+
+	pressKeys(v, "cc")
+	pressKeys(v, "REPLACED")
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	if got := strings.Join(v.activeTab().buf.Lines, "|"); got != "one|REPLACED|three" {
+		t.Fatalf("Lines = %q, want %q", got, "one|REPLACED|three")
+	}
+	v.undo(v.activeTab())
+	if got := strings.Join(v.activeTab().buf.Lines, "|"); got != "one|two|three" {
+		t.Fatalf("after undo, Lines = %q, want the original restored in one step", got)
+	}
+}
+
+func TestCountedBareMotionRepeatsTheMovement(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"one", "two", "three", "four", "five"}}}}
+	v.active = 0
+
+	pressKeys(v, "3j")
+
+	if ln := v.activeTab().cursorLn; ln != 3 {
+		t.Fatalf("cursorLn = %d, want 3", ln)
+	}
+}
+
 func TestSingleDDoesNotDeleteAnything(t *testing.T) {
 	v := NewView()
 	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"one", "two"}}}}
@@ -42,8 +173,8 @@ func TestSingleDDoesNotDeleteAnything(t *testing.T) {
 	if got := strings.Join(v.activeTab().buf.Lines, "|"); got != "one|two" {
 		t.Fatalf("a lone 'd' changed the buffer: %q", got)
 	}
-	if v.pendingAction != "delete_line" {
-		t.Fatalf("pendingAction = %q, want %q", v.pendingAction, "delete_line")
+	if v.pendingOp.action != "delete_line" {
+		t.Fatalf("pendingOp.action = %q, want %q", v.pendingOp.action, "delete_line")
 	}
 }
 
@@ -57,8 +188,8 @@ func TestKeyBetweenTheTwoDsAbortsTheDelete(t *testing.T) {
 	if got := strings.Join(v.activeTab().buf.Lines, "|"); got != "one|two" {
 		t.Fatalf("Lines = %q, want the buffer untouched", got)
 	}
-	if v.pendingAction != "delete_line" {
-		t.Fatalf("pendingAction = %q, want the trailing 'd' to have re-armed", v.pendingAction)
+	if v.pendingOp.action != "delete_line" {
+		t.Fatalf("pendingOp.action = %q, want the trailing 'd' to have re-armed", v.pendingOp.action)
 	}
 }
 
@@ -69,8 +200,8 @@ func TestUnboundKeyClearsAPendingOperator(t *testing.T) {
 
 	v.HandleKey(layout.Key{Text: "d"})
 	v.HandleKey(layout.Key{Text: "é"}) // bound to nothing in Normal mode
-	if v.pendingAction != "" {
-		t.Fatalf("pendingAction = %q, want cleared by an unbound key", v.pendingAction)
+	if v.pendingOp.action != "" {
+		t.Fatalf("pendingOp.action = %q, want cleared by an unbound key", v.pendingOp.action)
 	}
 
 	v.HandleKey(layout.Key{Text: "d"}) // this is a FIRST 'd' again, not a second

@@ -69,38 +69,129 @@ func (r *Register) Lines() []string {
 	return append([]string(nil), r.lines...)
 }
 
-// yankLine implements vim's "yy": copies the cursor's line into the
-// register, leaving the buffer and the cursor entirely alone. No undo entry,
-// since nothing changed.
-func (v *View) yankLine(t *tab) {
+// linewiseEnd returns the last line index of a count-line linewise range
+// starting at the cursor, clamped to the buffer — the inclusive end
+// deleteLines/yankLines/changeLines all need. Shared so "dd"/"3dd" and
+// "yy"/"3yy" and "cc"/"3cc" clamp identically at the end of the buffer.
+func linewiseEnd(t *tab, count int) int {
+	end := t.cursorLn + count - 1
+	if last := len(t.buf.Lines) - 1; end > last {
+		end = last
+	}
+	return end
+}
+
+// yankLines implements vim's "yy" (count == 1) and "3yy"/"y3y" (count > 1):
+// copies count lines starting at the cursor into the register, leaving the
+// buffer and the cursor entirely alone. No undo entry, since nothing
+// changed.
+func (v *View) yankLines(t *tab, count int) {
 	if t.buf == nil {
 		return
 	}
-	v.register.Set([]string{t.buf.Lines[t.cursorLn]})
+	end := linewiseEnd(t, count)
+	v.register.Set(t.buf.Lines[t.cursorLn : end+1])
 }
 
-// deleteLine implements vim's "dd": cuts the cursor's line — into the
-// register, like vim (a delete IS a cut; "p" puts it back) — and leaves the
-// cursor at the start of whatever line moved up into its place, or of the
-// new last line if the deleted one was last. Recorded as its own undo entry,
-// like "x"/"X": a single "dd" is already a complete change.
-func (v *View) deleteLine(t *tab) {
+// deleteLines implements vim's "dd" (count == 1) and "3dd"/"d3d" (count > 1):
+// cuts count lines starting at the cursor — into the register, like vim (a
+// delete IS a cut; "p" puts it back) — and leaves the cursor at the start of
+// whatever line moved up into their place, or of the new last line if the
+// deleted range reached the end. Recorded as its own undo entry, like
+// "x"/"X": a single "dd" is already a complete change.
+func (v *View) deleteLines(t *tab, count int) {
 	if t.buf == nil {
 		return
 	}
 	before := snapshotTab(t)
-	v.register.Set([]string{t.buf.DeleteLine(t.cursorLn)})
+	end := linewiseEnd(t, count)
+	v.register.Set(t.buf.DeleteLines(t.cursorLn, end))
 	t.cursorCol = 0
 	v.pushUndoIfChanged(t, before)
 	v.onBufferEdited(t)
-	v.clamp(t) // the deleted line may have been the last one
+	v.clamp(t) // the deleted range may have reached the last line
+}
+
+// changeLines implements vim's "cc" (count == 1) and "3cc" (count > 1):
+// clears count lines starting at the cursor, leaving one blank line in
+// their place and the cursor on it at column 0 — vim's own "cc" quirk of
+// clearing the line's content rather than removing the line entirely.
+// Deleted text still goes to the register, like "dd". Must be called after
+// enterInsertMode has already captured the pre-edit snapshot (see "o"'s
+// openLineBelow, the same shape): this only mutates the buffer, and the
+// eventual exitInsertMode is what commits the clear plus whatever gets
+// typed next as one undo entry.
+func (v *View) changeLines(t *tab, count int) {
+	if t.buf == nil {
+		return
+	}
+	end := linewiseEnd(t, count)
+	// DeleteLines already leaves one blank line behind when the deleted
+	// range is the WHOLE buffer, so inserting another here would leave two.
+	wholeBuffer := t.cursorLn == 0 && end == len(t.buf.Lines)-1
+	v.register.Set(t.buf.DeleteLines(t.cursorLn, end))
+	if !wholeBuffer {
+		t.buf.InsertLines(t.cursorLn, []string{""})
+	}
+	t.cursorCol = 0
+	v.onBufferEdited(t)
+	v.clamp(t)
+}
+
+// deleteRange implements a charwise delete operator (e.g. "dw", "d$",
+// "diw") over the raw-rune range [startLn,startCol, endLn,endCol) —
+// end-exclusive, matching Buffer.DeleteRange/TextBetween — leaving the
+// cursor at the deletion point (startLn,startCol), the same way "x" leaves
+// it where the deleted rune was. Deleted text goes to the register
+// charwise, like a mouse-selection "y" (see copySelection). Recorded as its
+// own undo entry.
+func (v *View) deleteRange(t *tab, startLn, startCol, endLn, endCol int) {
+	if t.buf == nil {
+		return
+	}
+	before := snapshotTab(t)
+	v.register.SetCharwise(t.buf.DeleteRange(startLn, startCol, endLn, endCol))
+	t.cursorLn = startLn
+	t.cursorCol = expandedColForRawIndex(t.buf.Lines[startLn], startCol, v.tabWidth)
+	v.pushUndoIfChanged(t, before)
+	v.onBufferEdited(t)
+	v.clamp(t)
+}
+
+// yankRange implements a charwise yank operator (e.g. "yw", "y$", "yiw")
+// over the raw-rune range [startLn,startCol, endLn,endCol) — leaves the
+// buffer and cursor alone, only fills the register. No undo entry, since
+// nothing changed.
+func (v *View) yankRange(t *tab, startLn, startCol, endLn, endCol int) {
+	if t.buf == nil {
+		return
+	}
+	v.register.SetCharwise(t.buf.TextBetween(startLn, startCol, endLn, endCol))
+}
+
+// changeRange implements a charwise change operator (e.g. "cw", "ciw") over
+// the raw-rune range [startLn,startCol, endLn,endCol): deletes it, moving
+// the cursor to the deletion point. Deleted text still goes to the
+// register, like deleteRange. Must be called after enterInsertMode has
+// already captured the pre-edit snapshot, the same shape as changeLines —
+// this only mutates the buffer, leaving the eventual exitInsertMode to
+// commit the delete plus whatever gets typed next as one undo entry.
+func (v *View) changeRange(t *tab, startLn, startCol, endLn, endCol int) {
+	if t.buf == nil {
+		return
+	}
+	v.register.SetCharwise(t.buf.DeleteRange(startLn, startCol, endLn, endCol))
+	t.cursorLn = startLn
+	t.cursorCol = expandedColForRawIndex(t.buf.Lines[startLn], startCol, v.tabWidth)
+	v.onBufferEdited(t)
+	v.clamp(t)
 }
 
 // putAfter implements vim's "p", in whichever of its two forms the register
 // holds (see Register): linewise, inserting whole lines below the cursor's
 // line and moving the cursor to the start of the first of them; or charwise,
 // splicing a fragment in just after the cursor's character. A no-op on an
-// empty register. One undo entry either way, same as deleteLine.
+// empty register. One undo entry either way, same as deleteLines.
 func (v *View) putAfter(t *tab) {
 	if t.buf == nil {
 		return

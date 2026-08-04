@@ -198,22 +198,96 @@ func (b *Buffer) DeleteBackward(ln, col int) (newLn, newCol int) {
 
 // DeleteLine removes line ln entirely — the linewise counterpart to
 // DeleteBackward's single rune, used by vim's "dd". It returns the removed
-// line's text, so the caller can put it in a register. Deleting the only
-// line leaves the buffer holding one empty line rather than none, since
-// every other method here (and Load itself) relies on Lines never being
-// empty. Out-of-range ln is a no-op returning "".
+// line's text, so the caller can put it in a register. Out-of-range ln is a
+// no-op returning "". A thin wrapper over DeleteLines(ln, ln) — see there
+// for the "buffer never ends up with zero lines" invariant.
 func (b *Buffer) DeleteLine(ln int) string {
-	if ln < 0 || ln >= len(b.Lines) {
+	removed := b.DeleteLines(ln, ln)
+	if len(removed) == 0 {
 		return ""
 	}
-	removed := b.Lines[ln]
-	if len(b.Lines) == 1 {
-		b.Lines[0] = ""
-		b.spliceHighlight(0, 1, 1) // the line survives, emptied, so its entry does too
-	} else {
-		b.Lines = append(b.Lines[:ln], b.Lines[ln+1:]...)
-		b.spliceHighlight(ln, 1, 0)
+	return removed[0]
+}
+
+// DeleteLines removes the inclusive line range [startLn, endLn] in one
+// resync/spliceHighlight pass — the multi-line generalization of DeleteLine,
+// needed for vim's "3dd"/"d3d" and linewise operator+motion combinations.
+// Deleting every line leaves the buffer holding one empty line rather than
+// none, exactly like DeleteLine, since every other method here (and Load
+// itself) relies on Lines never being empty; a caller that needs to tell
+// "this delete emptied the whole buffer" apart from "there's one line left
+// over" (e.g. "cc"'s guard against double-inserting a blank line) must check
+// that before calling, not after. Arguments in the wrong order are swapped,
+// matching TextBetween. Returns the removed lines, or nil for an
+// out-of-range startLn (matching DeleteLine's "" for an out-of-range ln).
+func (b *Buffer) DeleteLines(startLn, endLn int) []string {
+	if endLn < startLn {
+		startLn, endLn = endLn, startLn
 	}
+	if startLn < 0 || startLn >= len(b.Lines) {
+		return nil
+	}
+	if endLn >= len(b.Lines) {
+		endLn = len(b.Lines) - 1
+	}
+
+	removed := append([]string(nil), b.Lines[startLn:endLn+1]...)
+	if startLn == 0 && endLn == len(b.Lines)-1 {
+		b.Lines = []string{""}
+		b.spliceHighlight(0, len(removed), 1) // the buffer survives as one empty line, so one entry does too
+	} else {
+		b.Lines = append(b.Lines[:startLn], b.Lines[endLn+1:]...)
+		b.spliceHighlight(startLn, len(removed), 0)
+	}
+	b.resync()
+	return removed
+}
+
+// DeleteRange removes the charwise range TextBetween reads — start
+// inclusive, end exclusive — and returns the removed text in TextBetween's
+// per-line shape (tail of the first line, whole lines between, head of the
+// last). Same conventions as TextBetween: columns are raw rune indices,
+// arguments in the wrong order are swapped rather than rejected, and
+// out-of-range lines/columns clamp rather than panic. A no-op (returns nil)
+// for an empty range.
+func (b *Buffer) DeleteRange(startLn, startCol, endLn, endCol int) []string {
+	if len(b.Lines) == 0 {
+		return nil
+	}
+	if endLn < startLn || (endLn == startLn && endCol < startCol) {
+		startLn, startCol, endLn, endCol = endLn, endCol, startLn, startCol
+	}
+	startLn = clampIndex(startLn, len(b.Lines)-1)
+	endLn = clampIndex(endLn, len(b.Lines)-1)
+
+	runesAt := func(ln int) []rune { return []rune(b.Lines[ln]) }
+	startCol = clampIndex(startCol, len(runesAt(startLn)))
+	endCol = clampIndex(endCol, len(runesAt(endLn)))
+
+	if startLn == endLn {
+		if startCol == endCol {
+			return nil
+		}
+		runes := runesAt(startLn)
+		removed := string(runes[startCol:endCol])
+		b.Lines[startLn] = string(runes[:startCol]) + string(runes[endCol:])
+		b.spliceHighlight(startLn, 1, 1)
+		b.resync()
+		return []string{removed}
+	}
+
+	startRunes := runesAt(startLn)
+	endRunes := runesAt(endLn)
+	removed := make([]string, 0, endLn-startLn+1)
+	removed = append(removed, string(startRunes[startCol:]))
+	for ln := startLn + 1; ln < endLn; ln++ {
+		removed = append(removed, b.Lines[ln])
+	}
+	removed = append(removed, string(endRunes[:endCol]))
+
+	b.Lines[startLn] = string(startRunes[:startCol]) + string(endRunes[endCol:])
+	b.Lines = append(b.Lines[:startLn+1], b.Lines[endLn+1:]...)
+	b.spliceHighlight(startLn, endLn-startLn+1, 1)
 	b.resync()
 	return removed
 }

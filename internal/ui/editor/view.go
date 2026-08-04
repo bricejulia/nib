@@ -23,13 +23,16 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "[", Action: "prev_tab"},
 	{Trigger: "x", Action: "delete_char_forward"},
 	{Trigger: "X", Action: "delete_char_backward"},
-	// "d" and "y" are vim's doubled linewise operators, "dd" and "yy": the
-	// first press only arms the action, the second runs it (see
-	// pendingAction). Bound as one trigger each rather than as a literal
-	// two-key sequence because a trigger is a single key by construction —
-	// see config.Normalize.
+	// "d", "y" and "c" are vim's operators: delete, yank, change. Each arms
+	// on the first press (see pendingOp) and either combines with the next
+	// motion/text-object ("dw", "ciw"), or, on an immediate second press of
+	// the SAME operator, runs linewise over the current line(s) ("dd",
+	// "yy", "cc" — see tryCompleteOperator/applyLinewiseOperator). Bound as
+	// one trigger each rather than as a literal two-key sequence because a
+	// trigger is a single key by construction — see config.Normalize.
 	{Trigger: "d", Action: "delete_line"},
 	{Trigger: "y", Action: "yank_line"},
+	{Trigger: "c", Action: "change_line"},
 	{Trigger: "p", Action: "put_after"},
 	{Trigger: "Down", Action: "move_down"},
 	{Trigger: "j", Action: "move_down"},
@@ -47,6 +50,14 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "$", Action: "line_end"},
 	{Trigger: "g", Action: "first_line"},
 	{Trigger: "G", Action: "last_line"},
+	// Vim's small-word motions: the start of the next/previous word-or-
+	// punctuation run ("w"/"b"), or the end of the next one ("e") — see
+	// motion.go's classifyRune/wordForwardOnce/wordBackwardOnce/
+	// wordEndOnce. Combine with an operator ("dw", "d$", ...) via
+	// operatorMotions/tryCompleteOperator.
+	{Trigger: "w", Action: "word_forward"},
+	{Trigger: "e", Action: "word_end"},
+	{Trigger: "b", Action: "word_backward"},
 	{Trigger: "i", Action: "insert_mode"},
 	{Trigger: "a", Action: "append_mode"},
 	{Trigger: "o", Action: "append_new_line_mode"},
@@ -250,17 +261,22 @@ type View struct {
 	// vim's, not per-tab.
 	commandBuf string
 
-	// pendingAction is the doubled operator waiting for its second press —
-	// "delete_line" after the first "d" of a "dd", "yank_line" after the
-	// first "y" of a "yy" — and "" the rest of the time. Deliberately holds
-	// the ACTION, not the key: what makes "dd" fire is the same action
-	// arriving twice in a row, so a user who rebinds delete_line to some
-	// other key gets the doubling on that key instead, for free. Any other
-	// key clears it, so a mistyped "dx" deletes nothing (see HandleKey).
-	//
-	// This is not vim's full operator-pending state: there are no motions to
-	// combine ("dw", "d$") and no counts, only the doubled form.
-	pendingAction string
+	// count is the numeric prefix accumulated digit-by-digit before an
+	// operator or a motion — e.g. the "3" of "3dd" or "3j" — with 0 meaning
+	// "none typed yet", per vim's own "no count means 1" convention (see
+	// resolvedCount in motion.go). Reset to 0 the instant it's consumed:
+	// arming an operator, completing one, or running a bare motion.
+	count int
+
+	// pendingOp is the operator armed and waiting for its second press (the
+	// doubled "dd"/"yy"/"cc" form), a motion to combine with ("dw", "d$"),
+	// or a text-object prefix ("diw") — the zero value means no operator is
+	// armed. Deliberately holds the ACTION, not the key, the same way the
+	// single-slot mechanism this replaced did: what makes "dd" fire is the
+	// same action arriving twice in a row, so a user who rebinds
+	// delete_line to some other key gets the doubling on that key instead,
+	// for free. See pendingOperator and tryCompleteOperator in motion.go.
+	pendingOp pendingOperator
 
 	// OnAllTabsClosed, if set, is called whenever CloseTab/CloseAllTabs
 	// (directly, or via the ":q"/":qa" family — see closeActiveTab/
@@ -1470,13 +1486,47 @@ func (v *View) HandleKey(k layout.Key) bool {
 		// Falls through to the Normal-mode keymap below.
 	}
 
+	// A digit (other than a bare "0", vim's own line_start motion) always
+	// accumulates into the count prefix ahead of everything else — the "3"
+	// of "3dd" or "3j" is never itself an action, whether or not an
+	// operator happens to be armed (so "d0" still reaches the operator
+	// below as the line_start MOTION, not as a count).
+	if n, isDigit := normalModeDigit(k); isDigit && (n != 0 || v.count > 0) {
+		v.count = v.count*10 + n
+		return true
+	}
+
 	action, ok := v.keymap[k.String()]
-	// Every Normal-mode key resolves the armed operator ("d" of a "dd") and
-	// disarms it in the same breath, so anything other than an immediate
-	// second press of the same operator aborts it — including a key bound to
-	// nothing at all, which returns below.
-	pending := v.pendingAction
-	v.pendingAction = ""
+
+	// A key arriving while an operator is armed either completes it (the
+	// doubled form, a motion, a text object) or aborts it — see
+	// tryCompleteOperator. An abort falls through to dispatch this same key
+	// fresh below, exactly as if no operator had been pending.
+	if v.pendingOp.action != "" && v.tryCompleteOperator(action, ok) {
+		return true
+	}
+
+	t := v.activeTab()
+	if ok && isOperatorAction(action) {
+		// With a selection up, "y" copies it on the FIRST press — vim's own
+		// behaviour, where a visual-mode yank needs no doubling because the
+		// range is already chosen. The selection is consumed along with it,
+		// so a following "y" is an ordinary "yy" again. Delete/change have
+		// no equivalent shortcut: nib has no keyboard-driven Visual mode to
+		// have selected FOR them.
+		if action == "yank_line" && t != nil && t.hasSel {
+			v.copySelection(t)
+			t.clearSelection()
+			v.count = 0
+			return true
+		}
+		v.pendingOp = pendingOperator{action: action, count: v.count}
+		v.count = 0
+		return true
+	}
+
+	count := resolvedCount(v.count)
+	v.count = 0
 	if !ok {
 		return false
 	}
@@ -1523,7 +1573,6 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return true
 	}
 
-	t := v.activeTab()
 	if t == nil {
 		return false
 	}
@@ -1547,28 +1596,6 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.deleteCharForward(t)
 	case "delete_char_backward":
 		v.deleteCharBackward(t)
-	case "delete_line", "yank_line":
-		// With a selection up, "y" copies it on the FIRST press — vim's own
-		// behaviour, where a visual-mode yank needs no doubling because the
-		// range is already chosen. The selection is consumed along with it,
-		// so a following "y" is an ordinary "yy" again.
-		if action == "yank_line" && t.hasSel {
-			v.copySelection(t)
-			t.clearSelection()
-			return true
-		}
-		// The doubled operators: a first press only arms, and consumes the
-		// key without touching the buffer or the cursor (hence the early
-		// return, skipping the clamp below).
-		if pending != action {
-			v.pendingAction = action
-			return true
-		}
-		if action == "delete_line" {
-			v.deleteLine(t)
-		} else {
-			v.yankLine(t)
-		}
 	case "put_after":
 		v.putAfter(t)
 	case "go_to_parent":
@@ -1599,7 +1626,7 @@ func (v *View) HandleKey(k layout.Key) bool {
 			v.OnShowFileDiff(t.path)
 		}
 	default:
-		if !v.applyMovement(t, action) {
+		if !v.applyMovement(t, action, count) {
 			return false
 		}
 	}
@@ -1670,19 +1697,24 @@ func (v *View) HandlePaste(s string) bool {
 
 // applyMovement mutates t's cursor for a Normal-mode movement action,
 // shared with handleInsertKey (arrow keys move the cursor even while
-// inserting — see there). Returns false if action isn't a movement
-// action, so callers can tell "not a movement" apart from "movement
-// handled, cursor happens not to have changed".
-func (v *View) applyMovement(t *tab, action string) bool {
+// inserting — see there, always passing count 1). Returns false if action
+// isn't a movement action, so callers can tell "not a movement" apart from
+// "movement handled, cursor happens not to have changed".
+//
+// count repeats the motion vim's own number-of-times ("3j", "5l"); actions
+// that jump to an absolute place (line_start/line_end/first_line/last_line)
+// or already read v.pageSize() ignore it, since repeating an idempotent jump
+// N times lands in the same place as doing it once.
+func (v *View) applyMovement(t *tab, action string, count int) bool {
 	switch action {
 	case "move_down":
-		t.cursorLn++
+		t.cursorLn += count
 	case "move_up":
-		t.cursorLn--
+		t.cursorLn -= count
 	case "move_left":
-		t.cursorCol--
+		t.cursorCol -= count
 	case "move_right":
-		t.cursorCol++
+		t.cursorCol += count
 	case "page_down":
 		t.cursorLn += v.pageSize()
 	case "page_up":
@@ -1695,6 +1727,11 @@ func (v *View) applyMovement(t *tab, action string) bool {
 		t.cursorLn = 0
 	case "last_line":
 		t.cursorLn = len(t.buf.Lines) - 1
+	case "word_forward", "word_backward", "word_end":
+		raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+		newLn, newRaw := motionDestination(t.buf, t.cursorLn, raw, action, count)
+		t.cursorLn = newLn
+		t.cursorCol = expandedColForRawIndex(t.buf.Lines[newLn], newRaw, v.tabWidth)
 	default:
 		return false
 	}
@@ -1765,7 +1802,7 @@ func (v *View) handleInsertKey(k layout.Key) bool {
 		switch v.keymap[k.String()] {
 		case "move_up", "move_down", "move_left", "move_right":
 			if t := v.activeTab(); t != nil {
-				v.applyMovement(t, v.keymap[k.String()])
+				v.applyMovement(t, v.keymap[k.String()], 1)
 				v.clamp(t)
 			}
 			v.completion = nil // moving the cursor invalidates any open popup's context
@@ -1948,10 +1985,11 @@ func (v *View) exitInsertMode() {
 // buffer would scramble whose pending snapshot ends up committed to its
 // undo history; this guarantees at most one pane ever is.
 func (v *View) ExitEditingModes() {
-	// A half-typed "dd" is discarded for the same reason: the pane is losing
-	// focus, so its next key would otherwise complete an operator armed
-	// arbitrarily long ago.
-	v.pendingAction = ""
+	// A half-typed "dd" (or "dw", "diw", ...) is discarded for the same
+	// reason: the pane is losing focus, so its next key would otherwise
+	// complete an operator armed arbitrarily long ago.
+	v.pendingOp = pendingOperator{}
+	v.count = 0
 	// Likewise a drag interrupted by focus moving elsewhere: the release that
 	// would have ended it is going to another pane, so nothing else would ever
 	// clear this. The selection ITSELF is kept — it survives losing focus the

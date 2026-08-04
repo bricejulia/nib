@@ -177,6 +177,138 @@ func TestDeleteLineOutOfRangeIsNoop(t *testing.T) {
 	}
 }
 
+func TestDeleteLinesSingleLineMatchesDeleteLine(t *testing.T) {
+	a := &Buffer{Lines: []string{"one", "two", "three"}}
+	b := &Buffer{Lines: []string{"one", "two", "three"}}
+
+	gotA := a.DeleteLine(1)
+	gotB := b.DeleteLines(1, 1)
+
+	if len(gotB) != 1 || gotB[0] != gotA {
+		t.Fatalf("DeleteLines(1,1) = %+v, want a single-element slice matching DeleteLine's %q", gotB, gotA)
+	}
+	if strings.Join(a.Lines, "|") != strings.Join(b.Lines, "|") {
+		t.Fatalf("Lines diverged: DeleteLine -> %+v, DeleteLines -> %+v", a.Lines, b.Lines)
+	}
+	if a.Dirty != b.Dirty {
+		t.Fatalf("Dirty diverged: DeleteLine -> %v, DeleteLines -> %v", a.Dirty, b.Dirty)
+	}
+}
+
+func TestDeleteLinesRemovesInclusiveRange(t *testing.T) {
+	b := &Buffer{Lines: []string{"one", "two", "three", "four"}}
+	got := b.DeleteLines(1, 2)
+	if strings.Join(got, "|") != "two|three" {
+		t.Fatalf("DeleteLines returned %+v, want [two three]", got)
+	}
+	if strings.Join(b.Lines, "|") != "one|four" {
+		t.Fatalf("Lines = %+v, want [one four]", b.Lines)
+	}
+}
+
+func TestDeleteLinesSwapsReversedArguments(t *testing.T) {
+	b := &Buffer{Lines: []string{"one", "two", "three", "four"}}
+	got := b.DeleteLines(2, 1)
+	if strings.Join(got, "|") != "two|three" {
+		t.Fatalf("DeleteLines returned %+v, want [two three]", got)
+	}
+	if strings.Join(b.Lines, "|") != "one|four" {
+		t.Fatalf("Lines = %+v, want [one four]", b.Lines)
+	}
+}
+
+func TestDeleteLinesEntireBufferLeavesOneEmptyLine(t *testing.T) {
+	b := &Buffer{Lines: []string{"one", "two", "three"}}
+	got := b.DeleteLines(0, 2)
+	if strings.Join(got, "|") != "one|two|three" {
+		t.Fatalf("DeleteLines returned %+v, want [one two three]", got)
+	}
+	if len(b.Lines) != 1 || b.Lines[0] != "" {
+		t.Fatalf("Lines = %+v, want exactly one empty line", b.Lines)
+	}
+}
+
+func TestDeleteLinesOutOfRangeIsNoop(t *testing.T) {
+	b := &Buffer{Lines: []string{"one"}}
+	if got := b.DeleteLines(5, 6); got != nil {
+		t.Fatalf("DeleteLines returned %+v, want nil", got)
+	}
+	if got := b.DeleteLines(-2, -1); got != nil {
+		t.Fatalf("DeleteLines returned %+v, want nil", got)
+	}
+	if len(b.Lines) != 1 || b.Lines[0] != "one" {
+		t.Fatalf("Lines = %+v, want unchanged", b.Lines)
+	}
+	if b.Dirty {
+		t.Fatal("expected Dirty to stay false for an out-of-range delete")
+	}
+}
+
+func TestDeleteLinesClampsEndPastBuffer(t *testing.T) {
+	b := &Buffer{Lines: []string{"one", "two"}}
+	got := b.DeleteLines(1, 50)
+	if strings.Join(got, "|") != "two" {
+		t.Fatalf("DeleteLines returned %+v, want [two]", got)
+	}
+	if strings.Join(b.Lines, "|") != "one" {
+		t.Fatalf("Lines = %+v, want [one]", b.Lines)
+	}
+}
+
+func TestDeleteRangeOnOneLineRemovesTheFragment(t *testing.T) {
+	b := &Buffer{Lines: []string{"hello world"}}
+	got := b.DeleteRange(0, 6, 0, 11)
+	if strings.Join(got, "|") != "world" {
+		t.Fatalf("DeleteRange returned %+v, want [world]", got)
+	}
+	if b.Lines[0] != "hello " {
+		t.Fatalf("Lines[0] = %q, want %q", b.Lines[0], "hello ")
+	}
+}
+
+func TestDeleteRangeAcrossLinesJoinsHeadAndTail(t *testing.T) {
+	b := &Buffer{Lines: []string{"one two", "three four", "five six"}}
+	got := b.DeleteRange(0, 4, 2, 4)
+	if strings.Join(got, "|") != "two|three four|five" {
+		t.Fatalf("DeleteRange returned %+v, want [two three four five]", got)
+	}
+	if strings.Join(b.Lines, "|") != "one  six" {
+		t.Fatalf("Lines = %+v, want [\"one  six\"]", b.Lines)
+	}
+}
+
+func TestDeleteRangeSwapsReversedArguments(t *testing.T) {
+	b := &Buffer{Lines: []string{"hello world"}}
+	got := b.DeleteRange(0, 11, 0, 6)
+	if strings.Join(got, "|") != "world" {
+		t.Fatalf("DeleteRange returned %+v, want [world]", got)
+	}
+	if b.Lines[0] != "hello " {
+		t.Fatalf("Lines[0] = %q, want %q", b.Lines[0], "hello ")
+	}
+}
+
+func TestDeleteRangeEmptyRangeReturnsNil(t *testing.T) {
+	b := &Buffer{Lines: []string{"hello"}}
+	if got := b.DeleteRange(0, 2, 0, 2); got != nil {
+		t.Fatalf("DeleteRange returned %+v, want nil", got)
+	}
+	if b.Lines[0] != "hello" {
+		t.Fatalf("Lines[0] = %q, want unchanged", b.Lines[0])
+	}
+}
+
+func TestDeleteRangeClampsColumnsPastEndOfLine(t *testing.T) {
+	b := &Buffer{Lines: []string{"hi"}}
+	got := b.DeleteRange(0, 1, 0, 50)
+	if strings.Join(got, "|") != "i" {
+		t.Fatalf("DeleteRange returned %+v, want [i]", got)
+	}
+	if b.Lines[0] != "h" {
+		t.Fatalf("Lines[0] = %q, want %q", b.Lines[0], "h")
+	}
+}
+
 func TestInsertLinesSplicesAtIndexAndAppendsAtEnd(t *testing.T) {
 	b := &Buffer{Lines: []string{"one", "four"}}
 	b.InsertLines(1, []string{"two", "three"})
