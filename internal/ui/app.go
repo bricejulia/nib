@@ -12,6 +12,7 @@ import (
 	"github.com/bricejulia/nib/internal/clipboard"
 	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/theme"
 )
 
 // vaxisWindow adapts a vaxis.Window to layout.Window.
@@ -1164,7 +1165,7 @@ func drawBorder(win vaxis.Window, focused bool, title string) bool {
 
 	style := vaxis.Style{Attribute: vaxis.AttrDim}
 	if focused {
-		style = vaxis.Style{Attribute: vaxis.AttrBold, Foreground: translateColor(layout.ColorCyan)}
+		style = vaxis.Style{Attribute: vaxis.AttrBold, Foreground: translateColor(theme.Get(theme.UIFocusBorder))}
 	}
 	cell := func(ch string) vaxis.Cell {
 		return vaxis.Cell{Character: vaxis.Character{Grapheme: ch, Width: 1}, Style: style}

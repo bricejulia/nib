@@ -1325,7 +1325,7 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 			var selRanges []runeRange
 			selRanges, selToEOL = selectionRangesOnLine(selStart, selEnd, t.buf.Lines[ln], ln, tabWidth)
 			if len(selRanges) > 0 {
-				raw = applyHighlightRanges(raw, selRanges, selectionStyle)
+				raw = applyHighlightRanges(raw, selRanges, selectionStyle())
 			}
 		}
 		expandedSegs := textwidth.ExpandTabsSegments(raw, tabWidth)
@@ -1371,7 +1371,7 @@ func padSelection(segs []layout.Segment, width int) []layout.Segment {
 	}
 	return append(segs, layout.Segment{
 		Text:  strings.Repeat(" ", width-used),
-		Style: selectionStyle,
+		Style: selectionStyle(),
 	})
 }
 

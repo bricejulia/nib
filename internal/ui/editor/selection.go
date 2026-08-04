@@ -5,6 +5,7 @@ import (
 
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/textwidth"
+	"github.com/bricejulia/nib/internal/theme"
 )
 
 // selectionStyle marks the selected range. A background colour rather than
@@ -12,10 +13,17 @@ import (
 // layout.Style grew a Background field) specifically so the two compose:
 // reverse-on-reverse doesn't cancel, so a search match inside a selection
 // would otherwise be indistinguishable from the rest of it. Bright black is
-// the palette's "slightly lighter than the background" entry, which reads as
-// a selection on both light and dark terminals without fighting the syntax
-// foreground colours it sits under.
-var selectionStyle = layout.Style{Background: layout.ColorBrightBlack}
+// the palette's default "slightly lighter than the background" entry,
+// which reads as a selection on both light and dark terminals without
+// fighting the syntax foreground colours it sits under.
+//
+// A function, not a package var, because a var would be evaluated at
+// package-init time — before cmd/nib's run() installs the user's theme
+// (see theme.SetActive) — and would then permanently freeze on
+// theme.Default regardless of what the user configured.
+func selectionStyle() layout.Style {
+	return layout.Style{Background: theme.Get(theme.EditorSelection)}
+}
 
 // position is a place in a buffer: a line, plus a column in cursorCol's
 // units (a rune index into the TAB-EXPANDED line — see tab's doc comment).

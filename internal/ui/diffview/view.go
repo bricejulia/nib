@@ -14,6 +14,7 @@ import (
 	"github.com/bricejulia/nib/internal/config"
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/textwidth"
+	"github.com/bricejulia/nib/internal/theme"
 )
 
 // DefaultKeybinds are the diff pane's built-in keybindings, overridable via
@@ -143,11 +144,11 @@ func lineStyle(line string) layout.Style {
 		strings.HasPrefix(line, "similarity"), strings.HasPrefix(line, "rename "):
 		return layout.Style{Attr: layout.AttrDim}
 	case strings.HasPrefix(line, "@@"):
-		return layout.Style{Foreground: layout.ColorCyan}
+		return layout.Style{Foreground: theme.Get(theme.GitHeader)}
 	case strings.HasPrefix(line, "+"):
-		return layout.Style{Foreground: layout.ColorGreen}
+		return layout.Style{Foreground: theme.Get(theme.GitAdded)}
 	case strings.HasPrefix(line, "-"):
-		return layout.Style{Foreground: layout.ColorRed}
+		return layout.Style{Foreground: theme.Get(theme.GitDeleted)}
 	case strings.HasPrefix(line, `\`):
 		// git's "\ No newline at end of file" note.
 		return layout.Style{Attr: layout.AttrDim}

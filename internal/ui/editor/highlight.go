@@ -1,6 +1,9 @@
 package editor
 
-import "github.com/bricejulia/nib/internal/layout"
+import (
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/theme"
+)
 
 // highlightLine is a placeholder, language-agnostic heuristic highlighter:
 // it recognizes single-line comments, quoted strings, and numbers by
@@ -11,9 +14,9 @@ import "github.com/bricejulia/nib/internal/layout"
 // HTML/CSS/JS etc. inside PHP) — this is not meant to be language-correct,
 // just a reasonable-looking stopgap until then.
 func highlightLine(line string) []layout.Segment {
-	commentStyle := layout.Style{Attr: layout.AttrDim, Foreground: layout.ColorBrightBlack}
-	stringStyle := layout.Style{Foreground: layout.ColorGreen}
-	numberStyle := layout.Style{Foreground: layout.ColorMagenta}
+	commentStyle := layout.Style{Attr: layout.AttrDim, Foreground: theme.Get(theme.SyntaxComment)}
+	stringStyle := layout.Style{Foreground: theme.Get(theme.SyntaxString)}
+	numberStyle := layout.Style{Foreground: theme.Get(theme.SyntaxConstant)}
 	plainStyle := layout.Style{}
 
 	var out []layout.Segment

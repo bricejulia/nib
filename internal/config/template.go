@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/bricejulia/nib/internal/theme"
 )
 
 // Scope is one section of the generated template config file: a scope
@@ -71,6 +73,52 @@ func Template(scopes []Scope) string {
 #   lsp = python = pyright-langserver --stdio
 #   lsp = rust   = rust-analyzer
 #   lsp = c      = clangd
+
+
+# --- theme ---
+#
+# Pick a built-in color theme:
+#
+#   theme = <name>
+#
+`)
+	fmt.Fprintf(&b, "# Built-in themes: %s. Falls back to\n", strings.Join(theme.BuiltinNames, ", "))
+	fmt.Fprintf(&b, "# %q if this line is omitted or misspells a theme name — check the\n", theme.DefaultName)
+	b.WriteString(`# debug log (Ctrl+D) for a warning if so. Colors are restricted to the 16
+# standard ANSI colors nib ever draws with, so every theme renders
+# reasonably on any terminal regardless of its own color scheme.
+#
+# Override any individual color, on top of whichever theme is active:
+#
+#   color = <role> = <color>
+#
+# <color> is one of: default black red green yellow blue magenta cyan
+# white brightblack brightred brightgreen brightyellow brightblue
+# brightmagenta brightcyan brightwhite (bright colors may also be spelled
+# with a hyphen, e.g. bright-red).
+#
+# Roles, grouped by where they show up:
+#   git_modified git_added git_deleted git_renamed git_conflicted git_header
+#     — file tree/finder status markers, the editor gutter, diff +/- lines
+#       and hunk headers, and the blame/hunk popups (B/H)
+#   syntax_comment syntax_string syntax_constant syntax_keyword
+#   syntax_function syntax_type
+#     — source code highlighting
+#   diagnostic_error diagnostic_warning diagnostic_info
+#     — language-server/parse-error markers in the editor gutter
+#   debug_warn debug_error
+#     — the debug log (Ctrl+D)
+#   filetree_prompt_error
+#     — inline error text in the file tree's create/rename/delete prompt
+#   editor_selection
+#     — the mouse-selection highlight
+#   ui_focus_border
+#     — the focused pane's border and title
+#
+# Example — keep "default" but make added/deleted git markers brighter:
+#   theme = default
+#   color = git_added = brightgreen
+#   color = git_deleted = brightred
 `)
 
 	for _, s := range scopes {

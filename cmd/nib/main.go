@@ -15,6 +15,7 @@ import (
 	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/lsp"
+	"github.com/bricejulia/nib/internal/theme"
 	"github.com/bricejulia/nib/internal/ui"
 	"github.com/bricejulia/nib/internal/ui/debug"
 	"github.com/bricejulia/nib/internal/ui/diffview"
@@ -136,6 +137,31 @@ func mergedLSPServers(cfg *config.Config) map[string][]string {
 	return servers
 }
 
+// resolveTheme merges the user's "theme = <name>" pick and any "color ="
+// overrides into the theme every View's Render reads from — see
+// internal/theme. Unknown role names (a color line with a typo'd role) are
+// warned and skipped here, mirroring how an unknown "keybind" action name
+// is warned and skipped in the global-keymap loop below: config.Parse
+// validates only syntax, semantic validity against the closed role
+// vocabulary internal/theme owns is checked once here.
+func resolveTheme(cfg *config.Config) theme.Theme {
+	overrides := make(map[theme.Role]layout.Color, len(cfg.ColorOverrides()))
+	for roleName, color := range cfg.ColorOverrides() {
+		role := theme.Role(roleName)
+		if !theme.ValidRole(role) {
+			debuglog.Warn("config: unknown theme role %q", roleName)
+			continue
+		}
+		overrides[role] = color
+	}
+	if name := cfg.ThemeName(); name != "" {
+		if _, ok := theme.Builtins[name]; !ok {
+			debuglog.Warn("config: unknown theme %q, using %q", name, theme.DefaultName)
+		}
+	}
+	return theme.Resolve(cfg.ThemeName(), overrides)
+}
+
 // configTemplateScopes is every scope's built-in keybindings, in the
 // order the generated template config file lists them — see
 // config.EnsureFile.
@@ -193,6 +219,7 @@ func run() error {
 	} else {
 		cfg = c
 	}
+	theme.SetActive(resolveTheme(cfg))
 
 	treeView := filetree.New(absRoot)
 	treeView.SetKeymap(cfg.Overrides("filetree"))

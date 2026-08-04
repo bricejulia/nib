@@ -6,6 +6,7 @@ package gitstyle
 
 import (
 	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/theme"
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
@@ -34,17 +35,17 @@ func Marker(s gitstatus.Status) string {
 func Style(s gitstatus.Status) layout.Style {
 	switch s {
 	case gitstatus.Modified:
-		return layout.Style{Foreground: layout.ColorYellow}
+		return layout.Style{Foreground: theme.Get(theme.GitModified)}
 	case gitstatus.Added:
-		return layout.Style{Foreground: layout.ColorGreen}
+		return layout.Style{Foreground: theme.Get(theme.GitAdded)}
 	case gitstatus.Deleted:
-		return layout.Style{Foreground: layout.ColorRed}
+		return layout.Style{Foreground: theme.Get(theme.GitDeleted)}
 	case gitstatus.Renamed:
-		return layout.Style{Foreground: layout.ColorCyan}
+		return layout.Style{Foreground: theme.Get(theme.GitRenamed)}
 	case gitstatus.Untracked:
 		return layout.Style{Attr: layout.AttrDim}
 	case gitstatus.Conflicted:
-		return layout.Style{Foreground: layout.ColorBrightRed, Attr: layout.AttrBold}
+		return layout.Style{Foreground: theme.Get(theme.GitConflicted), Attr: layout.AttrBold}
 	default:
 		return layout.Style{}
 	}
@@ -73,11 +74,11 @@ func LineMarker(s gitstatus.LineStatus) string {
 func LineStyle(s gitstatus.LineStatus) layout.Style {
 	switch s {
 	case gitstatus.LineAdded:
-		return layout.Style{Foreground: layout.ColorGreen}
+		return layout.Style{Foreground: theme.Get(theme.GitAdded)}
 	case gitstatus.LineModified:
-		return layout.Style{Foreground: layout.ColorYellow}
+		return layout.Style{Foreground: theme.Get(theme.GitModified)}
 	case gitstatus.LineDeletedBefore:
-		return layout.Style{Foreground: layout.ColorRed}
+		return layout.Style{Foreground: theme.Get(theme.GitDeleted)}
 	default:
 		return layout.Style{}
 	}

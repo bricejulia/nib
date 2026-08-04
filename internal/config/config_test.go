@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 func TestNormalizeCanonicalizesModifiersAndNamedKeys(t *testing.T) {
@@ -138,5 +140,82 @@ func TestServersOnNilConfig(t *testing.T) {
 	var cfg *Config
 	if got := cfg.Servers(); got != nil {
 		t.Errorf("expected nil servers from a nil *Config, got %v", got)
+	}
+}
+
+func TestParseThemeDirective(t *testing.T) {
+	src := `
+theme = ocean
+keybind = editor:ctrl+t = go_to_definition
+`
+	cfg := Parse(strings.NewReader(src))
+	if got := cfg.ThemeName(); got != "ocean" {
+		t.Errorf(`ThemeName() = %q, want "ocean"`, got)
+	}
+	// The two-field directive must not swallow the surrounding three-field one.
+	if got := cfg.Overrides("editor")["Ctrl+t"]; got != "go_to_definition" {
+		t.Errorf("keybind parsing broke alongside theme: got %q", got)
+	}
+}
+
+func TestParseThemeDirectiveSkipsBlankValue(t *testing.T) {
+	if got := Parse(strings.NewReader("theme =\n")).ThemeName(); got != "" {
+		t.Errorf(`ThemeName() = %q, want ""`, got)
+	}
+}
+
+func TestParseColorDirective(t *testing.T) {
+	src := `
+color = git_added = brightgreen
+color = GIT_DELETED = Red
+`
+	cfg := Parse(strings.NewReader(src)).ColorOverrides()
+	if got := cfg["git_added"]; got != layout.ColorBrightGreen {
+		t.Errorf(`colors["git_added"] = %v, want ColorBrightGreen`, got)
+	}
+	if got := cfg["git_deleted"]; got != layout.ColorRed {
+		t.Errorf(`colors["git_deleted"] = %v, want ColorRed (role key lowercased)`, got)
+	}
+}
+
+func TestParseColorDirectiveSkipsUnknownColorName(t *testing.T) {
+	if got := Parse(strings.NewReader("color = git_added = fluorescent\n")).ColorOverrides(); len(got) != 0 {
+		t.Errorf("expected no color overrides from an unknown color name, got %v", got)
+	}
+}
+
+func TestParseThemeAndColorCoexistWithKeybindAndLSP(t *testing.T) {
+	src := `
+theme = mono
+color = git_added = brightgreen
+keybind = editor:ctrl+t = go_to_definition
+lsp = rust = rust-analyzer
+`
+	cfg := Parse(strings.NewReader(src))
+	if got := cfg.ThemeName(); got != "mono" {
+		t.Errorf(`ThemeName() = %q, want "mono"`, got)
+	}
+	if got := cfg.ColorOverrides()["git_added"]; got != layout.ColorBrightGreen {
+		t.Errorf(`colors["git_added"] = %v, want ColorBrightGreen`, got)
+	}
+	if got := cfg.Overrides("editor")["Ctrl+t"]; got != "go_to_definition" {
+		t.Errorf("keybind parsing broke: got %q", got)
+	}
+	if rust := cfg.Servers()["rust"]; len(rust) != 1 || rust[0] != "rust-analyzer" {
+		t.Errorf("lsp parsing broke: got %q", rust)
+	}
+}
+
+func TestThemeNameOnNilConfig(t *testing.T) {
+	var cfg *Config
+	if got := cfg.ThemeName(); got != "" {
+		t.Errorf(`expected "" theme name from a nil *Config, got %q`, got)
+	}
+}
+
+func TestColorOverridesOnNilConfig(t *testing.T) {
+	var cfg *Config
+	if got := cfg.ColorOverrides(); got != nil {
+		t.Errorf("expected nil color overrides from a nil *Config, got %v", got)
 	}
 }

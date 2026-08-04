@@ -8,6 +8,7 @@ import (
 	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/textwidth"
+	"github.com/bricejulia/nib/internal/theme"
 )
 
 // promptMode is which file operation, if any, is currently asking the user
@@ -33,13 +34,19 @@ const (
 	promptConfirmYes
 )
 
-// promptCaretStyle keeps the prompt row visually distinct from the tree rows
-// above it; promptErrStyle marks a refusal, which is shown inline because
-// everything else in nib reports errors only to the debug log (Ctrl+D).
-var (
-	promptStyle    = layout.Style{Attr: layout.AttrBold}
-	promptErrStyle = layout.Style{Foreground: layout.ColorRed}
-)
+// promptStyle keeps the prompt row visually distinct from the tree rows
+// above it.
+var promptStyle = layout.Style{Attr: layout.AttrBold}
+
+// promptErrStyle marks a refusal, which is shown inline because everything
+// else in nib reports errors only to the debug log (Ctrl+D). A function,
+// not a package var, because a var would be evaluated at package-init
+// time — before cmd/nib's run() installs the user's theme (see
+// theme.SetActive) — and would then permanently freeze on theme.Default
+// regardless of what the user configured.
+func promptErrStyle() layout.Style {
+	return layout.Style{Foreground: theme.Get(theme.FiletreePromptError)}
+}
 
 // label returns the prompt's leading text, which is also what the caret
 // column is measured from.
@@ -369,7 +376,7 @@ func (v *View) renderPrompt(w layout.Window, row, cols int) {
 	if v.promptErr != "" {
 		// After the buffer, never before it: a message in front would shift
 		// the caret column out from under the cursor.
-		segs = append(segs, layout.Segment{Text: "  " + v.promptErr, Style: promptErrStyle})
+		segs = append(segs, layout.Segment{Text: "  " + v.promptErr, Style: promptErrStyle()})
 	}
 	w.Println(row, textwidth.SliceSegmentsByDisplayColumn(segs, v.promptScroll, cols)...)
 }

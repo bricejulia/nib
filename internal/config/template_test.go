@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bricejulia/nib/internal/theme"
 )
 
 var testScopes = []Scope{
@@ -23,6 +25,34 @@ func TestTemplateCommentsOutEveryDefaultByScope(t *testing.T) {
 	}
 	if !strings.Contains(out, "# keybind = editor:x = close_tab") {
 		t.Errorf("expected editor's trigger prefixed with its scope, got:\n%s", out)
+	}
+}
+
+func TestTemplateDocumentsThemeAndColorDirectives(t *testing.T) {
+	out := Template(testScopes)
+	if !strings.Contains(out, "theme = <name>") {
+		t.Errorf("expected theme directive syntax, got:\n%s", out)
+	}
+	if !strings.Contains(out, "color = <role> = <color>") {
+		t.Errorf("expected color directive syntax, got:\n%s", out)
+	}
+}
+
+// TestTemplateListsEveryBuiltinThemeAndRole guards against the hand-written
+// theme doc block in Template drifting from internal/theme's actual role
+// and built-in-theme lists — a future role/theme rename that forgets to
+// update the doc block fails this test.
+func TestTemplateListsEveryBuiltinThemeAndRole(t *testing.T) {
+	out := Template(testScopes)
+	for _, name := range theme.BuiltinNames {
+		if !strings.Contains(out, name) {
+			t.Errorf("expected built-in theme name %q in template, got:\n%s", name, out)
+		}
+	}
+	for _, role := range theme.AllRoles {
+		if !strings.Contains(out, string(role)) {
+			t.Errorf("expected role %q in template, got:\n%s", role, out)
+		}
 	}
 }
 

@@ -2,10 +2,15 @@
 // text format (in the spirit of Ghostty's config, not TOML/YAML), letting
 // the user override nib's defaults without recompiling.
 //
-// Two directives, sharing one three-field shape:
+// Three directives share one three-field shape:
 //
 //	keybind = <scope>:<trigger> = <action>
 //	lsp     = <language>        = <command args...>
+//	color   = <role>            = <color name>
+//
+// plus one two-field directive:
+//
+//	theme = <name>
 //
 // The "lsp" directive registers a language server, e.g.
 //
@@ -13,6 +18,10 @@
 //
 // which is how a language nib doesn't ship a default for gets one. See
 // internal/lsp.DefaultServers for the built-ins these merge over.
+//
+// The "theme"/"color" directives pick a built-in color theme and override
+// individual semantic colors on top of it — see internal/theme for the
+// built-in themes, the role vocabulary, and the color-name vocabulary.
 //
 // scope is one of "global" (or omitted, e.g. "keybind = ctrl+p = ..."),
 // "editor", "filetree", "finder", "debug", "help" — see each package's
@@ -27,6 +36,9 @@ import (
 	"bufio"
 	"io"
 	"strings"
+
+	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/theme"
 )
 
 // Binding is one trigger→action keybinding, in the canonical trigger form
@@ -55,13 +67,16 @@ func (d Defaults) Resolve(overrides map[string]string) map[string]string {
 	return m
 }
 
-// Config holds the parsed user config: per-scope keybinding overrides and
-// language-server commands. The zero value (and a nil *Config) is a valid
-// empty config — every scope falls back to its built-in Defaults and no
-// extra language servers are registered.
+// Config holds the parsed user config: per-scope keybinding overrides,
+// language-server commands, and theme selection/color overrides. The zero
+// value (and a nil *Config) is a valid empty config — every scope falls
+// back to its built-in Defaults, no extra language servers are
+// registered, and theming falls back to internal/theme's default theme.
 type Config struct {
-	keybinds map[string]map[string]string // scope -> trigger -> action
-	servers  map[string][]string          // language -> argv
+	keybinds  map[string]map[string]string // scope -> trigger -> action
+	servers   map[string][]string          // language -> argv
+	themeName string                       // "" means unset, falls back to theme.DefaultName
+	colors    map[string]layout.Color      // role name (as typed, lowercased) -> validated color
 }
 
 // Servers returns the language->command entries parsed from "lsp" lines,
@@ -83,6 +98,28 @@ func (c *Config) Overrides(scope string) map[string]string {
 	return c.keybinds[scope]
 }
 
+// ThemeName returns the user-configured "theme = <name>" value, or "" if
+// unset. Safe to call on a nil *Config.
+func (c *Config) ThemeName() string {
+	if c == nil {
+		return ""
+	}
+	return c.themeName
+}
+
+// ColorOverrides returns the per-role color overrides parsed from "color"
+// lines, keyed by role name exactly as typed (lowercased). Values are
+// already validated color names; whether the ROLE name is one
+// internal/theme actually knows about is for the caller to check (see
+// theme.ValidRole), the same division Overrides/Servers already draw for
+// scope and language names. Safe to call on a nil *Config.
+func (c *Config) ColorOverrides() map[string]layout.Color {
+	if c == nil {
+		return nil
+	}
+	return c.colors
+}
+
 // Parse reads nib's config format from r. It never returns an error:
 // unparseable lines are silently skipped, since a broken config line
 // shouldn't prevent nib from starting (worst case, that one override is
@@ -91,6 +128,7 @@ func Parse(r io.Reader) *Config {
 	cfg := &Config{
 		keybinds: map[string]map[string]string{},
 		servers:  map[string][]string{},
+		colors:   map[string]layout.Color{},
 	}
 
 	sc := bufio.NewScanner(r)
@@ -100,12 +138,26 @@ func Parse(r io.Reader) *Config {
 			continue
 		}
 
-		// Both directives share the same three-field shape:
+		fields := strings.SplitN(line, "=", 3)
+
+		// "theme = <name>" is the one directive with a single value rather
+		// than this format's usual <directive> = <key> = <value> triplet,
+		// so it's handled before the three-field shape below.
+		if len(fields) == 2 {
+			if strings.TrimSpace(fields[0]) == "theme" {
+				if name := strings.TrimSpace(fields[1]); name != "" {
+					cfg.themeName = name
+				}
+			}
+			continue
+		}
+
+		// keybind/lsp/color share the same three-field shape:
 		//   keybind = <scope>:<trigger> = <action>
 		//   lsp     = <language>        = <command args...>
+		//   color   = <role>            = <color name>
 		// so SplitN(3) either yields exactly the three fields wanted or the
 		// line is malformed.
-		fields := strings.SplitN(line, "=", 3)
 		if len(fields) != 3 {
 			continue
 		}
@@ -137,6 +189,13 @@ func Parse(r io.Reader) *Config {
 				continue
 			}
 			cfg.servers[key] = argv
+
+		case "color":
+			color, ok := theme.ParseColorName(value)
+			if !ok {
+				continue
+			}
+			cfg.colors[strings.ToLower(key)] = color
 		}
 	}
 

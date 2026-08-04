@@ -5,6 +5,7 @@ import (
 
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/lsp"
+	"github.com/bricejulia/nib/internal/theme"
 )
 
 // diagnosticMarker and diagnosticStyle are the editor gutter's
@@ -34,11 +35,11 @@ func diagnosticMarker(s lsp.DiagnosticSeverity) string {
 func diagnosticStyle(s lsp.DiagnosticSeverity) layout.Style {
 	switch s {
 	case lsp.SeverityError:
-		return layout.Style{Foreground: layout.ColorRed, Attr: layout.AttrBold}
+		return layout.Style{Foreground: theme.Get(theme.DiagnosticError), Attr: layout.AttrBold}
 	case lsp.SeverityWarning:
-		return layout.Style{Foreground: layout.ColorYellow}
+		return layout.Style{Foreground: theme.Get(theme.DiagnosticWarning)}
 	case lsp.SeverityInformation:
-		return layout.Style{Foreground: layout.ColorBlue}
+		return layout.Style{Foreground: theme.Get(theme.DiagnosticInfo)}
 	case lsp.SeverityHint:
 		return layout.Style{Attr: layout.AttrDim}
 	default:

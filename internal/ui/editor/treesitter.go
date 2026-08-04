@@ -9,6 +9,7 @@ import (
 
 	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/theme"
 )
 
 // languageFor returns the language name for path, or "" if no grammar
@@ -318,8 +319,8 @@ func pushSeg(line *[]layout.Segment, text string, style layout.Style) {
 // deliberately small and easy to retune — it is not meant to be final.
 func captureStyle(name string) layout.Style {
 	for name != "" {
-		if style, ok := captureStyles[name]; ok {
-			return style
+		if spec, ok := captureSpecs[name]; ok {
+			return layout.Style{Foreground: theme.Get(spec.role), Attr: spec.attr}
 		}
 		i := strings.LastIndexByte(name, '.')
 		if i < 0 {
@@ -330,25 +331,32 @@ func captureStyle(name string) layout.Style {
 	return layout.Style{}
 }
 
-var captureStyles = map[string]layout.Style{
-	"comment":          {Attr: layout.AttrDim, Foreground: layout.ColorBrightBlack},
-	"string":           {Foreground: layout.ColorGreen},
-	"number":           {Foreground: layout.ColorMagenta},
-	"constant":         {Foreground: layout.ColorMagenta},
-	"boolean":          {Foreground: layout.ColorMagenta},
-	"keyword":          {Foreground: layout.ColorYellow},
-	"operator":         {Foreground: layout.ColorYellow},
-	"function":         {Foreground: layout.ColorBlue},
-	"constructor":      {Foreground: layout.ColorBlue},
-	"type":             {Foreground: layout.ColorCyan},
-	"variable":         {}, // most identifiers stay unstyled
-	"variable.builtin": {Foreground: layout.ColorCyan},
-	"property":         {Foreground: layout.ColorCyan},
-	"tag":              {Foreground: layout.ColorYellow},
-	"attribute":        {Foreground: layout.ColorCyan},
-	"punctuation":      {},
-	"label":            {Foreground: layout.ColorYellow},
-	"escape":           {Foreground: layout.ColorMagenta},
-	"namespace":        {Foreground: layout.ColorCyan},
-	"module":           {Foreground: layout.ColorCyan},
+// captureSpec is a capture's themed color role plus whatever fixed
+// attribute (never themed) it carries, e.g. comment's dim.
+type captureSpec struct {
+	role theme.Role
+	attr layout.AttrMask
+}
+
+var captureSpecs = map[string]captureSpec{
+	"comment":          {role: theme.SyntaxComment, attr: layout.AttrDim},
+	"string":           {role: theme.SyntaxString},
+	"number":           {role: theme.SyntaxConstant},
+	"constant":         {role: theme.SyntaxConstant},
+	"boolean":          {role: theme.SyntaxConstant},
+	"escape":           {role: theme.SyntaxConstant},
+	"keyword":          {role: theme.SyntaxKeyword},
+	"operator":         {role: theme.SyntaxKeyword},
+	"label":            {role: theme.SyntaxKeyword},
+	"tag":              {role: theme.SyntaxKeyword},
+	"function":         {role: theme.SyntaxFunction},
+	"constructor":      {role: theme.SyntaxFunction},
+	"type":             {role: theme.SyntaxType},
+	"variable.builtin": {role: theme.SyntaxType},
+	"property":         {role: theme.SyntaxType},
+	"attribute":        {role: theme.SyntaxType},
+	"namespace":        {role: theme.SyntaxType},
+	"module":           {role: theme.SyntaxType},
+	// "variable" and "punctuation" are absent on purpose: unstyled today,
+	// unstyled regardless of theme — see captureStyle's fallback.
 }

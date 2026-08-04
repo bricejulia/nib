@@ -531,7 +531,7 @@ func TestSelectionRendersWithABackgroundOverSyntaxColours(t *testing.T) {
 
 	found := false
 	for _, s := range w.segs[1] {
-		if s.Style.Background == selectionStyle.Background && s.Text != "" && strings.TrimSpace(s.Text) != "" {
+		if s.Style.Background == selectionStyle().Background && s.Text != "" && strings.TrimSpace(s.Text) != "" {
 			found = true
 			if s.Style.Foreground != layout.ColorGreen {
 				t.Errorf("segment %q lost its syntax colour: %v", s.Text, s.Style.Foreground)
@@ -573,7 +573,7 @@ func TestSelectedBlankLineIsStillVisiblyHighlighted(t *testing.T) {
 	v.Render(w)
 
 	// Row 2 renders the blank line.
-	if !rowHasStyle(w, 2, func(s layout.Style) bool { return s.Background == selectionStyle.Background }) {
+	if !rowHasStyle(w, 2, func(s layout.Style) bool { return s.Background == selectionStyle().Background }) {
 		t.Errorf("the selected blank line has no highlight: %+v", w.segs[2])
 	}
 }
@@ -593,7 +593,7 @@ func TestSelectedLineBreakPadsToTheRightEdge(t *testing.T) {
 
 	width := 0
 	for _, s := range w.segs[1] {
-		if s.Style.Background == selectionStyle.Background {
+		if s.Style.Background == selectionStyle().Background {
 			width += len(s.Text)
 		}
 	}
@@ -617,7 +617,7 @@ func TestLastLineOfASelectionStopsAtTheSelectionEnd(t *testing.T) {
 
 	width := 0
 	for _, s := range w.segs[2] {
-		if s.Style.Background == selectionStyle.Background {
+		if s.Style.Background == selectionStyle().Background {
 			width += len(s.Text)
 		}
 	}
@@ -658,7 +658,7 @@ func TestSelectionAndSearchHighlightCompose(t *testing.T) {
 	both := false
 	for _, s := range w.segs[1] {
 		if strings.Contains(s.Text, "bar") &&
-			s.Style.Background == selectionStyle.Background &&
+			s.Style.Background == selectionStyle().Background &&
 			s.Style.Attr&layout.AttrReverse != 0 {
 			both = true
 		}
@@ -780,7 +780,7 @@ func TestSelectRealFileEndToEnd(t *testing.T) {
 			if s.Style.Foreground != layout.ColorYellow {
 				t.Errorf("%q lost its keyword colour under the selection: %v", s.Text, s.Style.Foreground)
 			}
-			if s.Style.Background != selectionStyle.Background {
+			if s.Style.Background != selectionStyle().Background {
 				t.Errorf("%q is inside the selection but has no selection background", s.Text)
 			}
 		}
@@ -789,7 +789,7 @@ func TestSelectRealFileEndToEnd(t *testing.T) {
 		t.Fatalf("no \"package\" segment on the rendered row: %+v", w.segs[1])
 	}
 	// Row 2 is the blank line, which produces no segments of its own.
-	if !rowHasStyle(w, 2, func(s layout.Style) bool { return s.Background == selectionStyle.Background }) {
+	if !rowHasStyle(w, 2, func(s layout.Style) bool { return s.Background == selectionStyle().Background }) {
 		t.Errorf("the selected blank line is invisible: %+v", w.segs[2])
 	}
 
@@ -822,7 +822,7 @@ func TestSelectMultiLineStringLiteralAcrossRows(t *testing.T) {
 
 	for _, row := range []int{6, 7} {
 		if !rowHasStyle(w, row, func(s layout.Style) bool {
-			return s.Foreground == layout.ColorGreen && s.Background == selectionStyle.Background
+			return s.Foreground == layout.ColorGreen && s.Background == selectionStyle().Background
 		}) {
 			t.Errorf("row %d: expected a green string segment carrying the selection background, got %+v", row, w.segs[row])
 		}

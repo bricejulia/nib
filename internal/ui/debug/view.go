@@ -10,6 +10,7 @@ import (
 	"github.com/bricejulia/nib/internal/config"
 	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/theme"
 )
 
 // minLevels is the cycle order Tab steps through: everything, then
@@ -129,9 +130,9 @@ func levelStyle(l debuglog.Level) layout.Style {
 	case debuglog.LevelDebug:
 		return layout.Style{Attr: layout.AttrDim}
 	case debuglog.LevelWarn:
-		return layout.Style{Foreground: layout.ColorYellow}
+		return layout.Style{Foreground: theme.Get(theme.DebugWarn)}
 	case debuglog.LevelError:
-		return layout.Style{Foreground: layout.ColorBrightRed, Attr: layout.AttrBold}
+		return layout.Style{Foreground: theme.Get(theme.DebugError), Attr: layout.AttrBold}
 	default:
 		return layout.Style{}
 	}

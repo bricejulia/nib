@@ -8,6 +8,7 @@ import (
 	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/textwidth"
+	"github.com/bricejulia/nib/internal/theme"
 	"github.com/bricejulia/nib/internal/vcs/gitblame"
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
@@ -135,7 +136,7 @@ func blamePopupLines(info gitblame.Info, dirty bool, width int) []popupLine {
 	if !info.Time.IsZero() {
 		header += "  " + relativeTime(info.Time, time.Now()) + " (" + info.Time.Format("2006-01-02") + ")"
 	}
-	add(header, layout.Style{Foreground: layout.ColorCyan})
+	add(header, layout.Style{Foreground: theme.Get(theme.GitHeader)})
 	if info.Summary != "" {
 		add(info.Summary, layout.Style{})
 	}
@@ -195,7 +196,7 @@ func hunkPopupLines(h gitstatus.Hunk, tabWidth, width int) []popupLine {
 
 	out := []popupLine{{
 		Text:  hunkSummary(h),
-		Style: layout.Style{Foreground: layout.ColorCyan},
+		Style: layout.Style{Foreground: theme.Get(theme.GitHeader)},
 	}}
 
 	side := func(texts []string, marker string, style layout.Style) {
@@ -214,8 +215,8 @@ func hunkPopupLines(h gitstatus.Hunk, tabWidth, width int) []popupLine {
 			})
 		}
 	}
-	side(h.Removed, "-", layout.Style{Foreground: layout.ColorRed})
-	side(h.Added, "+", layout.Style{Foreground: layout.ColorGreen})
+	side(h.Removed, "-", layout.Style{Foreground: theme.Get(theme.GitDeleted)})
+	side(h.Added, "+", layout.Style{Foreground: theme.Get(theme.GitAdded)})
 	return out
 }
 
