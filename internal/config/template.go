@@ -40,7 +40,11 @@ func Template(scopes []Scope) string {
 # backspace, space). Modifier names and named keys are case-insensitive; a
 # single-character key is not (x and X are different keys).
 #
-# Restart nib after editing this file for changes to take effect.
+# Press Ctrl+l (the "reload_config" binding below) to apply changes to
+# this file without restarting nib — or just close the editor Ctrl+o
+# opened it in, which reloads automatically. The one exception: a
+# language server already running for an "lsp" line you just changed
+# keeps using its old command until nib restarts.
 
 
 # --- language servers ---

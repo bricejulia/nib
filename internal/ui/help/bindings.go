@@ -30,6 +30,7 @@ var sections = []section{
 			{"Ctrl+d", "Open debug log"},
 			{"?", "Open this help"},
 			{"Ctrl+o", "Open config file"},
+			{"Ctrl+l", "Reload config file"},
 		},
 	},
 	{

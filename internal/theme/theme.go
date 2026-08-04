@@ -114,16 +114,20 @@ func (base Theme) Resolve(overrides map[Role]layout.Color) Theme {
 	return merged
 }
 
-// Active is the theme every color-bearing View reads from via Get. Set
-// once at startup by cmd/nib's run() (see SetActive), before app.Run()
-// starts rendering — nib has no config hot-reload (see internal/config's
-// package doc), so nothing calls SetActive again after that. It's a plain
-// package var, not behind a mutex: every real caller writes it once,
-// before the render loop starts, i.e. before any concurrent reader exists.
+// Active is the theme every color-bearing View reads from via Get. Set at
+// startup by cmd/nib's run() (see SetActive), before app.Run() starts
+// rendering, and set again whenever the user reloads the config live
+// (cmd/nib's reload_config action). It's a plain package var, not behind
+// a mutex: nib's event loop and rendering are single-threaded (see
+// internal/ui.App — cross-goroutine work like LSP responses marshals
+// back through App.Post specifically to land on that goroutine), so a
+// later SetActive call from reload_config never races a concurrent read.
 var Active Theme = Default
 
-// SetActive installs t as the theme Get subsequently reads. Call once,
-// before app.Run() — see the doc on Active.
+// SetActive installs t as the theme Get subsequently reads. Called once
+// at startup, and again by cmd/nib's reload_config action on every live
+// config reload — see the doc on Active for why both are safe with no
+// synchronization.
 func SetActive(t Theme) { Active = t }
 
 // Get is shorthand for Active.Get(role) — what every themed Style literal

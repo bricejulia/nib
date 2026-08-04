@@ -99,6 +99,13 @@ var globalDefaultKeybinds = config.Defaults{
 	{Trigger: "Ctrl+w", Action: "split_right"},
 	{Trigger: "Ctrl+e", Action: "split_down"},
 	{Trigger: "Ctrl+x", Action: "close_pane"},
+	// Re-reads the config file and re-applies everything it drives —
+	// every pane's keybindings, the global keymap, the LSP server
+	// registry, and the theme — live, no restart needed. Also fires
+	// automatically when the Ctrl+O editor exits (see openConfig); this
+	// binding covers editing the file from elsewhere (another terminal,
+	// tmux pane) while nib stays open.
+	{Trigger: "Ctrl+l", Action: "reload_config"},
 }
 
 // editorPane pairs an editor pane's window-tree leaf with its View, so
@@ -492,10 +499,16 @@ func run() error {
 	}
 	wireEditorPane(editorView)
 
+	// reloadConfig is forward-declared here (assigned for real once
+	// everything it re-wires exists, near the actions map below) so
+	// openConfig can call it on return — the only action another action
+	// needs to invoke.
+	var reloadConfig func()
+
 	// open_config shells out to the user's editor, so it needs the real
-	// terminal to itself — see ui.App.SuspendAndRun. Keybinding changes
-	// only take effect on nib's next start (the config template says
-	// so), so there's no need to reload anything on return.
+	// terminal to itself — see ui.App.SuspendAndRun. Reloading afterward
+	// (see reload_config) is what makes editing here take effect
+	// immediately instead of needing a restart.
 	openConfig := func() {
 		if cfgPath == "" {
 			return
@@ -513,6 +526,7 @@ func run() error {
 		if err != nil {
 			debuglog.Warn("open config %s in %s: %v", cfgPath, editorCmd, err)
 		}
+		reloadConfig()
 	}
 
 	// targetPane resolves the editor pane an action driven by CURRENT focus
@@ -730,16 +744,59 @@ func run() error {
 		"split_down":           func() { trySplit(layout.Vertical) },
 		"close_pane":           closeFocusedPane,
 	}
-	global := map[string]func(){}
-	for trigger, action := range globalDefaultKeybinds.Resolve(cfg.Overrides("global")) {
-		fn, ok := actions[action]
-		if !ok {
-			debuglog.Warn("config: unknown global action %q bound to %q", action, trigger)
-			continue
+
+	// rebuildGlobalKeymap resolves globalDefaultKeybinds against cfg's
+	// current "global" overrides and installs the result — factored out
+	// so reloadConfig can rebuild it exactly the same way the initial
+	// setup below does, instead of duplicating this loop.
+	rebuildGlobalKeymap := func() {
+		global := map[string]func(){}
+		for trigger, action := range globalDefaultKeybinds.Resolve(cfg.Overrides("global")) {
+			fn, ok := actions[action]
+			if !ok {
+				debuglog.Warn("config: unknown global action %q bound to %q", action, trigger)
+				continue
+			}
+			global[trigger] = fn
 		}
-		global[trigger] = fn
+		app.SetGlobalKeymap(global)
 	}
-	app.SetGlobalKeymap(global)
+
+	// reloadConfig re-reads cfgPath and re-applies everything it drives —
+	// every pane's keybindings, the global keymap, the LSP server
+	// registry, and the theme — without restarting nib. A missing or
+	// unloadable file is handled exactly like the initial load: warn and
+	// leave whatever was already active in place, rather than clearing it.
+	reloadConfig = func() {
+		if cfgPath == "" {
+			return
+		}
+		newCfg, err := config.Load(cfgPath)
+		if err != nil {
+			debuglog.Warn("reload config %s: %v", cfgPath, err)
+			return
+		}
+		cfg = newCfg
+
+		theme.SetActive(resolveTheme(cfg))
+
+		treeView.SetKeymap(cfg.Overrides("filetree"))
+		for _, p := range editorPanes {
+			p.view.SetKeymap(cfg.Overrides("editor"))
+		}
+		finderView.SetKeymap(cfg.Overrides("finder"))
+		finderView.Replace().SetKeymap(cfg.Overrides("replace"))
+		debugView.SetKeymap(cfg.Overrides("debug"))
+		helpView.SetKeymap(cfg.Overrides("help"))
+		diffView.SetKeymap(cfg.Overrides("diff"))
+		lspManager.SetServers(mergedLSPServers(cfg))
+		rebuildGlobalKeymap()
+
+		debuglog.Info("config reloaded from %s", cfgPath)
+	}
+	actions["reload_config"] = reloadConfig
+
+	rebuildGlobalKeymap()
 
 	treeView.OnOpen = func(path string) {
 		activeEditorPane.view.Open(path)
