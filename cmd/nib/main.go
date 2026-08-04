@@ -106,6 +106,12 @@ var globalDefaultKeybinds = config.Defaults{
 	// binding covers editing the file from elsewhere (another terminal,
 	// tmux pane) while nib stays open.
 	{Trigger: "Ctrl+l", Action: "reload_config"},
+	// Reveals the active pane's file in the tree and focuses it — the
+	// fix for "I opened index.tsx from the finder, but which one?" when a
+	// project has many same-named files. Bare Ctrl+t, not a bare letter:
+	// works the same from Insert mode as everywhere else, and "tree" is
+	// free of collisions with every other pane's own keymap.
+	{Trigger: "Ctrl+t", Action: "reveal_in_tree"},
 }
 
 // editorPane pairs an editor pane's window-tree leaf with its View, so
@@ -556,6 +562,23 @@ func run() error {
 		finderView.OpenWithQuery(word)
 		app.ShowOverlay(finderView)
 	}
+	// revealInTree is Ctrl+T's global handler: locates the current pane's
+	// active file in the file tree and focuses it, so opening a
+	// same-named file from the finder (e.g. one of several index.tsx)
+	// shows exactly which one.
+	revealInTree := func() {
+		p, ok := targetPane()
+		if !ok {
+			return
+		}
+		path := p.view.ActivePath()
+		if path == "" {
+			return
+		}
+		if treeView.Reveal(path) {
+			app.FocusLeaf(fileTreeLeaf.ID)
+		}
+	}
 	trySplit := func(dir layout.Direction) {
 		target, ok := targetPane()
 		if !ok {
@@ -743,6 +766,7 @@ func run() error {
 		"split_right":          func() { trySplit(layout.Horizontal) },
 		"split_down":           func() { trySplit(layout.Vertical) },
 		"close_pane":           closeFocusedPane,
+		"reveal_in_tree":       revealInTree,
 	}
 
 	// rebuildGlobalKeymap resolves globalDefaultKeybinds against cfg's

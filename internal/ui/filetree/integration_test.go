@@ -215,3 +215,40 @@ func TestCreateFromTheTreeSelectsTheNewFile(t *testing.T) {
 		t.Errorf("selection = %q, want new.go", got)
 	}
 }
+
+// Reveal is how main.go answers "I opened index.tsx from the finder, but
+// which one?": it must expand every ancestor of the given file, wherever it
+// sits, and land the cursor on it specifically.
+func TestRevealSelectsTheFileAcrossNestedDirectories(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"a/index.tsx", "b/deep/index.tsx"} {
+		full := filepath.Join(root, dir)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tree := filetree.New(root)
+	w := nullWindow{cols: 40, rows: 10}
+	tree.Render(w)
+
+	target := filepath.Join(root, "b", "deep", "index.tsx")
+	if !tree.Reveal(target) {
+		t.Fatalf("Reveal(%q) = false, want true", target)
+	}
+	var got string
+	tree.OnOpen = func(path string) { got = path }
+	tree.Render(w)
+	tree.HandleKey(layout.Key{Named: layout.KeyEnter})
+	if got != target {
+		t.Errorf("selection = %q, want %q — landed on the wrong index.tsx", got, target)
+	}
+
+	other := filepath.Join(root, "does", "not", "exist.tsx")
+	if tree.Reveal(other) {
+		t.Errorf("Reveal(%q) = true, want false", other)
+	}
+}

@@ -528,6 +528,15 @@ func (v *View) revealPath(abs string) bool {
 	return v.selectNode(target)
 }
 
+// Reveal expands every ancestor directory of abs and puts the cursor on
+// its own row. Reports false if abs is the root, sits outside it, or
+// isn't reachable in the tree. Exported for hosts that want to locate a
+// file opened elsewhere (e.g. from the finder) — see revealPath, which
+// does the same thing for the tree's own create/rename flows.
+func (v *View) Reveal(abs string) bool {
+	return v.revealPath(abs)
+}
+
 // syncAfter brings the tree back in step with the disk after a mutation:
 // it invalidates the specific directories that changed, re-flattens, and
 // leaves the cursor on selectPath (pass "" when there's nothing to select,
