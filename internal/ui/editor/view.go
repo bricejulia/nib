@@ -2385,6 +2385,21 @@ func (v *View) DirtyPaths() []string {
 	return paths
 }
 
+// DetachedPaths returns the paths of every tab open in this pane that's
+// already flagged detached (see CloseTabsUnder) — used by cmd/nib/main.go
+// to skip re-checking a file against disk once it's already known gone,
+// so an unrelated fsnotify refresh elsewhere in the project doesn't
+// re-warn about the same deleted tab on every debounce.
+func (v *View) DetachedPaths() []string {
+	var paths []string
+	for _, t := range v.tabs {
+		if t.detached {
+			paths = append(paths, t.path)
+		}
+	}
+	return paths
+}
+
 // SaveDirtyTabs saves every tab open in this pane with unsaved changes,
 // returning the error for each save that failed, keyed by path. A buffer
 // shared with another pane (see BufferStore) that this pane's own dirty

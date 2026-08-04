@@ -365,6 +365,27 @@ func TestViewCloseTabsUnderKeepsADirtyTabDetached(t *testing.T) {
 	}
 }
 
+func TestDetachedPathsReturnsOnlyDetachedTabs(t *testing.T) {
+	dir := t.TempDir()
+	kept := writeTemp(t, dir, "kept.txt", "one\n")
+	deleted := writeTemp(t, dir, "deleted.txt", "two\n")
+
+	v := NewView()
+	v.Open(kept)
+	v.Open(deleted)
+	v.activeTab().buf.InsertText(0, 0, "x")
+
+	if err := os.Remove(deleted); err != nil {
+		t.Fatal(err)
+	}
+	v.CloseTabsUnder(deleted)
+
+	got := v.DetachedPaths()
+	if len(got) != 1 || got[0] != deleted {
+		t.Fatalf("DetachedPaths() = %v, want [%s]", got, deleted)
+	}
+}
+
 func TestViewCloseTabsUnderMatchesOnlyRealChildren(t *testing.T) {
 	dir := t.TempDir()
 	keep := writeTemp(t, dir, "foobar/x.txt", "x")

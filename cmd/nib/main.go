@@ -736,6 +736,34 @@ func run() error {
 		sort.Strings(paths)
 		return paths
 	}
+
+	// openPathsNotYetDetached lists every currently-open file, across
+	// every editor pane, deduplicated, EXCEPT ones already flagged
+	// detached (see editor.View.CloseTabsUnder) — those are already known
+	// to be gone, so there's no need to stat them again on every fsnotify
+	// refresh. Used to find files an external delete (see
+	// watch.RefreshEvent below) removed out from under an open tab; the
+	// tree's own delete flow doesn't need this, since it already knows
+	// exactly which path it removed.
+	openPathsNotYetDetached := func() []string {
+		seen := map[string]bool{}
+		var paths []string
+		for _, p := range editorPanes {
+			detached := map[string]bool{}
+			for _, path := range p.view.DetachedPaths() {
+				detached[path] = true
+			}
+			for _, path := range p.view.OpenPaths() {
+				if seen[path] || detached[path] {
+					continue
+				}
+				seen[path] = true
+				paths = append(paths, path)
+			}
+		}
+		return paths
+	}
+
 	// saveAllDirty saves every unsaved file across every editor pane. A
 	// buffer shared by two panes is simply no longer Dirty by the time the
 	// second pane's SaveDirtyTabs runs, so this never double-writes.
@@ -869,7 +897,14 @@ func run() error {
 			p.view.Repath(oldPath, newPath)
 		}
 	}
-	treeView.OnPathDeleted = func(path string) {
+	// closeDeletedPath fans CloseTabsUnder out over every editor pane for
+	// a path known to be gone from disk — closing clean tabs outright,
+	// leaving a dirty one open but detached. Shared by the tree's own
+	// delete flow (which already knows exactly which path it removed) and
+	// by the fsnotify-driven watch.RefreshEvent handler below (which
+	// doesn't, and has to find out by statting every open path — see
+	// openPathsNotYetDetached).
+	closeDeletedPath := func(path string) {
 		var detached []string
 		for _, p := range editorPanes {
 			detached = append(detached, p.view.CloseTabsUnder(path)...)
@@ -881,6 +916,7 @@ func run() error {
 				path, len(detached), strings.Join(detached, ", "))
 		}
 	}
+	treeView.OnPathDeleted = closeDeletedPath
 	// Run last, after the tabs are carrying their new paths: refreshGitStatus
 	// ends in refreshAllLineStatus, and ApplyLineStatus matches on a tab's
 	// path — so doing this first would leave a moved file's gutter blank
@@ -897,6 +933,16 @@ func run() error {
 			debuglog.Debug("fsnotify refresh: gitChanged=%v fsChanged=%v", e.GitChanged, e.FSChanged)
 			if e.FSChanged {
 				treeView.Refresh()
+				// RefreshEvent only says "something changed", never what —
+				// so a file open in an editor pane that an external delete
+				// (from outside nib) just removed is only found by statting
+				// every open path against disk, same as the tree's own
+				// re-scan just did for the paths it knows about.
+				for _, path := range openPathsNotYetDetached() {
+					if _, err := os.Stat(path); os.IsNotExist(err) {
+						closeDeletedPath(path)
+					}
+				}
 			}
 			// A plain unstaged edit (including this app's own Save) never
 			// touches .git/index or HEAD, so it's only ever reported as
