@@ -53,6 +53,19 @@ type Buffer struct {
 	Charset textfile.Charset
 	EOL     textfile.EOL
 
+	// IndentUseSpaces and IndentWidth are this file's Tab-key behavior:
+	// whether Tab inserts spaces (IndentWidth of them) or a literal tab
+	// character, and the width used for cursor/display math either way.
+	// Unlike Charset/EOL (derived once at Load from the file's own bytes),
+	// these come from the language-keyed config a View holds (see
+	// View.tabModes) — Load has no access to that, so View.Open derives
+	// them the first time it opens this Buffer (IndentWidth == 0 is the
+	// "not derived yet" sentinel; a real width is always > 0). A Buffer
+	// shared by two split panes on the same file keeps one indent setting
+	// for both, same as Charset/EOL.
+	IndentUseSpaces bool
+	IndentWidth     int
+
 	// highlighted is real tree-sitter output (see treesitter.go), one
 	// entry per Lines index, raw/not-tab-expanded — nil (as a whole, or
 	// per-line) means "use the highlightLine heuristic instead", the

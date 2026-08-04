@@ -116,8 +116,8 @@ func (v *View) selectionText(t *tab) []string {
 	if !ok {
 		return nil
 	}
-	startRaw := rawIndexForExpandedCol(lineAt(t, start.ln), start.col, v.tabWidth)
-	endRaw := rawIndexForExpandedCol(lineAt(t, end.ln), end.col, v.tabWidth)
+	startRaw := rawIndexForExpandedCol(lineAt(t, start.ln), start.col, tabWidthOf(t))
+	endRaw := rawIndexForExpandedCol(lineAt(t, end.ln), end.col, tabWidthOf(t))
 	return t.buf.TextBetween(start.ln, startRaw, end.ln, endRaw)
 }
 
@@ -298,15 +298,15 @@ func (v *View) mousePress(t *tab, m layout.Mouse) bool {
 // nothing, rather than guessing at a neighbouring one.
 func (v *View) selectWordAt(t *tab) {
 	line := lineAt(t, t.cursorLn)
-	pos := rawIndexForExpandedCol(line, t.cursorCol, v.tabWidth)
+	pos := rawIndexForExpandedCol(line, t.cursorCol, tabWidthOf(t))
 	start, end, ok := wordRangeAt(line, pos)
 	if !ok {
 		t.selAnchor = position{ln: t.cursorLn, col: t.cursorCol}
 		t.hasSel = false
 		return
 	}
-	t.selAnchor = position{ln: t.cursorLn, col: expandedColForRawIndex(line, start, v.tabWidth)}
-	t.cursorCol = expandedColForRawIndex(line, end, v.tabWidth)
+	t.selAnchor = position{ln: t.cursorLn, col: expandedColForRawIndex(line, start, tabWidthOf(t))}
+	t.cursorCol = expandedColForRawIndex(line, end, tabWidthOf(t))
 	t.hasSel = true
 }
 
@@ -319,7 +319,7 @@ func (v *View) selectLineAt(t *tab) {
 		t.cursorLn++
 		t.cursorCol = 0
 	} else {
-		t.cursorCol = len(currentLineRunes(t, t.cursorLn, v.tabWidth))
+		t.cursorCol = len(currentLineRunes(t, t.cursorLn, tabWidthOf(t)))
 	}
 	t.hasSel = true
 }
@@ -375,7 +375,7 @@ func (v *View) positionAt(t *tab, m layout.Mouse) (ln, col int) {
 		return ln, 0
 	}
 	displayCol := m.Col - gutter + t.leftCol
-	expanded := string(currentLineRunes(t, ln, v.tabWidth))
+	expanded := string(currentLineRunes(t, ln, tabWidthOf(t)))
 	return ln, textwidth.RuneIndexForDisplayColumn(expanded, displayCol)
 }
 

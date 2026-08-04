@@ -51,10 +51,11 @@ type fakeLSP struct {
 	sigHelpLine       int
 	sigHelpChar       int
 
-	formatDispatched bool
-	formatEdits      []lsp.TextEdit
-	formatOK         bool
-	formatTabWidth   int
+	formatDispatched   bool
+	formatEdits        []lsp.TextEdit
+	formatOK           bool
+	formatTabWidth     int
+	formatInsertSpaces bool
 }
 
 func (f *fakeLSP) Ready(string) bool { return f.ready }
@@ -119,12 +120,13 @@ func (f *fakeLSP) SignatureHelp(_, _ string, line, character int, apply func(lsp
 	return true
 }
 
-func (f *fakeLSP) Formatting(_, _ string, tabWidth int, apply func([]lsp.TextEdit, bool)) bool {
+func (f *fakeLSP) Formatting(_, _ string, tabWidth int, insertSpaces bool, apply func([]lsp.TextEdit, bool)) bool {
 	if !f.ready {
 		return false
 	}
 	f.formatDispatched = true
 	f.formatTabWidth = tabWidth
+	f.formatInsertSpaces = insertSpaces
 	edits, ok := f.formatEdits, f.formatOK
 	f.pendingApply = func() { apply(edits, ok) }
 	return true
@@ -270,7 +272,7 @@ func TestGoToDefinitionFallsBackToTreeSitterWhenNotReady(t *testing.T) {
 	tb := v.activeTab()
 	line := lines[6]
 	tb.cursorLn = 6
-	tb.cursorCol = expandedColForRawIndex(line, strings.Index(line, "helper")+1, v.tabWidth)
+	tb.cursorCol = expandedColForRawIndex(line, strings.Index(line, "helper")+1, tabWidthOf(tb))
 
 	v.HandleKey(ctrlKey("]"))
 
@@ -464,8 +466,8 @@ func completionFixture(t *testing.T, fake *fakeLSP) (*View, *tab) {
 	v.active = 0
 	tb := v.activeTab()
 	tb.cursorLn = 4
-	tb.cursorCol = expandedColForRawIndex(lines[4], len([]rune(lines[4])), v.tabWidth) // just past "."
-	v.HandleKey(layout.Key{Text: "i"})                                                 // Insert mode
+	tb.cursorCol = expandedColForRawIndex(lines[4], len([]rune(lines[4])), tabWidthOf(tb)) // just past "."
+	v.HandleKey(layout.Key{Text: "i"})                                                     // Insert mode
 	return v, tb
 }
 

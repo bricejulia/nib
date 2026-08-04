@@ -2,15 +2,17 @@
 // text format (in the spirit of Ghostty's config, not TOML/YAML), letting
 // the user override nib's defaults without recompiling.
 //
-// Three directives share one three-field shape:
+// Four directives share one three-field shape:
 //
-//	keybind = <scope>:<trigger> = <action>
-//	lsp     = <language>        = <command args...>
-//	color   = <role>            = <color name>
+//	keybind = <scope>:<trigger>   = <action>
+//	lsp     = <language>         = <command args...>
+//	color   = <role>             = <color name>
+//	tabmode = <language|default> = <spaces|tabs>[:<width>]
 //
-// plus one two-field directive:
+// plus two two-field directives:
 //
-//	theme = <name>
+//	theme      = <name>
+//	whitespace = true
 //
 // The "lsp" directive registers a language server, e.g.
 //
@@ -22,6 +24,22 @@
 // The "theme"/"color" directives pick a built-in color theme and override
 // individual semantic colors on top of it — see internal/theme for the
 // built-in themes, the role vocabulary, and the color-name vocabulary.
+//
+// The "tabmode" directive picks whether Tab inserts spaces or a literal
+// tab character, and the indent width, for files of a given language
+// (matched by the same language name internal/ui/editor uses for syntax
+// highlighting and the "lsp" directive), e.g.
+//
+//	tabmode = yaml    = spaces:2
+//	tabmode = default = tabs:4
+//
+// "default" is the fallback applied to any language without its own
+// "tabmode" entry. The width suffix is optional; omitting it keeps
+// whatever width nib would otherwise use.
+//
+// The "whitespace" directive turns on rendering of spaces and tab-fill as
+// visible glyphs in the editor, e.g. "whitespace = true". Any other value
+// (or omitting the directive) leaves it off.
 //
 // scope is one of "global" (or omitted, e.g. "keybind = ctrl+p = ..."),
 // "editor", "filetree", "finder", "debug", "help" — see each package's
@@ -35,6 +53,7 @@ package config
 import (
 	"bufio"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/bricejulia/nib/internal/layout"
@@ -67,16 +86,26 @@ func (d Defaults) Resolve(overrides map[string]string) map[string]string {
 	return m
 }
 
+// TabMode is a language's indent style: whether Tab inserts spaces or a
+// literal tab character, and how wide an indent level is.
+type TabMode struct {
+	UseSpaces bool
+	Width     int
+}
+
 // Config holds the parsed user config: per-scope keybinding overrides,
-// language-server commands, and theme selection/color overrides. The zero
-// value (and a nil *Config) is a valid empty config — every scope falls
-// back to its built-in Defaults, no extra language servers are
-// registered, and theming falls back to internal/theme's default theme.
+// language-server commands, theme selection/color overrides, and
+// indent/whitespace-display settings. The zero value (and a nil *Config)
+// is a valid empty config — every scope falls back to its built-in
+// Defaults, no extra language servers are registered, theming falls back
+// to internal/theme's default theme, and whitespace display is off.
 type Config struct {
-	keybinds  map[string]map[string]string // scope -> trigger -> action
-	servers   map[string][]string          // language -> argv
-	themeName string                       // "" means unset, falls back to theme.DefaultName
-	colors    map[string]layout.Color      // role name (as typed, lowercased) -> validated color
+	keybinds   map[string]map[string]string // scope -> trigger -> action
+	servers    map[string][]string          // language -> argv
+	themeName  string                       // "" means unset, falls back to theme.DefaultName
+	colors     map[string]layout.Color      // role name (as typed, lowercased) -> validated color
+	tabModes   map[string]TabMode           // language (or "default") -> indent style
+	whitespace bool                         // "whitespace = true" was set
 }
 
 // Servers returns the language->command entries parsed from "lsp" lines,
@@ -120,6 +149,26 @@ func (c *Config) ColorOverrides() map[string]layout.Color {
 	return c.colors
 }
 
+// TabModes returns the language->indent-style entries parsed from
+// "tabmode" lines, keyed by language name (or "default" for the
+// fallback), for the caller to merge over its own hardcoded default.
+// Safe to call on a nil *Config.
+func (c *Config) TabModes() map[string]TabMode {
+	if c == nil {
+		return nil
+	}
+	return c.tabModes
+}
+
+// ShowWhitespace returns whether "whitespace = true" was set. Safe to
+// call on a nil *Config.
+func (c *Config) ShowWhitespace() bool {
+	if c == nil {
+		return false
+	}
+	return c.whitespace
+}
+
 // Parse reads nib's config format from r. It never returns an error:
 // unparseable lines are silently skipped, since a broken config line
 // shouldn't prevent nib from starting (worst case, that one override is
@@ -129,6 +178,7 @@ func Parse(r io.Reader) *Config {
 		keybinds: map[string]map[string]string{},
 		servers:  map[string][]string{},
 		colors:   map[string]layout.Color{},
+		tabModes: map[string]TabMode{},
 	}
 
 	sc := bufio.NewScanner(r)
@@ -140,22 +190,27 @@ func Parse(r io.Reader) *Config {
 
 		fields := strings.SplitN(line, "=", 3)
 
-		// "theme = <name>" is the one directive with a single value rather
-		// than this format's usual <directive> = <key> = <value> triplet,
-		// so it's handled before the three-field shape below.
+		// "theme = <name>" and "whitespace = true" are the two directives
+		// with a single value rather than this format's usual
+		// <directive> = <key> = <value> triplet, so they're handled before
+		// the three-field shape below.
 		if len(fields) == 2 {
-			if strings.TrimSpace(fields[0]) == "theme" {
+			switch strings.TrimSpace(fields[0]) {
+			case "theme":
 				if name := strings.TrimSpace(fields[1]); name != "" {
 					cfg.themeName = name
 				}
+			case "whitespace":
+				cfg.whitespace = strings.TrimSpace(fields[1]) == "true"
 			}
 			continue
 		}
 
-		// keybind/lsp/color share the same three-field shape:
-		//   keybind = <scope>:<trigger> = <action>
-		//   lsp     = <language>        = <command args...>
-		//   color   = <role>            = <color name>
+		// keybind/lsp/color/tabmode share the same three-field shape:
+		//   keybind = <scope>:<trigger>   = <action>
+		//   lsp     = <language>         = <command args...>
+		//   color   = <role>             = <color name>
+		//   tabmode = <language|default> = <spaces|tabs>[:<width>]
 		// so SplitN(3) either yields exactly the three fields wanted or the
 		// line is malformed.
 		if len(fields) != 3 {
@@ -196,10 +251,41 @@ func Parse(r io.Reader) *Config {
 				continue
 			}
 			cfg.colors[strings.ToLower(key)] = color
+
+		case "tabmode":
+			mode, ok := parseTabMode(value)
+			if !ok {
+				continue
+			}
+			cfg.tabModes[key] = mode
 		}
 	}
 
 	return cfg
+}
+
+// parseTabMode parses a "tabmode" directive's value, "<spaces|tabs>" or
+// "<spaces|tabs>:<width>". A missing or non-positive width leaves Width
+// at 0, meaning "unspecified" to the caller.
+func parseTabMode(value string) (TabMode, bool) {
+	style, widthStr, _ := strings.Cut(value, ":")
+	var mode TabMode
+	switch style {
+	case "spaces":
+		mode.UseSpaces = true
+	case "tabs":
+		mode.UseSpaces = false
+	default:
+		return TabMode{}, false
+	}
+	if widthStr != "" {
+		width, err := strconv.Atoi(widthStr)
+		if err != nil || width <= 0 {
+			return TabMode{}, false
+		}
+		mode.Width = width
+	}
+	return mode, true
 }
 
 // splitScope splits "editor:ctrl+p" into ("editor", "ctrl+p"); a trigger

@@ -129,7 +129,6 @@ func TestWordMotionsRespectTabExpandedCursorColumn(t *testing.T) {
 	// (see rawIndexForExpandedCol/expandedColForRawIndex) exactly like every
 	// other buffer mutation does.
 	v := NewView()
-	v.tabWidth = 4
 	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"\tfoo bar"}}}}
 	v.active = 0
 	v.activeTab().cursorCol = 4 // expanded column onto "f" of "foo", after the tab

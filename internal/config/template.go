@@ -116,6 +116,8 @@ func Template(scopes []Scope) string {
 #     — inline error text in the file tree's create/rename/delete prompt
 #   editor_selection
 #     — the mouse-selection highlight
+#   editor_whitespace
+#     — the space/tab glyphs drawn when "whitespace = true" is set
 #   ui_focus_border
 #     — the focused pane's border and title
 #
@@ -123,6 +125,31 @@ func Template(scopes []Scope) string {
 #   theme = default
 #   color = git_added = brightgreen
 #   color = git_deleted = brightred
+
+
+# --- tabs & whitespace ---
+#
+# Pick whether Tab inserts spaces or a literal tab character, and the
+# indent width, per language:
+#
+#   tabmode = <language|default> = <spaces|tabs>[:<width>]
+#
+# "default" is the fallback for any language without its own line. The
+# language name is the same one the "lsp" directive above and the status
+# bar's language indicator use. The ":<width>" suffix is optional.
+#
+#   tabmode = default = tabs:4
+#   tabmode = yaml     = spaces:2
+#
+# Toggle spaces/tabs for just the current file with Ctrl+Alt+t, without
+# touching this config.
+#
+# Show spaces and tab-fill as visible glyphs in the editor:
+#
+#   whitespace = true
+#
+# Any other value (or omitting the line) leaves it off. Its color is the
+# "editor_whitespace" role, overridable like any other color = line above.
 `)
 
 	for _, s := range scopes {

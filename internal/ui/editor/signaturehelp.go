@@ -22,7 +22,7 @@ func (v *View) triggerSignatureHelp() {
 	if lang == "" || !v.lsp.Ready(lang) {
 		return
 	}
-	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
 	v.lsp.SignatureHelp(t.path, lang, t.cursorLn, raw, func(sh lsp.SignatureHelp, ok bool) {
 		if v.activeTab() != t {
 			return // the user moved on while the server was thinking

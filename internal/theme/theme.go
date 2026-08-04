@@ -61,6 +61,9 @@ const (
 	// The editor's mouse-selection highlight (a Background color).
 	EditorSelection Role = "editor_selection"
 
+	// The space/tab glyphs drawn when "whitespace = true" is set.
+	EditorWhitespace Role = "editor_whitespace"
+
 	// The focused pane's border and title.
 	UIFocusBorder Role = "ui_focus_border"
 )
@@ -74,6 +77,7 @@ var AllRoles = []Role{
 	DebugWarn, DebugError,
 	FiletreePromptError,
 	EditorSelection,
+	EditorWhitespace,
 	UIFocusBorder,
 }
 

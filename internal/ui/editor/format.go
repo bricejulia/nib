@@ -25,7 +25,7 @@ func (v *View) triggerFormat() {
 	if lang == "" || !v.lsp.Ready(lang) {
 		return
 	}
-	v.lsp.Formatting(t.path, lang, v.tabWidth, func(edits []lsp.TextEdit, ok bool) {
+	v.lsp.Formatting(t.path, lang, tabWidthOf(t), t.buf.IndentUseSpaces, func(edits []lsp.TextEdit, ok bool) {
 		if v.activeTab() != t {
 			return // the user moved on while the server was thinking
 		}

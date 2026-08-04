@@ -224,7 +224,7 @@ func (v *View) goToParent(t *tab) {
 	if !ok {
 		return
 	}
-	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
 	offset := byteOffsetForPosition(t.buf, t.cursorLn, raw)
 	node := tree.RootNode().NamedDescendantForByteRange(offset, offset)
 	if node == nil {
@@ -243,7 +243,7 @@ func (v *View) goToParent(t *tab) {
 	v.pushJump(t)
 	ln, col := positionForByteOffset(t.buf, parent.StartByte())
 	t.cursorLn = ln
-	t.cursorCol = expandedColForRawIndex(t.buf.Lines[ln], col, v.tabWidth)
+	t.cursorCol = expandedColForRawIndex(t.buf.Lines[ln], col, tabWidthOf(t))
 }
 
 // goToDefinition implements "go to definition", preferring a language
@@ -278,7 +278,7 @@ func (v *View) goToDefinition(t *tab) {
 // worse than applying to the tab they asked from (which, if it's since
 // been closed, is simply inert).
 func (v *View) goToDefinitionLSP(t *tab, lang string) bool {
-	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
 	fromLn, fromCol := t.cursorLn, t.cursorCol
 
 	return v.lsp.Definition(t.path, lang, t.cursorLn, raw, func(loc lsp.Location, ok bool) {
@@ -302,7 +302,7 @@ func (v *View) goToDefinitionLSP(t *tab, lang string) bool {
 
 		if target == t.path {
 			t.cursorLn = loc.Range.Start.Line
-			t.cursorCol = expandedColForRawIndexIn(t.buf, loc.Range.Start.Line, loc.Range.Start.Character, v.tabWidth)
+			t.cursorCol = expandedColForRawIndexIn(t.buf, loc.Range.Start.Line, loc.Range.Start.Character, tabWidthOf(t))
 			v.clamp(t)
 			return
 		}
@@ -311,7 +311,7 @@ func (v *View) goToDefinitionLSP(t *tab, lang string) bool {
 		// LSP is 0-based.
 		v.OpenAtLine(target, loc.Range.Start.Line+1)
 		if nt := v.activeTab(); nt != nil && nt.buf != nil {
-			nt.cursorCol = expandedColForRawIndexIn(nt.buf, loc.Range.Start.Line, loc.Range.Start.Character, v.tabWidth)
+			nt.cursorCol = expandedColForRawIndexIn(nt.buf, loc.Range.Start.Line, loc.Range.Start.Character, tabWidthOf(nt))
 			v.clamp(nt)
 		}
 	})
@@ -337,7 +337,7 @@ func expandedColForRawIndexIn(buf *Buffer, ln, rawCol, tabWidth int) int {
 // debuglog.Warn and does nothing if the cursor isn't on an identifier, the
 // language isn't recognized, or no matching declaration is found.
 func (v *View) goToDefinitionTreeSitter(t *tab) {
-	word := wordUnderCursor(t, v.tabWidth)
+	word := wordUnderCursor(t, tabWidthOf(t))
 	if word == "" {
 		return
 	}
@@ -352,7 +352,7 @@ func (v *View) goToDefinitionTreeSitter(t *tab) {
 			v.pushJump(t)
 			ln, col := positionForByteOffset(t.buf, d.NameStartByte)
 			t.cursorLn = ln
-			t.cursorCol = expandedColForRawIndex(t.buf.Lines[ln], col, v.tabWidth)
+			t.cursorCol = expandedColForRawIndex(t.buf.Lines[ln], col, tabWidthOf(t))
 			return
 		}
 	}

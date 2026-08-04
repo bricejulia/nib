@@ -126,7 +126,7 @@ func (v *View) triggerAutocomplete() {
 			}
 		}
 	}
-	v.completion = computeCompletionCandidates(t, v.tabWidth)
+	v.completion = computeCompletionCandidates(t, tabWidthOf(t))
 }
 
 // requestLSPCompletion asks the server for candidates at the cursor,
@@ -138,18 +138,18 @@ func (v *View) triggerAutocomplete() {
 // rather than leaving the user with no popup at all: a server declining to
 // answer shouldn't be worse than having no server.
 func (v *View) requestLSPCompletion(t *tab, lang string) bool {
-	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, v.tabWidth)
-	_, prefixLen := wordBeforeCursor(t, v.tabWidth)
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
+	_, prefixLen := wordBeforeCursor(t, tabWidthOf(t))
 
 	return v.lsp.Completion(t.path, lang, t.cursorLn, raw, func(items []lsp.CompletionItem, ok bool) {
 		if v.activeTab() != t {
 			return // the user moved on while the server was thinking
 		}
-		if candidates := completionLabels(items, prefixLen, t, v.tabWidth); ok && len(candidates) > 0 {
+		if candidates := completionLabels(items, prefixLen, t, tabWidthOf(t)); ok && len(candidates) > 0 {
 			v.completion = &completionState{candidates: candidates, prefixLen: prefixLen}
 			return
 		}
-		v.completion = computeCompletionCandidates(t, v.tabWidth)
+		v.completion = computeCompletionCandidates(t, tabWidthOf(t))
 	})
 }
 
@@ -191,7 +191,8 @@ func completionLabels(items []lsp.CompletionItem, prefixLen int, t *tab, tabWidt
 // matches anymore rather than leave a stale/empty menu up — at that point
 // typing just continues as plain Insert-mode editing.
 func (v *View) refilterCompletion() {
-	v.completion = computeCompletionCandidates(v.activeTab(), v.tabWidth)
+	t := v.activeTab()
+	v.completion = computeCompletionCandidates(t, tabWidthOf(t))
 }
 
 // acceptCompletion inserts the selected candidate in place of the typed

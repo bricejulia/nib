@@ -351,7 +351,7 @@ func TestViewHorizontalScrollDoesNotMangleWideRunes(t *testing.T) {
 	tb.cursorLn = 2 // the CJK line
 	// Step the cursor across the whole line one rune at a time, forcing
 	// leftCol to follow all the way through the CJK cluster and back out.
-	lineLen := len(currentLineRunes(tb, tb.cursorLn, v.tabWidth))
+	lineLen := len(currentLineRunes(tb, tb.cursorLn, tabWidthOf(tb)))
 	for i := 0; i < lineLen; i++ {
 		v.HandleKey(layout.Key{Named: layout.KeyRight})
 		v.Render(w)
@@ -399,7 +399,7 @@ func TestViewHomeAndEndMoveCursorColToLineBoundaries(t *testing.T) {
 	tb.cursorLn = 3 // the 200-char long line
 	v.HandleKey(layout.Key{Named: layout.KeyEnd})
 	v.Render(w)
-	wantEnd := len(currentLineRunes(tb, 3, v.tabWidth))
+	wantEnd := len(currentLineRunes(tb, 3, tabWidthOf(tb)))
 	if tb.cursorCol != wantEnd {
 		t.Fatalf("End should move cursorCol to the line length (%d), got %d", wantEnd, tb.cursorCol)
 	}
