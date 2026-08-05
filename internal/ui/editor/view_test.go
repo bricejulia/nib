@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/ui/gitstyle"
@@ -389,6 +390,126 @@ func TestViewHorizontalScrollIsBoundedByLineLength(t *testing.T) {
 	}
 	if tb.leftCol > tb.cursorCol {
 		t.Fatalf("leftCol (%d) should never exceed the cursor's own display column (%d)", tb.leftCol, tb.cursorCol)
+	}
+}
+
+// Regression test for the crash maxRenderLineRunes exists to prevent: a
+// single line far longer than anything a terminal could show (the
+// motivating case was a PHP framework cache file with one
+// 12.7-million-character line) must not make rendering pay a cost
+// proportional to the line's true length — that would freeze the whole
+// app, starting with the very first render right after Open, before any
+// keystroke. Render runs on its own goroutine with a hard deadline so a
+// regression here fails the test instead of hanging the suite.
+func TestRenderBodyBoundsCostForPathologicallyLongLine(t *testing.T) {
+	huge := strings.Repeat("x", 5_000_000)
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{huge}}}}
+	v.active = 0
+	// Wide enough that the whole capped line (maxRenderLineRunes plus the
+	// truncation marker) fits with no horizontal scrolling needed — the
+	// marker sits right at the cap, well past any width a real terminal
+	// would ever use.
+	w := newFakeWindow(maxRenderLineRunes+100, 10)
+
+	done := make(chan struct{})
+	go func() {
+		v.Render(w)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Render did not return in time — cost must be bounded by maxRenderLineRunes, not by the line's true length")
+	}
+
+	if !strings.Contains(w.lines[1], "…") {
+		t.Errorf("expected row 1 (the buffer's only line) to show a truncation marker, got %q", w.lines[1])
+	}
+}
+
+// The cursor starts at column 0 on a freshly opened file — cursorDisplayColumn
+// runs on every render (see renderBody), so even that trivial case must not
+// touch the whole line to answer "column 0 is display column 0".
+func TestCursorDisplayColumnBoundedAtColumnZeroOnPathologicallyLongLine(t *testing.T) {
+	huge := strings.Repeat("x", 5_000_000)
+	tb := &tab{buf: &Buffer{Lines: []string{huge}}}
+
+	done := make(chan int)
+	go func() { done <- cursorDisplayColumn(tb, 4) }()
+	select {
+	case got := <-done:
+		if got != 0 {
+			t.Errorf("cursorDisplayColumn at cursorCol=0 = %d, want 0", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cursorDisplayColumn did not return in time — cost must be bounded by cursorCol, not by the line's true length")
+	}
+}
+
+func TestRunePrefixReturnsWholeStringWhenUnderBudget(t *testing.T) {
+	prefix, count, truncated := runePrefix("héllo", 10)
+	if prefix != "héllo" || count != 5 || truncated {
+		t.Fatalf("got (%q, %d, %v), want (%q, 5, false)", prefix, count, truncated, "héllo")
+	}
+}
+
+func TestRunePrefixTruncatesAtRuneBoundaryNotByteBoundary(t *testing.T) {
+	// "héllo": h, é (2 bytes), l, l, o — cutting at 2 runes must land right
+	// after "é", not mid-byte.
+	prefix, count, truncated := runePrefix("héllo", 2)
+	if prefix != "hé" || count != 2 || !truncated {
+		t.Fatalf("got (%q, %d, %v), want (%q, 2, true)", prefix, count, truncated, "hé")
+	}
+}
+
+func TestRunePrefixZeroBudget(t *testing.T) {
+	prefix, count, truncated := runePrefix("abc", 0)
+	if prefix != "" || count != 0 || !truncated {
+		t.Fatalf("got (%q, %d, %v), want (\"\", 0, true)", prefix, count, truncated)
+	}
+}
+
+func TestClipLineForRenderLeavesShortLinesUntouched(t *testing.T) {
+	if clipped, truncated := clipLineForRender("short line"); clipped != "short line" || truncated {
+		t.Fatalf("got (%q, %v), want (\"short line\", false)", clipped, truncated)
+	}
+}
+
+func TestClipLineForRenderCapsPathologicallyLongLines(t *testing.T) {
+	huge := strings.Repeat("x", maxRenderLineRunes+1000)
+	clipped, truncated := clipLineForRender(huge)
+	if !truncated {
+		t.Fatal("expected truncated=true for a line over maxRenderLineRunes")
+	}
+	if got := len([]rune(clipped)); got != maxRenderLineRunes {
+		t.Fatalf("clipped line has %d runes, want exactly %d", got, maxRenderLineRunes)
+	}
+}
+
+func TestClipSegmentsForRenderLeavesSegmentsUnderBudgetUntouched(t *testing.T) {
+	segs := []layout.Segment{{Text: "abc"}, {Text: "def"}}
+	clipped, truncated := clipSegmentsForRender(segs)
+	if truncated {
+		t.Fatal("expected truncated=false: total text is far under maxRenderLineRunes")
+	}
+	if segText(clipped) != "abcdef" {
+		t.Fatalf("got %q, want %q", segText(clipped), "abcdef")
+	}
+}
+
+func TestClipSegmentsForRenderSplitsTheSegmentStraddlingTheBudget(t *testing.T) {
+	segs := []layout.Segment{
+		{Text: strings.Repeat("a", maxRenderLineRunes-1)},
+		{Text: "bcdef"}, // straddles the boundary: 1 rune fits, 4 don't
+		{Text: "ghij"},  // must never be reached
+	}
+	clipped, truncated := clipSegmentsForRender(segs)
+	if !truncated {
+		t.Fatal("expected truncated=true")
+	}
+	if got := segText(clipped); len([]rune(got)) != maxRenderLineRunes || !strings.HasSuffix(got, "b") {
+		t.Fatalf("got %q (len %d), want exactly maxRenderLineRunes runes ending in \"b\"", got, len([]rune(got)))
 	}
 }
 

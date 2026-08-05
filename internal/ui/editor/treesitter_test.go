@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"os"
 	"testing"
 
 	"github.com/odvcencio/gotreesitter"
@@ -265,6 +266,68 @@ func TestHighlightBufferNoPathReturnsNil(t *testing.T) {
 func TestHighlightBufferNilBufferReturnsNil(t *testing.T) {
 	if got := highlightBuffer(nil); got != nil {
 		t.Errorf("expected nil for a nil buffer, got %+v", got)
+	}
+}
+
+// parseTree runs synchronously on the UI goroutine, on every Open and every
+// completed Normal-mode edit (see refreshSyntaxDiagnostics) — unlike
+// highlightSource, which the background Highlighter already bounds (see
+// TestHighlightSourceReportsAParseThatRanOutOfTime, which this mirrors). A
+// timeout that only capped the background path and left this one unbounded
+// would still let a single pathological file freeze the app.
+func TestParseTreeReportsAParseThatRanOutOfTime(t *testing.T) {
+	src, err := os.ReadFile("view.go")
+	if err != nil {
+		t.Skip(err)
+	}
+
+	// The timeout is baked into the cached parser, so both it and the cache
+	// entry have to be swapped out and put back.
+	restoreTimeout, restoreCached := highlightTimeoutMicros, parserCache["go"]
+	t.Cleanup(func() {
+		highlightTimeoutMicros = restoreTimeout
+		parserCache["go"] = restoreCached
+	})
+	highlightTimeoutMicros = 1 // 1µs: no real parse finishes in that
+	delete(parserCache, "go")
+
+	buf := &Buffer{Path: "probe.go", Source: src}
+	tree, ok := parseTree(buf)
+	if ok {
+		t.Fatal("a 1µs budget should not have been enough to finish parsing 1800 lines")
+	}
+	if tree != nil {
+		t.Error("an unfinished parse should report ok=false, not hand back a partial tree")
+	}
+}
+
+// Above maxTreeSitterBytes, both tree-sitter entry points must bail out the
+// same way they already do for an unrecognized grammar — fail soft, not
+// spend a bounded-but-still-real parse on content this large (see that
+// constant's doc comment for why: a pathological single-line file can cost
+// real time/memory on the way to timing out, over and over).
+func TestHighlightSourceSkipsPathologicallyLargeSource(t *testing.T) {
+	restore := maxTreeSitterBytes
+	t.Cleanup(func() { maxTreeSitterBytes = restore })
+	maxTreeSitterBytes = 10 // smaller than any real source below
+
+	lines, ok := highlightSource("probe.go", []byte("package main\n\nfunc main() {}\n"))
+	if !ok {
+		t.Fatal("skipping for size should report ok=true (definitive no-highlight), like an unrecognized grammar")
+	}
+	if lines != nil {
+		t.Errorf("expected nil lines, got %+v", lines)
+	}
+}
+
+func TestParseTreeSkipsPathologicallyLargeSource(t *testing.T) {
+	restore := maxTreeSitterBytes
+	t.Cleanup(func() { maxTreeSitterBytes = restore })
+	maxTreeSitterBytes = 10 // smaller than any real source below
+
+	buf := &Buffer{Path: "probe.go", Source: []byte("package main\n\nfunc main() {}\n")}
+	if _, ok := parseTree(buf); ok {
+		t.Fatal("expected parseTree to skip source over maxTreeSitterBytes")
 	}
 }
 

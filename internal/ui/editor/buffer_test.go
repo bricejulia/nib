@@ -32,6 +32,24 @@ func TestLoadSplitsLinesWithoutTrailingNewline(t *testing.T) {
 	}
 }
 
+// Load has no other size check below maxLoadableFileSize (see its doc
+// comment) — the whole file becomes one []byte and then a slice of line
+// strings — so this is the last line of defense against a file large
+// enough to exhaust memory just being opened. Shrinking the var (rather
+// than writing an actual 100MB fixture) is the same trick
+// TestHighlightSourceReportsAParseThatRanOutOfTime uses for
+// highlightTimeoutMicros.
+func TestLoadRejectsFilesOverMaxLoadableFileSize(t *testing.T) {
+	restore := maxLoadableFileSize
+	t.Cleanup(func() { maxLoadableFileSize = restore })
+	maxLoadableFileSize = 4 // smaller than editor_sample.txt
+
+	_, err := Load(fixturePath(t, "editor_sample.txt"))
+	if err == nil {
+		t.Fatal("expected Load to reject a file over maxLoadableFileSize")
+	}
+}
+
 func TestLoadSourceMatchesLinesJoinedForTrailingNewlineFile(t *testing.T) {
 	buf, err := Load(fixturePath(t, "editor_sample.txt")) // has a trailing \n on disk
 	if err != nil {
