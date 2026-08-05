@@ -694,6 +694,7 @@ func run() error {
 		// map; the finder only ever lists files, so the direct per-file
 		// map is the right (and precise) one for it.
 		treeView.ApplyStatus(gitstatus.Rollup(direct))
+		treeView.ApplyChanges(direct)
 		finderView.ApplyStatus(direct)
 		gitSummary = gitstatus.Summary(direct)
 		if branch, err := gitstatus.CurrentBranch(absRoot); err == nil {
