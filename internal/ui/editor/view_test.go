@@ -559,7 +559,14 @@ func TestArrowKeyNavigationStaysBoundedAfterCursorOvershootsTheRenderCap(t *test
 	}()
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
+		// A more generous deadline than this file's other bounded-cost
+		// tests: unlike those, every one of these 1000 presses pays a
+		// real (bounded, but not free) maxRenderLineRunes-scale cost —
+		// see applyMovement's move_left/move_right — so this is
+		// measurably more expensive than starting from column 0, just
+		// not proportional to the original 3,000,000 overshoot. -race
+		// plus a slower/shared CI runner can multiply that further.
 		t.Fatal("a burst of arrow keys starting past the render cap did not complete in time")
 	}
 
