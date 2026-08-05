@@ -1643,6 +1643,24 @@ func currentLineRunes(t *tab, ln, tabWidth int) []rune {
 	return []rune(textwidth.ExpandTabs(t.buf.Lines[ln], tabWidth))
 }
 
+// lineEndCol returns where vim's "$"/End should land: t's current line's
+// true expanded length, or maxRenderLineRunes if the line is longer than
+// that. Content past the render cap isn't reachable by scrolling anyway
+// (see clipLineForRender), so there's no reason to pay currentLineRunes's
+// full-line ExpandTabs-plus-[]rune cost just to compute a value clamp
+// would immediately correct back down to maxRenderLineRunes on its very
+// next call regardless.
+func lineEndCol(t *tab, tabWidth int) int {
+	if t.buf == nil || t.cursorLn < 0 || t.cursorLn >= len(t.buf.Lines) {
+		return 0
+	}
+	line := t.buf.Lines[t.cursorLn]
+	if _, _, longEnough := runePrefix(line, maxRenderLineRunes); longEnough {
+		return maxRenderLineRunes
+	}
+	return len(currentLineRunes(t, t.cursorLn, tabWidth))
+}
+
 // cursorDisplayColumn converts t.cursorCol (a rune index) to a display
 // column on t's current line, accounting for double-width runes.
 //
@@ -2035,7 +2053,7 @@ func (v *View) applyMovement(t *tab, action string, count int) bool {
 	case "line_start":
 		t.cursorCol = 0
 	case "line_end":
-		t.cursorCol = len(currentLineRunes(t, t.cursorLn, tabWidthOf(t)))
+		t.cursorCol = lineEndCol(t, tabWidthOf(t))
 	case "first_line":
 		t.cursorLn = 0
 	case "last_line":
@@ -2662,6 +2680,34 @@ func (v *View) clamp(t *tab) {
 		}
 		return
 	}
+	line := t.buf.Lines[t.cursorLn]
+
+	// A hard ceiling first: content past maxRenderLineRunes isn't
+	// reachable by scrolling anyway (see clipLineForRender), so cursorCol
+	// has no business exceeding it either. This matters because clamp
+	// runs after EVERY cursor-affecting action (motion, paste, undo/redo,
+	// search, mouse selection, ... — see applyMovement's callers and
+	// friends), so it's the one place responsible for correcting cursorCol
+	// no matter what set it too high — e.g. "$"/End (see lineEndCol) used
+	// to compute a pathologically long line's TRUE length before landing
+	// there; once cursorCol is that large, every later keystroke's own
+	// bounded-by-cursorCol check (below, and applyMovement's move_left/
+	// move_right) is only "bounded" in the sense of not being O(line
+	// length) — it's still O(that huge cursorCol). Checking the ceiling
+	// here, bounded to exactly maxRenderLineRunes regardless of how far
+	// cursorCol already is, is what keeps it from staying expensive
+	// forever once it's overshot once.
+	if t.cursorCol > maxRenderLineRunes {
+		if _, _, longEnough := runePrefix(line, maxRenderLineRunes); longEnough {
+			t.cursorCol = maxRenderLineRunes
+			return
+		}
+		// Else the line actually has maxRenderLineRunes runes or fewer —
+		// a stale cursorCol from before an edit shrank it. Falls through
+		// to the exact check below, cheap regardless since the line
+		// itself is short.
+	}
+
 	// Bounded by cursorCol, not by the line's true length: runePrefix(line,
 	// cursorCol) stops as soon as it's seen one raw rune past cursorCol, so
 	// a line with MORE raw runes than that (truncated=true) is guaranteed —
@@ -2669,13 +2715,7 @@ func (v *View) clamp(t *tab) {
 	// too, without ever looking at the rest of the line. Only when the raw
 	// line has cursorCol runes or fewer (truncated=false, and rawPrefix is
 	// then the WHOLE line) does the actual expanded length need computing.
-	// Same reasoning as cursorDisplayColumn's doc comment. clamp runs after
-	// every single motion in both modes (see applyMovement's callers), so
-	// the unconditional full-line currentLineRunes call this replaced meant
-	// every arrow keypress paid an ExpandTabs-plus-[]rune pass over the
-	// WHOLE line — on a pathologically long line, that's what made holding
-	// a key down lock nib up.
-	line := t.buf.Lines[t.cursorLn]
+	// Same reasoning as cursorDisplayColumn's doc comment.
 	rawPrefix, lineLen, truncated := runePrefix(line, t.cursorCol)
 	if truncated {
 		return
