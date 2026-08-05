@@ -497,6 +497,124 @@ func TestVerticalMotionOntoPathologicallyLongLineStaysBounded(t *testing.T) {
 	}
 }
 
+// Regression test for the follow-up bug found after the render cap and the
+// bounded-by-cursorCol clamp/applyMovement fixes had already shipped:
+// pressing "$"/End on a pathologically long line used to compute the
+// line's TRUE length (an unbounded full-line scan) before landing there —
+// after which EVERY subsequent arrow press stayed slow, since "bounded by
+// cursorCol" isn't small once cursorCol itself is huge. "$" must land at
+// maxRenderLineRunes, not the line's true length — content past the
+// render cap isn't reachable by scrolling anyway (see clipLineForRender).
+func TestLineEndOnPathologicallyLongLineLandsAtTheRenderCapNotTheTrueLength(t *testing.T) {
+	huge := strings.Repeat("x", 5_000_000)
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{huge}}}}
+	v.active = 0
+	w := newFakeWindow(40, 10)
+	v.Render(w)
+
+	done := make(chan struct{})
+	go func() {
+		v.HandleKey(layout.Key{Named: layout.KeyEnd})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("End did not complete in time — it must land at maxRenderLineRunes without computing the line's true length")
+	}
+
+	if got := v.activeTab().cursorCol; got != maxRenderLineRunes {
+		t.Fatalf("cursorCol = %d, want exactly maxRenderLineRunes (%d), not the line's true length (%d)",
+			got, maxRenderLineRunes, len(huge))
+	}
+}
+
+// The real regression: a burst of arrow keys starting from a cursor
+// already sitting past the render cap (exactly what "$"/End used to leave
+// behind) must stay fast — not just a burst starting from column 0, which
+// TestArrowKeyNavigationStaysBoundedOnPathologicallyLongLine already
+// covers and which this fix doesn't change the cost of.
+func TestArrowKeyNavigationStaysBoundedAfterCursorOvershootsTheRenderCap(t *testing.T) {
+	huge := strings.Repeat("x", 5_000_000)
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{huge}}}}
+	v.active = 0
+	w := newFakeWindow(40, 10)
+	v.Render(w)
+
+	tb := v.activeTab()
+	tb.cursorCol = 3_000_000 // simulates a cursor left stranded past the cap by an old "$"/End, a search jump, etc.
+
+	const presses = 500
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < presses; i++ {
+			v.HandleKey(layout.Key{Named: layout.KeyRight})
+		}
+		for i := 0; i < presses; i++ {
+			v.HandleKey(layout.Key{Named: layout.KeyLeft})
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a burst of arrow keys starting past the render cap did not complete in time")
+	}
+
+	// clamp's ceiling snaps an overshot cursorCol down to maxRenderLineRunes
+	// on the very first call, so stepping left/right from there behaves
+	// exactly like starting from maxRenderLineRunes, not from 3,000,000.
+	if got := tb.cursorCol; got != maxRenderLineRunes-presses {
+		t.Fatalf("cursorCol = %d, want %d (clamped to maxRenderLineRunes, then %d left, %d right)",
+			got, maxRenderLineRunes-presses, presses, presses)
+	}
+}
+
+func TestClampCapsAnOvershotCursorColAtTheRenderCap(t *testing.T) {
+	huge := strings.Repeat("x", 5_000_000)
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{huge}}}}
+	v.active = 0
+	tb := v.activeTab()
+	tb.cursorCol = 3_000_000
+
+	done := make(chan struct{})
+	go func() {
+		v.clamp(tb)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("clamp did not return in time for a cursorCol far past maxRenderLineRunes")
+	}
+
+	if tb.cursorCol != maxRenderLineRunes {
+		t.Fatalf("cursorCol = %d, want exactly maxRenderLineRunes (%d)", tb.cursorCol, maxRenderLineRunes)
+	}
+}
+
+func TestClampLeavesAShortLineExactAtItsStaleCursorCol(t *testing.T) {
+	// A line shorter than maxRenderLineRunes with a cursorCol that
+	// overshoots even that cap (e.g. left over from before an edit
+	// shrank the line) must fall through to the EXACT clamp, not the
+	// maxRenderLineRunes ceiling — the ceiling only applies to lines
+	// that actually exceed it.
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"short"}}}}
+	v.active = 0
+	tb := v.activeTab()
+	tb.cursorCol = maxRenderLineRunes + 1000
+
+	v.clamp(tb)
+
+	if want := len([]rune("short")); tb.cursorCol != want {
+		t.Fatalf("cursorCol = %d, want %d (the short line's own true length)", tb.cursorCol, want)
+	}
+}
+
 // The cursor starts at column 0 on a freshly opened file — cursorDisplayColumn
 // runs on every render (see renderBody), so even that trivial case must not
 // touch the whole line to answer "column 0 is display column 0".
