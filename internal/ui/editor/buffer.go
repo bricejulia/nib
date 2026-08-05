@@ -67,6 +67,17 @@ type Buffer struct {
 	IndentUseSpaces bool
 	IndentWidth     int
 
+	// HasLongLine is true if any line was already longer than
+	// maxRenderLineRunes at Load (see view.go) — e.g. a serialized cache
+	// file with one multi-million-character line. Detected once, like
+	// Charset/EOL, not re-derived as edits happen afterward (an edit that
+	// introduces or removes a long line won't flip this until the file is
+	// reopened) — good enough for its only purpose: telling the user why
+	// such a file renders/navigates the way renderBody's render cap makes
+	// it, via the "-- LONG LINE --" status-bar prefix and tab-bar marker
+	// (see StatusText/tabDisplayNames).
+	HasLongLine bool
+
 	// highlighted is real tree-sitter output (see treesitter.go), one
 	// entry per Lines index, raw/not-tab-expanded — nil (as a whole, or
 	// per-line) means "use the highlightLine heuristic instead", the
@@ -152,10 +163,18 @@ func Load(path string) (*Buffer, error) {
 	}
 	lines, eol := textfile.SplitLines(text)
 	source := strings.Join(lines, "\n")
+	hasLongLine := false
+	for _, ln := range lines {
+		if _, _, truncated := runePrefix(ln, maxRenderLineRunes); truncated {
+			hasLongLine = true
+			break
+		}
+	}
 	return &Buffer{
 		Lines: lines, Path: path, Source: []byte(source), mode: mode,
 		saved:   append([]string(nil), lines...),
 		Charset: charset, EOL: eol,
+		HasLongLine: hasLongLine,
 	}, nil
 }
 

@@ -50,6 +50,54 @@ func TestLoadRejectsFilesOverMaxLoadableFileSize(t *testing.T) {
 	}
 }
 
+// HasLongLine is renderBody's render-cap condition (see maxRenderLineRunes,
+// runePrefix), checked once at Load rather than every render — this is the
+// signal StatusText/tabDisplayNames turn into the "-- LONG LINE --"
+// notice and "⚠" marker.
+func TestLoadSetsHasLongLineWhenALineExceedsTheRenderCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "long.txt")
+	content := strings.Repeat("x", maxRenderLineRunes+1)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !buf.HasLongLine {
+		t.Error("expected HasLongLine to be true for a line over maxRenderLineRunes")
+	}
+}
+
+func TestLoadHasLongLineFalseForOrdinaryFiles(t *testing.T) {
+	buf, err := Load(fixturePath(t, "editor_sample.txt"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if buf.HasLongLine {
+		t.Error("expected HasLongLine to be false for an ordinary small fixture")
+	}
+}
+
+func TestLoadHasLongLineFalseAtExactlyTheCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "exact.txt")
+	content := strings.Repeat("x", maxRenderLineRunes) // exactly at the cap, not over it
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if buf.HasLongLine {
+		t.Error("expected HasLongLine to be false for a line exactly at maxRenderLineRunes (not over it)")
+	}
+}
+
 func TestLoadSourceMatchesLinesJoinedForTrailingNewlineFile(t *testing.T) {
 	buf, err := Load(fixturePath(t, "editor_sample.txt")) // has a trailing \n on disk
 	if err != nil {
