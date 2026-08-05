@@ -1333,6 +1333,75 @@ func disambiguatePaths(paths []string) []string {
 	}
 }
 
+// maxRenderLineRunes bounds how many runes of a single line renderBody
+// will ever feed to highlighting, tab expansion, and range overlays —
+// every one of those costs at least O(runes examined), and none of them
+// examines more than this regardless of how long the underlying line
+// actually is. Far more than any real terminal width plus horizontal-
+// scroll headroom could need, and utterly dwarfed by a pathological line
+// (e.g. a serialized PHP framework cache file's single
+// multi-million-character line, the shape that motivated this constant):
+// without a cap, every render — starting with the very first one after
+// Open, before any keystroke — would redo O(line length) work forever,
+// wedging the whole app on a file like that. Content past the cap simply
+// isn't reachable by scrolling, searching, or selecting; see
+// clipLineForRender/clipSegmentsForRender.
+const maxRenderLineRunes = 20_000
+
+// runePrefix returns the first max runes of s (all of s, plus how many
+// that is, if it has fewer), and whether s had more. The scan stops the
+// moment it has seen max runes, so cost is bounded by max regardless of
+// len(s) — the point, since every caller uses this on content that can be
+// pathologically long (a line, or a raw-index prefix of one) and only
+// ever needs a bounded prefix of it.
+func runePrefix(s string, max int) (prefix string, count int, truncated bool) {
+	for i := range s {
+		if count == max {
+			return s[:i], count, true
+		}
+		count++
+	}
+	return s, count, false
+}
+
+// clipLineForRender bounds line to maxRenderLineRunes for the purposes of
+// rendering it — see that constant's doc comment.
+func clipLineForRender(line string) (clipped string, truncated bool) {
+	clipped, _, truncated = runePrefix(line, maxRenderLineRunes)
+	return clipped, truncated
+}
+
+// clipSegmentsForRender is clipLineForRender's counterpart for already
+// tab-unexpanded styled segments — real tree-sitter output can be just as
+// long as the raw line it describes, so it needs the identical bound.
+// Cost is proportional to maxRenderLineRunes plus len(segs), never to the
+// segments' total text length: a segment that fits entirely within the
+// remaining budget is copied as-is (its own rune count already counted
+// against that budget, so the total work across every fully-copied
+// segment is itself bounded by maxRenderLineRunes), and the one segment
+// that doesn't fit is truncated and ends the loop immediately.
+func clipSegmentsForRender(segs []layout.Segment) (clipped []layout.Segment, truncated bool) {
+	remaining := maxRenderLineRunes
+	for _, seg := range segs {
+		if remaining <= 0 {
+			return clipped, true
+		}
+		prefix, count, cut := runePrefix(seg.Text, remaining)
+		clipped = append(clipped, layout.Segment{Text: prefix, Style: seg.Style})
+		remaining -= count
+		if cut {
+			return clipped, true
+		}
+	}
+	return clipped, false
+}
+
+// renderTruncationMarker is appended to a line's raw segments whenever
+// clipLineForRender/clipSegmentsForRender had to cut it short, so a
+// truncated line reads as visibly partial rather than silently missing
+// its tail.
+var renderTruncationMarker = layout.Segment{Text: "…", Style: layout.Style{Attr: layout.AttrDim}}
+
 func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, searchMatches []searchMatch, showWhitespace bool) {
 	if t == nil {
 		return
@@ -1382,11 +1451,22 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 		if ln >= len(t.buf.Lines) {
 			break
 		}
+		// Bounded once per row, up front: everything below — the heuristic
+		// highlighter, the real tree-sitter output, and the search/selection
+		// range overlays — must never pay a cost proportional to this
+		// line's true length, only to maxRenderLineRunes. See that
+		// constant's doc comment.
+		line, lineTruncated := clipLineForRender(t.buf.Lines[ln])
+
 		var raw []layout.Segment
+		var segTruncated bool
 		if ln < len(t.buf.highlighted) && t.buf.highlighted[ln] != nil {
-			raw = t.buf.highlighted[ln] // real tree-sitter output, raw (not tab-expanded)
+			raw, segTruncated = clipSegmentsForRender(t.buf.highlighted[ln]) // real tree-sitter output, raw (not tab-expanded)
 		} else {
-			raw = highlightLine(t.buf.Lines[ln]) // heuristic fallback, also raw
+			raw = highlightLine(line) // heuristic fallback, also raw
+		}
+		if lineTruncated || segTruncated {
+			raw = append(raw, renderTruncationMarker)
 		}
 		// Search matches are overlaid while the segments are still raw,
 		// because that's the only stage where a rune index means the same
@@ -1399,7 +1479,7 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 		selToEOL := false
 		if hasSel {
 			var selRanges []runeRange
-			selRanges, selToEOL = selectionRangesOnLine(selStart, selEnd, t.buf.Lines[ln], ln, tabWidth)
+			selRanges, selToEOL = selectionRangesOnLine(selStart, selEnd, line, ln, tabWidth)
 			if len(selRanges) > 0 {
 				raw = applyHighlightRanges(raw, selRanges, selectionStyle())
 			}
@@ -1491,14 +1571,31 @@ func currentLineRunes(t *tab, ln, tabWidth int) []rune {
 
 // cursorDisplayColumn converts t.cursorCol (a rune index) to a display
 // column on t's current line, accounting for double-width runes.
+//
+// Deliberately does NOT go through currentLineRunes, which expands the
+// WHOLE line: this runs on every render (see renderBody), so its cost
+// must depend on the cursor's own column, not on how long the line
+// happens to be — otherwise even a cursor sitting at column 0 of a
+// pathologically long line (nib's default right after Open, before any
+// keystroke) would pay the full line's cost on every single frame.
+// Expanding only the raw prefix covering at most cursorCol runes is
+// always enough: tab expansion never shrinks, so producing cursorCol
+// expanded runes needs at most cursorCol raw ones, and expansion only
+// depends on what comes before a position, never after — so this prefix's
+// expansion is byte-for-byte what currentLineRunes would have produced
+// for the same span.
 func cursorDisplayColumn(t *tab, tabWidth int) int {
-	runes := currentLineRunes(t, t.cursorLn, tabWidth)
-	col := t.cursorCol
-	if col > len(runes) {
-		col = len(runes)
+	if t.buf == nil || t.cursorLn < 0 || t.cursorLn >= len(t.buf.Lines) {
+		return 0
 	}
+	col := t.cursorCol
 	if col < 0 {
 		col = 0
+	}
+	rawPrefix, _, _ := runePrefix(t.buf.Lines[t.cursorLn], col)
+	runes := []rune(textwidth.ExpandTabs(rawPrefix, tabWidth))
+	if col > len(runes) {
+		col = len(runes)
 	}
 	return textwidth.DisplayWidth(string(runes[:col]))
 }
@@ -1509,15 +1606,18 @@ func cursorDisplayColumn(t *tab, tabWidth int) int {
 // ExpandTabs produces for the raw prefix up to idx. This is how an edit's
 // raw-index result (see rawIndexForExpandedCol) gets translated back into
 // cursorCol.
+//
+// Takes only line's first idx runes via runePrefix (bounded by idx, not by
+// len(line)) rather than materializing the whole line first: idx is
+// always a raw index near where an edit or motion just landed, so this
+// keeps cost proportional to the edit's position, not to the line's true
+// length.
 func expandedColForRawIndex(line string, idx, tabWidth int) int {
-	runes := []rune(line)
-	if idx > len(runes) {
-		idx = len(runes)
-	}
 	if idx < 0 {
 		idx = 0
 	}
-	return len([]rune(textwidth.ExpandTabs(string(runes[:idx]), tabWidth)))
+	prefix, _, _ := runePrefix(line, idx)
+	return len([]rune(textwidth.ExpandTabs(prefix, tabWidth)))
 }
 
 // rawIndexForExpandedCol is expandedColForRawIndex's inverse: given col (a
@@ -1530,30 +1630,35 @@ func expandedColForRawIndex(line string, idx, tabWidth int) int {
 // tracks column by rune count rather than go-runewidth display width, so a
 // line mixing wide (CJK) runes before a tab could compute a slightly-off
 // split point — an accepted simplification, not meant to be pixel-perfect.
+//
+// Iterates line directly (not a pre-materialized []rune) and returns as
+// soon as col is reached, so — like expandedColForRawIndex above — cost is
+// bounded by col, not by len(line).
 func rawIndexForExpandedCol(line string, col, tabWidth int) int {
 	if tabWidth <= 0 {
 		tabWidth = 8
 	}
-	runes := []rune(line)
-	expanded := 0
-	for i, r := range runes {
+	expanded, runeIdx := 0, 0
+	for i, r := range line {
 		if r == '\t' {
 			span := tabWidth - (expanded % tabWidth)
 			if col == expanded {
 				return i // squarely at the tab's own start: that's its raw index
 			}
 			if col < expanded+span {
-				return i + 1 // strictly inside the tab's span: snap past it, not into it
+				return runeIdx + 1 // strictly inside the tab's span: snap past it, not into it
 			}
 			expanded += span
+			runeIdx++
 			continue
 		}
 		if col <= expanded {
-			return i
+			return runeIdx
 		}
 		expanded++
+		runeIdx++
 	}
-	return len(runes)
+	return runeIdx
 }
 
 func (v *View) HandleKey(k layout.Key) bool {

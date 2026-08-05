@@ -55,6 +55,20 @@ var nonCodeGrammars = map[string]bool{
 // only affects languages not yet compiled.
 var highlightTimeoutMicros uint64 = 250_000 // 250ms
 
+// maxTreeSitterBytes bounds how much source highlightSource and parseTree
+// will hand to tree-sitter at all. highlightTimeoutMicros already bounds
+// how long a single parse can run, but a pathological input — most notably
+// a "file" that's actually one multi-million-character line, the shape of
+// e.g. a serialized PHP framework cache — can still cost real time and
+// memory on the way to timing out, over and over, on every keystroke and
+// on the UI goroutine itself for parseTree (see its own doc comment). Above
+// this size tree-sitter has nothing worth the attempt anyway (highlighting
+// a file this large is not something anyone reads a screenful at a time),
+// so both bail out the same way they already do for "no grammar matches" —
+// fail soft, not an error.
+// A var, like highlightTimeoutMicros, only so tests can shrink it.
+var maxTreeSitterBytes = 4 << 20 // 4MB
+
 // highlightGrammar returns the grammar to highlight path with, or nil if
 // tree-sitter has nothing useful to offer for it: no grammar claims the
 // extension, the one that does is prose (see nonCodeGrammars), or it ships
@@ -116,7 +130,7 @@ func highlightBuffer(buf *Buffer) [][]layout.Segment {
 // UI goroutine is free to be mutating (see Highlighter).
 func highlightSource(path string, src []byte) ([][]layout.Segment, bool) {
 	entry := highlightGrammar(path)
-	if entry == nil {
+	if entry == nil || len(src) > maxTreeSitterBytes {
 		return nil, true
 	}
 
@@ -176,22 +190,33 @@ var parserCache = map[string]*gotreesitter.Parser{}
 //
 // Runs on the UI goroutine, using parserCache's own parsers — never the
 // highlight worker's (see highlighterCache).
+//
+// Bounded by the same highlightTimeoutMicros budget as the background
+// highlighter (see highlightSource): this runs synchronously on the UI
+// goroutine, on every Open and every completed Normal-mode edit (see
+// refreshSyntaxDiagnostics), so an unbounded parse here can freeze the
+// whole app on a single pathological file — e.g. a cache file with one
+// multi-million-character line, which some parsers pathologically slow
+// down on. ParseStrict (rather than Parse) is what turns a timeout into
+// the same ok=false "give up" result an unparseable file already
+// produces, exactly like highlightSource's own Strict call.
 func parseTree(buf *Buffer) (*gotreesitter.Tree, bool) {
 	if buf == nil {
 		return nil, false
 	}
 	entry := grammars.DetectLanguage(buf.Path)
-	if entry == nil {
+	if entry == nil || len(buf.Source) > maxTreeSitterBytes {
 		return nil, false
 	}
 
 	p, cached := parserCache[entry.Name]
 	if !cached {
 		p = gotreesitter.NewParser(entry.Language())
+		p.SetTimeoutMicros(highlightTimeoutMicros)
 		parserCache[entry.Name] = p
 	}
 
-	tree, err := p.Parse(buf.Source)
+	tree, err := p.ParseStrict(buf.Source)
 	if err != nil || tree == nil {
 		return nil, false
 	}

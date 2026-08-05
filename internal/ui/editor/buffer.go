@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -104,15 +105,46 @@ type Buffer struct {
 	undoStack, redoStack []undoEntry
 }
 
+// maxLoadableFileSize bounds how large a file Load will read into memory
+// at all. Load has no other size check anywhere below this — the whole
+// file becomes one []byte, then one string, then a slice of line strings —
+// so without a cap here, a file large enough (even a well-formed one) can
+// exhaust memory just being opened. Comfortably above any source file
+// anyone hand-edits, and rejected up front via Stat rather than after an
+// os.ReadFile that's already paid the cost this exists to avoid.
+// A var, like highlightTimeoutMicros/maxTreeSitterBytes, only so a test can
+// shrink it without writing an actual 100MB fixture to disk.
+var maxLoadableFileSize int64 = 100 << 20 // 100MB
+
+// humanBytes formats n as whichever of B/KB/MB/GB reads most naturally,
+// for the maxLoadableFileSize error message above — just enough precision
+// to be legible, not a general-purpose formatter.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
 // Load reads path into a Buffer.
 func Load(path string) (*Buffer, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
 	mode := os.FileMode(defaultSaveMode)
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode()
+		if info.Size() > maxLoadableFileSize {
+			return nil, fmt.Errorf("file too large to open (%s, limit %s)",
+				humanBytes(info.Size()), humanBytes(maxLoadableFileSize))
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
 	}
 	text, charset, err := textfile.Decode(data)
 	if err != nil {
