@@ -73,6 +73,9 @@ func (v *View) promptLabel() string {
 // create can be retargeted anywhere in the project without moving the
 // cursor first.
 func (v *View) beginCreate() {
+	if v.mode != ModeFiles {
+		return // ModeChanges is navigate-and-open only, not a file-op target
+	}
 	dir := v.createTargetDir()
 	prefill := ""
 	if rel, ok := relPath(v.root.Path, dir); ok {
@@ -102,6 +105,9 @@ func (v *View) createTargetDir() string {
 // beginRename opens the rename/move prompt on the selected entry, prefilled
 // with its root-relative path and the caret at the end.
 func (v *View) beginRename() {
+	if v.mode != ModeFiles {
+		return // ModeChanges is navigate-and-open only, not a file-op target
+	}
 	if v.cursor < 0 || v.cursor >= len(v.rows) {
 		return
 	}
@@ -118,6 +124,9 @@ func (v *View) beginRename() {
 // single y/N for a file or an empty directory, and the stricter type-"yes"
 // form for a directory that would be removed recursively.
 func (v *View) beginDelete() {
+	if v.mode != ModeFiles {
+		return // ModeChanges is navigate-and-open only, not a file-op target
+	}
 	if v.cursor < 0 || v.cursor >= len(v.rows) {
 		return
 	}

@@ -35,6 +35,35 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "a", Action: "create"},
 	{Trigger: "r", Action: "rename"},
 	{Trigger: "d", Action: "delete"},
+	{Trigger: "]", Action: "next_view"},
+	{Trigger: "[", Action: "prev_view"},
+}
+
+// Mode selects which tree the pane displays. ModeFiles is the full,
+// disk-backed project tree; ModeChanges is the same tree shape pruned down
+// to only the paths git reports as dirty (see ApplyChanges). Cycled with
+// the next_view/prev_view keybinds ("]"/"[" by default) — the same pattern
+// the editor uses to cycle open tabs.
+type Mode int
+
+const (
+	ModeFiles Mode = iota
+	ModeChanges
+)
+
+// modeCount is how many Modes exist, for NextView/PrevView's wraparound. A
+// plain int, not a Mode itself — it's not a real display mode, so it must
+// stay out of the Mode enum or the exhaustive-switch lint would demand a
+// case for it everywhere a Mode is switched on.
+const modeCount = 2
+
+// paneState is the cursor/scroll position for one Mode, stashed on
+// SetMode so flipping back to a mode restores where it was left, the same
+// way each editor tab keeps its own cursor.
+type paneState struct {
+	cursor    int
+	scrollTop int
+	hScroll   int
 }
 
 // hScrollStep is how many display columns Shift+Left/Shift+Right shift the
@@ -54,6 +83,15 @@ type View struct {
 	scrollTop int
 	hScroll   int // display columns; how far the selected row is peeked right
 	dirty     bool
+
+	// mode selects which of root/changesRoot is flattened into rows — see
+	// activeRoot. changesRoot is the synthetic, git-status-derived tree for
+	// ModeChanges, rebuilt wholesale by ApplyChanges; filesState/changesState
+	// remember each mode's own cursor/scroll across a SetMode switch.
+	mode         Mode
+	changesRoot  *Node
+	filesState   paneState
+	changesState paneState
 
 	// Prompt state for the file operations — see prompt.go. The pending
 	// operation's target is kept as an absolute PATH, never as a *Node:
@@ -104,7 +142,15 @@ type View struct {
 // New creates a View rooted at absPath. The root's immediate children are
 // not loaded from disk until the first Render or HandleKey call.
 func New(absPath string) *View {
-	return &View{root: NewRoot(absPath), dirty: true, keymap: DefaultKeybinds.Resolve(nil)}
+	return &View{
+		root: NewRoot(absPath),
+		// An empty tree until the first ApplyChanges call, so switching to
+		// ModeChanges before any git status has been computed renders an
+		// empty pane rather than a nil-pointer panic.
+		changesRoot: &Node{Name: filepath.Base(absPath), Path: absPath, IsDir: true, Expanded: true, Loaded: true},
+		dirty:       true,
+		keymap:      DefaultKeybinds.Resolve(nil),
+	}
 }
 
 // SetKeymap merges the user config's "filetree" scope overrides on top
@@ -113,7 +159,69 @@ func (v *View) SetKeymap(overrides map[string]string) {
 	v.keymap = DefaultKeybinds.Resolve(overrides)
 }
 
-func (v *View) Title() string { return "Files" }
+func (v *View) Title() string {
+	if v.mode == ModeChanges {
+		return "Changes"
+	}
+	return "Files"
+}
+
+// activeRoot is the tree root the current mode renders: the disk-backed
+// root in ModeFiles, the synthetic git-status tree in ModeChanges.
+func (v *View) activeRoot() *Node {
+	if v.mode == ModeChanges {
+		return v.changesRoot
+	}
+	return v.root
+}
+
+// ApplyChanges rebuilds the ModeChanges tree from git's per-file status, so
+// it mirrors the project's directory structure but pruned to only the
+// paths that are actually dirty. Rebuilt wholesale on every call — direct
+// is small enough that this is simpler than diffing it against the
+// previous tree — so, unlike the disk tree, a ModeChanges directory never
+// carries Expanded state across a refresh. Always marks the pane dirty,
+// mirroring ApplyStatus, so the tree is current the moment the user
+// switches to ModeChanges even if it was rebuilt while ModeFiles was
+// active.
+func (v *View) ApplyChanges(direct map[string]gitstatus.Status) {
+	v.changesRoot = buildChangesTree(v.root.Path, direct)
+	v.dirty = true
+}
+
+// SetMode switches which tree the pane displays, restoring that mode's own
+// cursor/scroll position from the last time it was active (or the top, the
+// first time). A no-op if m is already the active mode.
+func (v *View) SetMode(m Mode) {
+	if m == v.mode {
+		return
+	}
+	saved := paneState{cursor: v.cursor, scrollTop: v.scrollTop, hScroll: v.hScroll}
+	switch v.mode {
+	case ModeFiles:
+		v.filesState = saved
+	case ModeChanges:
+		v.changesState = saved
+	}
+
+	v.mode = m
+	var restore paneState
+	switch m {
+	case ModeFiles:
+		restore = v.filesState
+	case ModeChanges:
+		restore = v.changesState
+	}
+	v.cursor = restore.cursor
+	v.scrollTop = restore.scrollTop
+	v.hScroll = restore.hScroll
+	v.dirty = true
+}
+
+// NextView and PrevView cycle through the available modes — bound to "]"
+// and "[" by default, the same keys the editor uses to cycle tabs.
+func (v *View) NextView() { v.SetMode(Mode((int(v.mode) + 1) % modeCount)) }
+func (v *View) PrevView() { v.SetMode(Mode((int(v.mode) - 1 + modeCount) % modeCount)) }
 
 // Refresh invalidates every currently expanded directory so the next
 // Render/HandleKey re-reads it from disk, then marks the tree dirty.
@@ -180,8 +288,13 @@ func (v *View) ensureFresh() {
 	if !v.dirty {
 		return
 	}
-	reloadExpanded(v.root)
-	v.rows = Flatten(v.root)
+	// The synthetic changes tree has nothing on disk to re-read — it's
+	// rebuilt wholesale by ApplyChanges instead — so the re-scan only
+	// applies in ModeFiles.
+	if v.mode == ModeFiles {
+		reloadExpanded(v.root)
+	}
+	v.rows = Flatten(v.activeRoot())
 	v.dirty = false
 	if v.cursor >= len(v.rows) {
 		v.cursor = len(v.rows) - 1
@@ -365,6 +478,10 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.beginRename()
 	case "delete":
 		v.beginDelete()
+	case "next_view":
+		v.NextView()
+	case "prev_view":
+		v.PrevView()
 	default:
 		return false
 	}
@@ -428,7 +545,7 @@ func (v *View) collapse() {
 	}
 
 	parent := n.Parent
-	if parent == nil || parent == v.root {
+	if parent == nil || parent == v.activeRoot() {
 		return
 	}
 	parent.Expanded = false

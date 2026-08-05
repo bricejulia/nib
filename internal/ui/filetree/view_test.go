@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
 // fakeWindow is an in-memory layout.Window double so View.Render is
@@ -287,5 +288,105 @@ func TestViewOnOpenCalledForFileRow(t *testing.T) {
 
 	if opened == "" || !strings.HasSuffix(opened, "a.txt") {
 		t.Errorf("OnOpen should have been called with a.txt's path, got %q", opened)
+	}
+}
+
+func TestViewTitleReflectsMode(t *testing.T) {
+	v := New(fixtureRoot(t))
+	if got := v.Title(); got != "Files" {
+		t.Fatalf("want %q by default, got %q", "Files", got)
+	}
+	v.SetMode(ModeChanges)
+	if got := v.Title(); got != "Changes" {
+		t.Fatalf("want %q after switching modes, got %q", "Changes", got)
+	}
+}
+
+func TestViewNextPrevViewToggleMode(t *testing.T) {
+	v := New(fixtureRoot(t))
+	if v.mode != ModeFiles {
+		t.Fatalf("want ModeFiles initially, got %v", v.mode)
+	}
+	v.NextView()
+	if v.mode != ModeChanges {
+		t.Fatalf("want ModeChanges after NextView, got %v", v.mode)
+	}
+	v.NextView()
+	if v.mode != ModeFiles {
+		t.Fatalf("want ModeFiles after a second NextView, got %v", v.mode)
+	}
+	v.PrevView()
+	if v.mode != ModeChanges {
+		t.Fatalf("want ModeChanges after PrevView, got %v", v.mode)
+	}
+}
+
+func TestViewBracketKeysCycleMode(t *testing.T) {
+	v := New(fixtureRoot(t))
+	if !v.HandleKey(layout.Key{Text: "]"}) {
+		t.Fatal("\"]\" should be handled")
+	}
+	if v.mode != ModeChanges {
+		t.Fatalf("want ModeChanges after \"]\", got %v", v.mode)
+	}
+	if !v.HandleKey(layout.Key{Text: "["}) {
+		t.Fatal("\"[\" should be handled")
+	}
+	if v.mode != ModeFiles {
+		t.Fatalf("want ModeFiles after \"[\", got %v", v.mode)
+	}
+}
+
+func TestViewModeSwitchRestoresPerModeCursor(t *testing.T) {
+	v := New(fixtureRoot(t))
+	// Give Changes mode more than one row to move the cursor across too.
+	v.ApplyChanges(map[string]gitstatus.Status{
+		"a.txt":     gitstatus.Modified,
+		"sub/c.txt": gitstatus.Untracked,
+	})
+	w := newFakeWindow(40, 10)
+	v.Render(w)
+
+	v.HandleKey(downKey()) // move off row 0 in Files mode
+	filesCursor := v.cursor
+	if filesCursor == 0 {
+		t.Fatal("expected the down key to move the cursor off row 0")
+	}
+
+	v.SetMode(ModeChanges)
+	if v.cursor != 0 {
+		t.Fatalf("Changes mode should start at the top on first visit, got cursor %d", v.cursor)
+	}
+	v.HandleKey(downKey())
+	if v.cursor != 1 {
+		t.Fatalf("expected the down key to move the Changes-mode cursor to 1, got %d", v.cursor)
+	}
+
+	v.SetMode(ModeFiles)
+	if v.cursor != filesCursor {
+		t.Fatalf("switching back to Files should restore cursor %d, got %d", filesCursor, v.cursor)
+	}
+
+	v.SetMode(ModeChanges)
+	if v.cursor != 1 {
+		t.Fatalf("switching back to Changes should restore its own cursor 1, got %d", v.cursor)
+	}
+}
+
+func TestViewChangesModeIsNavigateAndOpenOnly(t *testing.T) {
+	v := New(fixtureRoot(t))
+	v.SetMode(ModeChanges)
+
+	v.HandleKey(layout.Key{Text: "a"})
+	if v.prompt != promptNone {
+		t.Error("create (\"a\") should be a no-op in ModeChanges")
+	}
+	v.HandleKey(layout.Key{Text: "r"})
+	if v.prompt != promptNone {
+		t.Error("rename (\"r\") should be a no-op in ModeChanges")
+	}
+	v.HandleKey(layout.Key{Text: "d"})
+	if v.prompt != promptNone {
+		t.Error("delete (\"d\") should be a no-op in ModeChanges")
 	}
 }
