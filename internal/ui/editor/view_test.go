@@ -546,7 +546,19 @@ func TestArrowKeyNavigationStaysBoundedAfterCursorOvershootsTheRenderCap(t *test
 	tb := v.activeTab()
 	tb.cursorCol = 3_000_000 // simulates a cursor left stranded past the cap by an old "$"/End, a search jump, etc.
 
-	const presses = 500
+	// Deliberately far fewer presses than this file's other bounded-cost
+	// tests (e.g. TestArrowKeyNavigationStaysBoundedOnPathologicallyLongLine's
+	// 500, starting at cursorCol 0): every press here is bounded by
+	// ~maxRenderLineRunes (20,000) — clamp's ceiling pins cursorCol there
+	// for the whole Right phase, then it descends from there for the Left
+	// phase — vs. that sibling's cursorCol staying under ~500 throughout.
+	// Same per-press cost model, ~80x more absolute work for the same
+	// press count, which is what made this specific test (and not its
+	// sibling) need a disproportionately larger CI timeout before finally
+	// exceeding even 10s. Fewer presses brings the total workload back
+	// in line with the sibling's already CI-stable scale, rather than
+	// continuing to chase the timeout upward.
+	const presses = 30
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < presses; i++ {
@@ -559,14 +571,7 @@ func TestArrowKeyNavigationStaysBoundedAfterCursorOvershootsTheRenderCap(t *test
 	}()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
-		// A more generous deadline than this file's other bounded-cost
-		// tests: unlike those, every one of these 1000 presses pays a
-		// real (bounded, but not free) maxRenderLineRunes-scale cost —
-		// see applyMovement's move_left/move_right — so this is
-		// measurably more expensive than starting from column 0, just
-		// not proportional to the original 3,000,000 overshoot. -race
-		// plus a slower/shared CI runner can multiply that further.
+	case <-time.After(8 * time.Second):
 		t.Fatal("a burst of arrow keys starting past the render cap did not complete in time")
 	}
 
