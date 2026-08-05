@@ -15,6 +15,7 @@ import (
 	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/lsp"
+	"github.com/bricejulia/nib/internal/memwatch"
 	"github.com/bricejulia/nib/internal/theme"
 	"github.com/bricejulia/nib/internal/ui"
 	"github.com/bricejulia/nib/internal/ui/debug"
@@ -23,6 +24,7 @@ import (
 	"github.com/bricejulia/nib/internal/ui/filetree"
 	"github.com/bricejulia/nib/internal/ui/finder"
 	"github.com/bricejulia/nib/internal/ui/help"
+	"github.com/bricejulia/nib/internal/ui/memprompt"
 	"github.com/bricejulia/nib/internal/ui/quitconfirm"
 	"github.com/bricejulia/nib/internal/ui/statusbar"
 	"github.com/bricejulia/nib/internal/vcs/gitblame"
@@ -34,6 +36,24 @@ import (
 // watchDebounce is the quiet period after the last observed filesystem
 // change before a refresh fires.
 const watchDebounce = 200 * time.Millisecond
+
+// memWatchThreshold/memWatchInterval configure the background memory
+// watchdog (see internal/memwatch) — how much Go heap nib can use before
+// offering to close its largest open file, and how often to check.
+// Hardcoded for now, like highlightTimeoutMicros/maxTreeSitterBytes/
+// maxRenderLineRunes in internal/ui/editor — not user-configurable yet.
+const (
+	memWatchThreshold uint64        = 500 << 20 // 500MiB
+	memWatchInterval  time.Duration = 2 * time.Second
+)
+
+// memoryThresholdEvent is posted (via app.Post, from memWatcher's own
+// goroutine — see its setup below) onto the main event loop whenever
+// memWatchThreshold is crossed, so the prompt it triggers is shown from
+// the UI goroutine like every other custom event nib handles.
+type memoryThresholdEvent struct {
+	heapBytes uint64
+}
 
 // mainShortcutsHint is the fixed reminder shown left-aligned in the status
 // bar — see internal/ui/help for the full keybinding reference (opened via
@@ -775,6 +795,19 @@ func run() error {
 		return paths
 	}
 
+	// largestOpenBuffer returns the path and byte size of the single
+	// largest buffer open across every editor pane, or ("", 0) if none
+	// are open — used by the memory watchdog below to name which open
+	// file is most likely responsible for high memory use.
+	largestOpenBuffer := func() (path string, sizeBytes int) {
+		for _, p := range editorPanes {
+			if pPath, pSize := p.view.LargestBuffer(); pSize > sizeBytes {
+				path, sizeBytes = pPath, pSize
+			}
+		}
+		return path, sizeBytes
+	}
+
 	// saveAllDirty saves every unsaved file across every editor pane. A
 	// buffer shared by two panes is simply no longer Dirty by the time the
 	// second pane's SaveDirtyTabs runs, so this never double-writes.
@@ -811,6 +844,39 @@ func run() error {
 		}
 		quitConfirmView.Show(rel)
 		app.ShowOverlay(quitConfirmView)
+	}
+
+	// memPromptView offers to close whichever open file is using the most
+	// memory, shown when memWatcher (started near the end of this
+	// function) reports nib's own heap crossing memWatchThreshold — see
+	// internal/memwatch and internal/ui/memprompt. targetPath is captured
+	// by promptToFreeMemory below and read back by OnConfirmClose, since
+	// the file being offered up isn't necessarily the one the user is
+	// currently looking at.
+	memPromptView := memprompt.New()
+	memPromptView.OnCancel = app.CloseOverlay
+	var targetPath string
+	memPromptView.OnConfirmClose = func() {
+		app.CloseOverlay()
+		for _, p := range editorPanes {
+			if p.view.CloseTabByPath(targetPath) {
+				return
+			}
+		}
+	}
+	promptToFreeMemory := func(heapBytes uint64) {
+		if app.OverlayActive() {
+			return // don't clobber whatever the user's already looking at
+		}
+		path, size := largestOpenBuffer()
+		if path == "" {
+			return
+		}
+		targetPath = path
+		debuglog.Warn("memory: heap ~%d MiB exceeds ~%d MiB, prompting to close %s (~%d MiB)",
+			heapBytes>>20, memWatchThreshold>>20, path, size>>20)
+		memPromptView.Show(path, size, int(heapBytes))
+		app.ShowOverlay(memPromptView)
 	}
 
 	actions := map[string]func(){
@@ -990,8 +1056,22 @@ func run() error {
 			// already knows what to do with the answer, so there's no
 			// per-feature routing to keep in sync here.
 			e.Apply()
+		case memoryThresholdEvent:
+			promptToFreeMemory(e.heapBytes)
 		}
 	})
+
+	// memWatcher periodically samples nib's own heap and, past
+	// memWatchThreshold, posts memoryThresholdEvent onto the event loop —
+	// see internal/memwatch and promptToFreeMemory above. Mirrors the
+	// fsnotify watcher goroutine just below: a background goroutine that
+	// only ever talks to the UI by posting, never touching editorPanes or
+	// any View directly.
+	memWatcher := memwatch.New(memWatchThreshold, memWatchInterval, func(heap uint64) {
+		app.Post(memoryThresholdEvent{heapBytes: heap})
+	})
+	memWatcher.Start()
+	defer memWatcher.Close()
 
 	if watcher, err := watch.New(absRoot, watchDebounce); err == nil {
 		defer func() { _ = watcher.Close() }()

@@ -557,6 +557,16 @@ func (a *App) CloseOverlay() {
 	a.overlay = nil
 }
 
+// OverlayActive reports whether an overlay is currently showing. a.overlay
+// is a single slot shared by every modal (finder, debug log, help, diff,
+// quit-confirm, ...) — callers that pop a modal from a background event
+// rather than a direct keypress (e.g. the memory watchdog's periodic
+// check) need this to avoid silently replacing whatever the user is
+// already looking at.
+func (a *App) OverlayActive() bool {
+	return a.overlay != nil
+}
+
 // SetDoubleShiftHandler registers fn to run when a bare Shift key is
 // pressed twice within doubleShiftWindow, with no overlay already open.
 // This only fires on terminals that report standalone modifier keypresses

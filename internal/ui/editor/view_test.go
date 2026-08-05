@@ -754,6 +754,99 @@ func TestCloseLastTabLeavesViewEmpty(t *testing.T) {
 	}
 }
 
+// CloseTabByPath must close whichever tab matches path even when it isn't
+// the active one, and leave the active tab exactly where it was — by
+// identity, not just by index, since removing an earlier tab shifts every
+// later index down by one.
+func TestCloseTabByPathClosesANonActiveTabAndPreservesActiveTab(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{
+		{path: "a.txt", buf: &Buffer{Lines: []string{"a"}}},
+		{path: "b.txt", buf: &Buffer{Lines: []string{"b"}}},
+		{path: "c.txt", buf: &Buffer{Lines: []string{"c"}}},
+	}
+	v.active = 2 // c.txt is active
+
+	if !v.CloseTabByPath("a.txt") {
+		t.Fatal("expected CloseTabByPath to report success")
+	}
+	if len(v.tabs) != 2 {
+		t.Fatalf("got %d tabs, want 2", len(v.tabs))
+	}
+	if got := v.activeTab().path; got != "c.txt" {
+		t.Fatalf("active tab = %q, want c.txt to still be active (its index should have shifted down)", got)
+	}
+	if v.active != 1 {
+		t.Fatalf("active index = %d, want 1 (c.txt shifted down after a.txt was removed)", v.active)
+	}
+}
+
+// Closing the active tab itself falls back to CloseTab's own rule.
+func TestCloseTabByPathOnTheActiveTabActivatesItsNeighbor(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{
+		{path: "a.txt", buf: &Buffer{Lines: []string{"a"}}},
+		{path: "b.txt", buf: &Buffer{Lines: []string{"b"}}},
+	}
+	v.active = 0
+
+	if !v.CloseTabByPath("a.txt") {
+		t.Fatal("expected CloseTabByPath to report success")
+	}
+	if got := v.activeTab().path; got != "b.txt" {
+		t.Fatalf("active tab = %q, want b.txt", got)
+	}
+}
+
+// A dirty tab must never be silently discarded, regardless of which tab
+// asked to close it — the same rule closeActiveTab's ":q" already applies.
+func TestCloseTabByPathRefusesADirtyTab(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{path: "a.txt", buf: &Buffer{Lines: []string{"a"}, Dirty: true}}}
+	v.active = 0
+
+	if v.CloseTabByPath("a.txt") {
+		t.Fatal("expected CloseTabByPath to refuse a dirty tab")
+	}
+	if len(v.tabs) != 1 {
+		t.Fatalf("got %d tabs, want the dirty one left open", len(v.tabs))
+	}
+}
+
+func TestCloseTabByPathReturnsFalseForAPathNotOpen(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{path: "a.txt", buf: &Buffer{Lines: []string{"a"}}}}
+	v.active = 0
+
+	if v.CloseTabByPath("nope.txt") {
+		t.Fatal("expected CloseTabByPath to report failure for a path that isn't open")
+	}
+	if len(v.tabs) != 1 {
+		t.Fatalf("got %d tabs, want the only tab left untouched", len(v.tabs))
+	}
+}
+
+func TestLargestBufferReturnsTheBiggestOpenTab(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{
+		{path: "small.txt", buf: &Buffer{Source: []byte("hi")}},
+		{path: "big.txt", buf: &Buffer{Source: []byte(strings.Repeat("x", 1000))}},
+		{path: "medium.txt", buf: &Buffer{Source: []byte(strings.Repeat("y", 100))}},
+	}
+
+	path, size := v.LargestBuffer()
+	if path != "big.txt" || size != 1000 {
+		t.Fatalf("LargestBuffer() = (%q, %d), want (big.txt, 1000)", path, size)
+	}
+}
+
+func TestLargestBufferEmptyWhenNoTabsOpen(t *testing.T) {
+	v := NewView()
+	if path, size := v.LargestBuffer(); path != "" || size != 0 {
+		t.Fatalf("LargestBuffer() = (%q, %d), want (\"\", 0)", path, size)
+	}
+}
+
 func TestTabBarHighlightsActiveTab(t *testing.T) {
 	v := NewView()
 	v.Open(fixturePath(t, "editor_sample.txt"))
@@ -1115,6 +1208,36 @@ func TestStatusTextShowsInsertModeIndicator(t *testing.T) {
 	v.HandleKey(layout.Key{Text: "i"})
 	if got := v.StatusText(); !strings.Contains(got, "INSERT") {
 		t.Errorf("expected an INSERT indicator in Insert mode, got %q", got)
+	}
+}
+
+// StatusText/tabDisplayNames turn Buffer.HasLongLine into a notice, the
+// same seams already used for tab.detached's "-- DELETED --"/"✗" — see
+// TestViewCloseTabsUnderKeepsADirtyTabDetached in repath_test.go for that
+// precedent.
+func TestStatusTextAndTabBarShowLongLineIndicator(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{path: "huge.txt", buf: &Buffer{Lines: []string{"x"}, HasLongLine: true}}}
+	v.active = 0
+
+	if got := v.StatusText(); !strings.Contains(got, "-- LONG LINE --") {
+		t.Errorf("StatusText() = %q, want a LONG LINE indicator", got)
+	}
+	if got := tabDisplayNames(v.tabs)[0]; !strings.Contains(got, "⚠") {
+		t.Errorf("tab label = %q, want a long-line marker", got)
+	}
+}
+
+func TestStatusTextAndTabBarOmitLongLineIndicatorForOrdinaryFiles(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{path: "normal.txt", buf: &Buffer{Lines: []string{"x"}}}}
+	v.active = 0
+
+	if got := v.StatusText(); strings.Contains(got, "LONG LINE") {
+		t.Errorf("StatusText() = %q, did not expect a LONG LINE indicator", got)
+	}
+	if got := tabDisplayNames(v.tabs)[0]; strings.Contains(got, "⚠") {
+		t.Errorf("tab label = %q, did not expect a long-line marker", got)
 	}
 }
 

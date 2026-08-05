@@ -206,6 +206,27 @@ func twoLeafTree() layout.Node {
 	}}
 }
 
+// OverlayActive is what a background event handler (e.g. the memory
+// watchdog's periodic check) uses to avoid popping a modal over whatever
+// the user is already looking at — see cmd/nib/main.go's memoryThresholdEvent
+// handling.
+func TestOverlayActiveReflectsShowAndCloseOverlay(t *testing.T) {
+	a := &App{}
+	if a.OverlayActive() {
+		t.Fatal("expected no overlay active initially")
+	}
+
+	a.ShowOverlay(stubView{})
+	if !a.OverlayActive() {
+		t.Fatal("expected an overlay to be active after ShowOverlay")
+	}
+
+	a.CloseOverlay()
+	if a.OverlayActive() {
+		t.Fatal("expected no overlay active after CloseOverlay")
+	}
+}
+
 func TestFocusedLeafReflectsCurrentFocus(t *testing.T) {
 	fm := &layout.FocusManager{}
 	fm.Rebuild(twoLeafTree())

@@ -750,6 +750,30 @@ func (v *View) PrevTab() {
 	v.active = (v.active - 1 + len(v.tabs)) % len(v.tabs)
 }
 
+// closeTabAt removes v.tabs[i] and adjusts v.active to keep pointing at
+// whichever tab was active before — by position, not identity, which is
+// enough because removing one earlier element shifts every later index
+// down by exactly one and leaves earlier ones untouched. If the removed
+// tab WAS the active one, this is CloseTab's own rule: activate the tab
+// now at the same index (i.e. what used to be its right neighbor), or the
+// new last tab if there is none. Fires OnAllTabsClosed if this was the
+// last tab. Callers are responsible for any "is it safe to close this"
+// check (Dirty, etc.) before calling.
+func (v *View) closeTabAt(i int) {
+	closed := v.tabs[i]
+	v.tabs = append(v.tabs[:i], v.tabs[i+1:]...)
+	switch {
+	case i < v.active:
+		v.active--
+	case i == v.active:
+		if v.active >= len(v.tabs) {
+			v.active = len(v.tabs) - 1
+		}
+	}
+	v.releaseTab(closed)
+	v.notifyIfEmpty()
+}
+
 // CloseTab closes the active tab, activating the tab to its left (or the
 // new last tab, if the closed tab was leftmost). Fires OnAllTabsClosed if
 // this was the last one.
@@ -757,13 +781,49 @@ func (v *View) CloseTab() {
 	if len(v.tabs) == 0 {
 		return
 	}
-	closed := v.tabs[v.active]
-	v.tabs = append(v.tabs[:v.active], v.tabs[v.active+1:]...)
-	if v.active >= len(v.tabs) {
-		v.active = len(v.tabs) - 1
+	v.closeTabAt(v.active)
+}
+
+// CloseTabByPath closes the tab showing path in this pane, if one is
+// open — refusing (returns false, a no-op) if it has unsaved changes, the
+// same safety net closeActiveTab's vim ":q" already applies for the
+// active tab, extended to any tab: the caller here (cmd/nib/main.go's
+// memory watchdog, offering to close whichever open file is using the
+// most memory) can't assume the tab it wants closed is the one the user
+// is currently looking at, so the active tab stays exactly where it was.
+//
+// Deliberately not built on CloseTabsUnder: that marks a dirty match
+// detached, meaning "this file's disk copy is gone" — wrong here, since
+// the file is still perfectly fine on disk and the user just declined to
+// close it.
+func (v *View) CloseTabByPath(path string) bool {
+	for i, t := range v.tabs {
+		if t.path != path {
+			continue
+		}
+		if t.buf != nil && t.buf.Dirty {
+			return false
+		}
+		v.closeTabAt(i)
+		return true
 	}
-	v.releaseTab(closed)
-	v.notifyIfEmpty()
+	return false
+}
+
+// LargestBuffer returns the path and Source byte size of the largest
+// buffer open in this pane, or ("", 0) if no tabs are open — used by
+// cmd/nib/main.go's memory watchdog to name which open file is most
+// likely responsible for high memory use.
+func (v *View) LargestBuffer() (path string, sizeBytes int) {
+	for _, t := range v.tabs {
+		if t.buf == nil {
+			continue
+		}
+		if n := len(t.buf.Source); n > sizeBytes {
+			path, sizeBytes = t.path, n
+		}
+	}
+	return path, sizeBytes
 }
 
 // CloseAllTabs closes all tabs. Fires OnAllTabsClosed.
@@ -1013,6 +1073,14 @@ func (v *View) StatusText() string {
 	// find out without opening the debug log.
 	if t.detached {
 		prefix += "-- DELETED -- "
+	}
+	// This buffer has a line too long to fully render or navigate (see
+	// maxRenderLineRunes) — said here, alongside the tab bar's own marker,
+	// for the same reason the detached case is: otherwise the render
+	// cap's "…" truncation marker is the only sign anything's different,
+	// easy to miss.
+	if t.buf.HasLongLine {
+		prefix += "-- LONG LINE -- "
 	}
 	return fmt.Sprintf("%sLn %d, Col %d", prefix, t.cursorLn+1, t.cursorCol+1)
 }
@@ -1288,6 +1356,12 @@ func tabDisplayNames(tabs []*tab) []string {
 			// an inactive tab in that state is still visible, not only the
 			// active one via StatusText.
 			names[i] += " ✗"
+		}
+		if t.buf != nil && t.buf.HasLongLine {
+			// Same reasoning as detached above: an inactive tab with a
+			// pathologically long line stays marked, not only the active
+			// one via StatusText.
+			names[i] += " ⚠"
 		}
 	}
 	return names
