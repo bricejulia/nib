@@ -1539,8 +1539,11 @@ func rawIndexForExpandedCol(line string, col, tabWidth int) int {
 	for i, r := range runes {
 		if r == '\t' {
 			span := tabWidth - (expanded % tabWidth)
+			if col == expanded {
+				return i // squarely at the tab's own start: that's its raw index
+			}
 			if col < expanded+span {
-				return i + 1 // snap past the tab, not into it
+				return i + 1 // strictly inside the tab's span: snap past it, not into it
 			}
 			expanded += span
 			continue
@@ -1811,10 +1814,30 @@ func (v *View) applyMovement(t *tab, action string, count int) bool {
 		t.cursorLn += count
 	case "move_up":
 		t.cursorLn -= count
-	case "move_left":
-		t.cursorCol -= count
-	case "move_right":
-		t.cursorCol += count
+	case "move_left", "move_right":
+		// cursorCol lives in tab-expanded space, so stepping it directly
+		// would cross a tab one rendered column at a time, letting the
+		// cursor rest mid-tab. Step in raw rune space instead — where a
+		// tab is one rune — so a single press crosses it whole, then
+		// convert back.
+		line := ""
+		if t.buf != nil && t.cursorLn >= 0 && t.cursorLn < len(t.buf.Lines) {
+			line = t.buf.Lines[t.cursorLn]
+		}
+		tabWidth := tabWidthOf(t)
+		raw := rawIndexForExpandedCol(line, t.cursorCol, tabWidth)
+		if action == "move_left" {
+			raw -= count
+		} else {
+			raw += count
+		}
+		if raw < 0 {
+			raw = 0
+		}
+		if rawLen := len([]rune(line)); raw > rawLen {
+			raw = rawLen
+		}
+		t.cursorCol = expandedColForRawIndex(line, raw, tabWidth)
 	case "page_down":
 		t.cursorLn += v.pageSize()
 	case "page_up":

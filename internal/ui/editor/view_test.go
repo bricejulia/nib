@@ -219,11 +219,14 @@ func TestViewStatusTextReflectsCursor(t *testing.T) {
 		t.Errorf("got %q, want %q", got, "Ln 1, Col 1")
 	}
 
+	// Line 2 is "\ttabbed line" (see testdata/editor_sample.txt): a single
+	// Right from its start must cross the whole tab (tabWidth=4) in one
+	// press, landing just past it — not stop one rendered column in.
 	v.HandleKey(layout.Key{Named: layout.KeyDown})
 	v.HandleKey(layout.Key{Named: layout.KeyRight})
 	v.Render(w)
-	if got := v.StatusText(); got != "Ln 2, Col 2" {
-		t.Errorf("got %q, want %q", got, "Ln 2, Col 2")
+	if got := v.StatusText(); got != "Ln 2, Col 5" {
+		t.Errorf("got %q, want %q", got, "Ln 2, Col 5")
 	}
 }
 
@@ -1014,6 +1017,31 @@ func TestRawExpandedColumnRoundTripThroughTab(t *testing.T) {
 			t.Errorf("round-trip at raw index %d: expanded=%d, got back raw index %d", rawIdx, expanded, got)
 		}
 	}
+
+	// Squarely at the tab's own start (expanded col 0, i.e. the cursor
+	// hasn't crossed any of the tab's rendered columns yet), the raw index
+	// must be the tab itself (0), not snapped past it — this is what lets
+	// deleteCharForward ('x') delete the tab rather than the rune after it.
+	if got := rawIndexForExpandedCol(line, 0, tabWidth); got != 0 {
+		t.Fatalf("column at the tab's own start should map to the tab's raw index, got %d, want 0", got)
+	}
+}
+
+func TestArrowRightCrossesALeadingTabInOnePress(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"\tabc"}, IndentWidth: 4}}}
+	v.active = 0
+	v.activeTab().cursorCol = 0 // sitting right at the start of the tab
+
+	v.HandleKey(layout.Key{Named: layout.KeyRight})
+	if got := v.activeTab().cursorCol; got != 4 {
+		t.Fatalf("cursorCol = %d, want 4 (past the whole 4-wide tab in one press)", got)
+	}
+
+	v.HandleKey(layout.Key{Named: layout.KeyLeft})
+	if got := v.activeTab().cursorCol; got != 0 {
+		t.Fatalf("cursorCol = %d, want 0 (back across the whole tab in one press)", got)
+	}
 }
 
 func TestArrowKeysMoveCursorWhileInserting(t *testing.T) {
@@ -1329,6 +1357,23 @@ func TestXDeletesCharUnderCursorAndIsUndoable(t *testing.T) {
 	v.HandleKey(layout.Key{Text: "u"})
 	if got := v.activeTab().buf.Lines[0]; got != "abc" {
 		t.Fatalf("Lines[0] after undo = %q, want %q", got, "abc")
+	}
+}
+
+func TestXAtStartOfLeadingTabDeletesTheTabNotTheCharAfterIt(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"\tabc"}, IndentWidth: 4}}}
+	v.active = 0
+	v.activeTab().cursorCol = 0 // sitting right at the start of the tab
+
+	if !v.HandleKey(layout.Key{Text: "x"}) {
+		t.Fatal("'x' should be consumed")
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "abc" {
+		t.Fatalf("Lines[0] = %q, want %q (the tab deleted, not 'a' after it)", got, "abc")
+	}
+	if v.activeTab().cursorCol != 0 {
+		t.Fatalf("cursorCol = %d, want 0", v.activeTab().cursorCol)
 	}
 }
 
