@@ -13,6 +13,19 @@ import (
 // show a match anyway.
 var searchHighlightStyle = layout.Style{Attr: layout.AttrReverse}
 
+// maxLiveSearchBytes bounds how large a buffer's Source can be before
+// search is disabled outright, rather than trying to bound findMatches/
+// matchRangesOnLine/jumpToMatch individually. Deliberately its own,
+// smaller threshold than maxRenderLineRunes/Buffer.HasLongLine (view.go,
+// buffer.go): those exist because even ~20,000 characters is too much to
+// reprocess every render frame, but searching 20,000 characters is
+// instant — the actual cost driver here is total scanned bytes, live, on
+// every keystroke, which stays cheap into the low tens of megabytes.
+// Sized well under a reported 12.7MB single-line file, since a generic
+// size like maxLoadableFileSize (buffer.go) would let exactly that
+// through un-guarded even after findMatches's O(n²) fix.
+const maxLiveSearchBytes = 8 << 20 // 8MB
+
 // searchMatch is one occurrence of the active pattern: a line plus the
 // half-open rune range [start, end) within that line's RAW (un-tab-expanded)
 // text, matching how cursor edits address positions elsewhere.
@@ -36,27 +49,37 @@ func findMatches(buf *Buffer, pattern string) []searchMatch {
 	if buf == nil || pattern == "" {
 		return nil
 	}
+	patternRuneLen := len([]rune(pattern))
 	var matches []searchMatch
 	for ln, line := range buf.Lines {
 		// Byte offsets from strings.Index have to become rune indices,
 		// since every position elsewhere in the editor is rune-based.
-		offset := 0
+		// runeOffset/countedByte track that conversion incrementally —
+		// only ever counting the runes in the span since the last match,
+		// never rescanning from the start of the line — so this whole
+		// loop costs O(line length) overall, not O(line length) PER
+		// MATCH: a line with many matches (e.g. a common single
+		// character searched across a multi-million-character line)
+		// used to make re-deriving runeStart from scratch every time
+		// degenerate toward O(n²).
+		byteOffset, runeOffset, countedByte := 0, 0, 0
 		for {
-			i := strings.Index(line[offset:], pattern)
+			i := strings.Index(line[byteOffset:], pattern)
 			if i < 0 {
 				break
 			}
-			byteStart := offset + i
-			runeStart := len([]rune(line[:byteStart]))
+			byteStart := byteOffset + i
+			runeOffset += len([]rune(line[countedByte:byteStart]))
+			countedByte = byteStart
 			matches = append(matches, searchMatch{
 				ln:    ln,
-				start: runeStart,
-				end:   runeStart + len([]rune(pattern)),
+				start: runeOffset,
+				end:   runeOffset + patternRuneLen,
 			})
 			// Advance past this match's start (not its end) so overlapping
 			// occurrences of a self-overlapping pattern are all found.
-			offset = byteStart + 1
-			if offset >= len(line) {
+			byteOffset = byteStart + 1
+			if byteOffset >= len(line) {
 				break
 			}
 		}
@@ -141,10 +164,18 @@ func inAnyRange(ranges []runeRange, i int) bool {
 }
 
 // enterSearchMode opens the "/" prompt, remembering where the cursor was so
-// cancelling can put it back.
+// cancelling can put it back. A no-op — logged, not silent — on a buffer
+// over maxLiveSearchBytes: see that constant's doc comment for why search
+// specifically, unlike rendering/navigation, isn't worth trying to bound
+// instead of disabling outright.
 func (v *View) enterSearchMode() {
 	t := v.activeTab()
 	if t == nil || t.buf == nil {
+		return
+	}
+	if len(t.buf.Source) > maxLiveSearchBytes {
+		debuglog.Warn("search: disabled for %s (%d bytes exceeds the %d-byte live-search limit)",
+			t.path, len(t.buf.Source), maxLiveSearchBytes)
 		return
 	}
 	v.mode = modeSearch
@@ -252,7 +283,16 @@ func (v *View) stepSearch(forward bool) {
 		return
 	}
 	t := v.activeTab()
-	if t == nil {
+	if t == nil || t.buf == nil {
+		return
+	}
+	// Defensive, mirroring enterSearchMode's guard: a pattern committed
+	// while this buffer was smaller (or before a paste grew it) must not
+	// let n/N keep re-running findMatches over a buffer that's since
+	// crossed maxLiveSearchBytes.
+	if len(t.buf.Source) > maxLiveSearchBytes {
+		debuglog.Warn("search: disabled for %s (%d bytes exceeds the %d-byte live-search limit)",
+			t.path, len(t.buf.Source), maxLiveSearchBytes)
 		return
 	}
 	// Recompute rather than trusting a cached set: the buffer may have been

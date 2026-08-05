@@ -3,6 +3,7 @@ package editor
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bricejulia/nib/internal/layout"
 )
@@ -51,6 +52,41 @@ func TestFindMatchesFindsOverlappingOccurrences(t *testing.T) {
 	buf := &Buffer{Lines: []string{"aaaa"}}
 	if got := findMatches(buf, "aa"); len(got) != 3 {
 		t.Errorf("got %d matches, want 3: %+v", len(got), got)
+	}
+}
+
+// Regression test for findMatches's O(n²) bug: it used to re-derive each
+// match's rune position by rebuilding []rune(line[:byteStart]) from the
+// START of the line every time, instead of tracking the rune offset
+// incrementally — cheap for a line with a handful of matches, but a line
+// with many (a common single character, searched across a long line) made
+// the total cost degenerate toward O(n²). This both asserts correctness
+// (every match position matches a naive rescan-from-scratch reference)
+// and, via the deadline, that it no longer takes O(n²) to compute them —
+// on a line with tens of thousands of matches, that would be minutes, not
+// milliseconds.
+func TestFindMatchesStaysFastAndCorrectWithManyMatches(t *testing.T) {
+	const n = 50_000
+	line := strings.Repeat("a", n) // every position but the last matches "a"
+	buf := &Buffer{Lines: []string{line}}
+
+	done := make(chan []searchMatch)
+	go func() { done <- findMatches(buf, "a") }()
+
+	var got []searchMatch
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("findMatches did not return in time — this is the O(n²) regression")
+	}
+
+	if len(got) != n {
+		t.Fatalf("got %d matches, want %d", len(got), n)
+	}
+	for i, m := range got {
+		if m.ln != 0 || m.start != i || m.end != i+1 {
+			t.Fatalf("match %d = %+v, want {ln:0 start:%d end:%d}", i, m, i, i+1)
+		}
 	}
 }
 
@@ -265,6 +301,58 @@ func TestSearchWithNoMatchLeavesCursorAlone(t *testing.T) {
 
 	if tb.cursorLn != 1 {
 		t.Errorf("cursorLn = %d, want 1 (unchanged when nothing matched)", tb.cursorLn)
+	}
+}
+
+// largeSearchView is searchView's counterpart for a buffer over
+// maxLiveSearchBytes — Source is what enterSearchMode/stepSearch check,
+// so Lines' actual content doesn't matter here.
+func largeSearchView() (*View, *tab) {
+	v := NewView()
+	v.tabs = []*tab{{path: "big.txt", buf: &Buffer{
+		Path:   "big.txt",
+		Lines:  []string{"alpha one"},
+		Source: make([]byte, maxLiveSearchBytes+1),
+	}}}
+	v.active = 0
+	return v, v.activeTab()
+}
+
+func TestEnterSearchModeDisabledOverMaxLiveSearchBytes(t *testing.T) {
+	v, tb := largeSearchView()
+
+	if !v.HandleKey(layout.Key{Text: "/"}) {
+		t.Fatal("expected '/' to still be consumed")
+	}
+	if v.mode != modeNormal {
+		t.Error("expected search mode NOT to open for a buffer over maxLiveSearchBytes")
+	}
+	if tb.cursorLn != 0 || tb.cursorCol != 0 {
+		t.Errorf("cursor moved to (%d,%d), want unchanged", tb.cursorLn, tb.cursorCol)
+	}
+}
+
+func TestEnterSearchModeStillWorksUnderMaxLiveSearchBytes(t *testing.T) {
+	v, _ := searchView() // small buffer, no Source set — well under the limit
+	v.HandleKey(layout.Key{Text: "/"})
+	if v.mode != modeSearch {
+		t.Error("expected search mode to open for an ordinary small buffer")
+	}
+}
+
+func TestSearchNextDisabledOverMaxLiveSearchBytesEvenWithAPatternAlreadySet(t *testing.T) {
+	v, tb := largeSearchView()
+	// Simulate a pattern committed before the buffer grew past the limit
+	// (e.g. a large paste) — stepSearch's own guard, not just
+	// enterSearchMode's, is what has to catch this.
+	v.searchPattern = "alpha"
+	startLn := tb.cursorLn
+
+	if !v.HandleKey(layout.Key{Text: "n"}) {
+		t.Fatal("expected 'n' to still be consumed")
+	}
+	if tb.cursorLn != startLn {
+		t.Errorf("cursor moved with search disabled: %d", tb.cursorLn)
 	}
 }
 
