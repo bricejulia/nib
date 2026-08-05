@@ -233,6 +233,17 @@ func run() error {
 		return err
 	}
 
+	// If the given path is a file rather than a directory, open the
+	// workspace at its parent directory instead and remember the file so
+	// it can be opened automatically once the editor is constructed. A
+	// missing path (os.Stat error) or a directory falls through
+	// unchanged — today's behavior for both is preserved exactly.
+	var openOnStart string
+	if info, statErr := os.Stat(absRoot); statErr == nil && !info.IsDir() {
+		openOnStart = absRoot
+		absRoot = filepath.Dir(absRoot)
+	}
+
 	// A missing or unloadable config just means every scope falls back
 	// to its built-in defaults — cfg is safe to use as nil throughout
 	// (see (*config.Config).Overrides).
@@ -992,6 +1003,13 @@ func run() error {
 		}()
 	} else {
 		debuglog.Warn("filesystem watcher unavailable: %v", err)
+	}
+
+	if openOnStart != "" {
+		activeEditorPane.view.Open(openOnStart)
+		app.FocusLeaf(activeEditorPane.leaf.ID)
+		refreshLineStatusFor(openOnStart)
+		treeView.Reveal(openOnStart)
 	}
 
 	return app.Run()
