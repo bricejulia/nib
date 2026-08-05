@@ -428,6 +428,75 @@ func TestRenderBodyBoundsCostForPathologicallyLongLine(t *testing.T) {
 	}
 }
 
+// Regression test for the follow-up bug found after maxRenderLineRunes
+// shipped: opening a pathologically long line worked, but navigating it
+// with arrow keys was slow, and holding one down made nib stop responding
+// entirely. Root cause: applyMovement's move_left/move_right clamp and the
+// shared clamp() helper both materialized the WHOLE line on every single
+// keypress just to bound the cursor. A burst of key events (simulating
+// "holding a key down" — internal/ui/app.go's event loop has no
+// coalescing, so each repeat is a full HandleKey+clamp) must complete in
+// bounded time, and — this doubles as the regression test for an
+// off-by-one caught while fixing it — moving right and then all the way
+// back left must actually return the cursor to column 0.
+func TestArrowKeyNavigationStaysBoundedOnPathologicallyLongLine(t *testing.T) {
+	huge := strings.Repeat("x", 5_000_000)
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{huge}}}}
+	v.active = 0
+	w := newFakeWindow(40, 10)
+	v.Render(w)
+
+	const presses = 500
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < presses; i++ {
+			v.HandleKey(layout.Key{Named: layout.KeyRight})
+		}
+		for i := 0; i < presses; i++ {
+			v.HandleKey(layout.Key{Named: layout.KeyLeft})
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a burst of arrow keys did not complete in time — cost must be bounded by cursor position, not by the line's true length")
+	}
+
+	if got := v.activeTab().cursorCol; got != 0 {
+		t.Fatalf("cursorCol = %d, want 0 after moving right %d times then left %d times", got, presses, presses)
+	}
+}
+
+// Vertical motion lands cursorCol-clamping (via clamp, see above) on
+// whichever line the cursor now sits on — this covers Up/Down specifically,
+// including a target line index the cursor starts with cursorCol=0 on
+// (the cheapest possible case, so a regression here means even the fast
+// path stopped being fast).
+func TestVerticalMotionOntoPathologicallyLongLineStaysBounded(t *testing.T) {
+	huge := strings.Repeat("x", 5_000_000)
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"short", huge}}}}
+	v.active = 0
+	w := newFakeWindow(40, 10)
+	v.Render(w)
+
+	done := make(chan struct{})
+	go func() {
+		v.HandleKey(layout.Key{Named: layout.KeyDown}) // lands the cursor on the huge line
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("moving onto a pathologically long line did not complete in time")
+	}
+	if got := v.activeTab().cursorLn; got != 1 {
+		t.Fatalf("cursorLn = %d, want 1", got)
+	}
+}
+
 // The cursor starts at column 0 on a freshly opened file — cursorDisplayColumn
 // runs on every render (see renderBody), so even that trivial case must not
 // touch the whole line to answer "column 0 is display column 0".
