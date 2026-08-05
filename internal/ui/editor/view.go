@@ -1939,8 +1939,19 @@ func (v *View) applyMovement(t *tab, action string, count int) bool {
 		if raw < 0 {
 			raw = 0
 		}
-		if rawLen := len([]rune(line)); raw > rawLen {
-			raw = rawLen
+		// Bounded by raw itself (how far this press moved), not by the
+		// line's true length: runePrefix(line, raw) stops as soon as it's
+		// seen one rune past raw, so a line with MORE than raw runes
+		// (truncated=true) is known to be long enough without ever being
+		// looked at any further. Only when the line has raw runes or fewer
+		// (truncated=false, and count is then its exact raw length) might
+		// raw need clamping down. Without this, every Left/Right press on a
+		// pathologically long line (e.g. a serialized cache file's single
+		// multi-million-character line) would pay a full-line-length cost
+		// just to arrive here, which is what made holding the key down
+		// lock nib up.
+		if _, lineLen, truncated := runePrefix(line, raw); !truncated && raw > lineLen {
+			raw = lineLen
 		}
 		t.cursorCol = expandedColForRawIndex(line, raw, tabWidth)
 	case "page_down":
@@ -2571,7 +2582,31 @@ func (v *View) clamp(t *tab) {
 	if t.cursorCol < 0 {
 		t.cursorCol = 0
 	}
-	if max := len(currentLineRunes(t, t.cursorLn, tabWidthOf(t))); t.cursorCol > max {
-		t.cursorCol = max
+	if t.buf == nil || t.cursorLn < 0 || t.cursorLn >= len(t.buf.Lines) {
+		if t.cursorCol > 0 {
+			t.cursorCol = 0
+		}
+		return
+	}
+	// Bounded by cursorCol, not by the line's true length: runePrefix(line,
+	// cursorCol) stops as soon as it's seen one raw rune past cursorCol, so
+	// a line with MORE raw runes than that (truncated=true) is guaranteed —
+	// tab expansion never shrinks — to expand to more than cursorCol runes
+	// too, without ever looking at the rest of the line. Only when the raw
+	// line has cursorCol runes or fewer (truncated=false, and rawPrefix is
+	// then the WHOLE line) does the actual expanded length need computing.
+	// Same reasoning as cursorDisplayColumn's doc comment. clamp runs after
+	// every single motion in both modes (see applyMovement's callers), so
+	// the unconditional full-line currentLineRunes call this replaced meant
+	// every arrow keypress paid an ExpandTabs-plus-[]rune pass over the
+	// WHOLE line — on a pathologically long line, that's what made holding
+	// a key down lock nib up.
+	line := t.buf.Lines[t.cursorLn]
+	rawPrefix, lineLen, truncated := runePrefix(line, t.cursorCol)
+	if truncated {
+		return
+	}
+	if t.cursorCol > lineLen {
+		t.cursorCol = len([]rune(textwidth.ExpandTabs(rawPrefix, tabWidthOf(t))))
 	}
 }
