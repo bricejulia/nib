@@ -2022,7 +2022,41 @@ func (v *View) applyMovement(t *tab, action string, count int) bool {
 			line = t.buf.Lines[t.cursorLn]
 		}
 		tabWidth := tabWidthOf(t)
-		raw := rawIndexForExpandedCol(line, t.cursorCol, tabWidth)
+		cursorCol := t.cursorCol
+		// runePrefix(line, maxRenderLineRunes) is cheap regardless of
+		// whether this line turns out to be long: bounded to whichever is
+		// smaller of maxRenderLineRunes and the line's own true length, so
+		// an ordinary short line exhausts the scan almost immediately —
+		// there's no cheaper way to learn "is this line long" than to
+		// check it (Buffer.HasLongLine doesn't substitute here: it's
+		// fixed once at Load and never re-derived, so a paste that
+		// introduces a long line into a previously-short file would leave
+		// it permanently false — see its own doc comment).
+		if _, _, longEnough := runePrefix(line, maxRenderLineRunes); longEnough {
+			// This line exceeds the render cap. Cap cursorCol at it first
+			// — bounded to exactly maxRenderLineRunes regardless of how
+			// far a stale jump (a prior "$", a search match, paste, LSP
+			// navigation, ...) overshot — before rawIndexForExpandedCol
+			// below pays a cost proportional to that overshoot. Without
+			// this, the FIRST keypress after an overshoot stays expensive
+			// even though clamp() would correct it right back down a
+			// moment later anyway.
+			if cursorCol > maxRenderLineRunes {
+				cursorCol = maxRenderLineRunes
+			}
+			// Already pinned at the cap and trying to go further right:
+			// every subsequent keystroke would otherwise redo the same
+			// maxRenderLineRunes-bounded raw-index round trip below just
+			// to be clamped straight back to where it already is —
+			// exactly what holding Right at the end of such a line does.
+			// Short-circuit instead of paying that repeatedly.
+			if action == "move_right" && cursorCol >= maxRenderLineRunes {
+				t.cursorCol = maxRenderLineRunes
+				t.clearSelection()
+				return true
+			}
+		}
+		raw := rawIndexForExpandedCol(line, cursorCol, tabWidth)
 		if action == "move_left" {
 			raw -= count
 		} else {
