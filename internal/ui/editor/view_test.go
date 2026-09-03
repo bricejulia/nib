@@ -290,8 +290,8 @@ func TestViewCursorColClampsAtLineLength(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		v.HandleKey(layout.Key{Named: layout.KeyRight})
 	}
-	if v.activeTab().cursorCol != 3 {
-		t.Fatalf("cursorCol = %d, want 3 (clamped to line length, cursor may sit one-past-the-end)", v.activeTab().cursorCol)
+	if v.activeTab().cursorCol != 2 {
+		t.Fatalf("cursorCol = %d, want 2 (clamped to the last character — Normal mode never rests past it, unlike Insert mode)", v.activeTab().cursorCol)
 	}
 
 	for i := 0; i < 20; i++ {
@@ -311,8 +311,8 @@ func TestViewCursorColClampsWhenMovingToShorterLine(t *testing.T) {
 
 	v.activeTab().cursorCol = 10
 	v.HandleKey(layout.Key{Named: layout.KeyDown})
-	if v.activeTab().cursorCol != 1 {
-		t.Fatalf("moving to a 1-char line should clamp cursorCol to 1, got %d", v.activeTab().cursorCol)
+	if v.activeTab().cursorCol != 0 {
+		t.Fatalf("moving to a 1-char line should clamp cursorCol to its only character (0), got %d", v.activeTab().cursorCol)
 	}
 }
 
@@ -413,8 +413,9 @@ func TestViewHorizontalScrollIsBoundedByLineLength(t *testing.T) {
 	}
 
 	tb := v.activeTab()
-	if tb.cursorCol != len([]rune("short")) {
-		t.Fatalf("cursorCol should clamp to the line length (%d), got %d", len([]rune("short")), tb.cursorCol)
+	wantCol := len([]rune("short")) - 1
+	if tb.cursorCol != wantCol {
+		t.Fatalf("cursorCol should clamp to the last character (%d), got %d", wantCol, tb.cursorCol)
 	}
 	if tb.leftCol > tb.cursorCol {
 		t.Fatalf("leftCol (%d) should never exceed the cursor's own display column (%d)", tb.leftCol, tb.cursorCol)
@@ -764,9 +765,9 @@ func TestViewHomeAndEndMoveCursorColToLineBoundaries(t *testing.T) {
 	tb.cursorLn = 3 // the 200-char long line
 	v.HandleKey(layout.Key{Named: layout.KeyEnd})
 	v.Render(w)
-	wantEnd := len(currentLineRunes(tb, 3, tabWidthOf(tb)))
+	wantEnd := len(currentLineRunes(tb, 3, tabWidthOf(tb))) - 1
 	if tb.cursorCol != wantEnd {
-		t.Fatalf("End should move cursorCol to the line length (%d), got %d", wantEnd, tb.cursorCol)
+		t.Fatalf("End should move cursorCol to the last character (%d), got %d", wantEnd, tb.cursorCol)
 	}
 	if tb.leftCol == 0 {
 		t.Fatalf("scrolling to the end of a long line should have advanced leftCol, got 0")
@@ -1963,19 +1964,69 @@ func TestClampLeavesAValidColumnAloneEvenPastTheLinesRawRuneCount(t *testing.T) 
 	}
 }
 
+func TestClampToLastCharStopsOneShortOfWhereClampAllows(t *testing.T) {
+	// clamp() and clampToLastChar() must agree everywhere EXCEPT right at a
+	// non-empty line's end: clamp() allows resting one column past the
+	// last character (Insert mode, mouse placement); clampToLastChar()
+	// — genuine Normal-mode navigation — never does.
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc", ""}, IndentWidth: 4}}}
+	v.active = 0
+	tb := v.activeTab()
+
+	// A valid, non-end column: both agree, unchanged.
+	tb.cursorLn, tb.cursorCol = 0, 1
+	v.clamp(tb)
+	if tb.cursorCol != 1 {
+		t.Fatalf("clamp: cursorCol = %d, want unchanged 1", tb.cursorCol)
+	}
+	tb.cursorCol = 1
+	v.clampToLastChar(tb)
+	if tb.cursorCol != 1 {
+		t.Fatalf("clampToLastChar: cursorCol = %d, want unchanged 1", tb.cursorCol)
+	}
+
+	// Sitting one past "abc"'s last character (3): clamp() leaves it there,
+	// clampToLastChar() pulls it back onto the last character (2).
+	tb.cursorCol = 3
+	v.clamp(tb)
+	if tb.cursorCol != 3 {
+		t.Fatalf("clamp: cursorCol = %d, want unchanged 3 (one past the last character)", tb.cursorCol)
+	}
+	tb.cursorCol = 3
+	v.clampToLastChar(tb)
+	if tb.cursorCol != 2 {
+		t.Fatalf("clampToLastChar: cursorCol = %d, want 2 (the last character, not past it)", tb.cursorCol)
+	}
+
+	// An empty line has no "last character" to rest on: both agree on 0.
+	tb.cursorLn, tb.cursorCol = 1, 5
+	v.clamp(tb)
+	if tb.cursorCol != 0 {
+		t.Fatalf("clamp on an empty line: cursorCol = %d, want 0", tb.cursorCol)
+	}
+	tb.cursorCol = 5
+	v.clampToLastChar(tb)
+	if tb.cursorCol != 0 {
+		t.Fatalf("clampToLastChar on an empty line: cursorCol = %d, want 0", tb.cursorCol)
+	}
+}
+
 func TestArrowKeysWalkPastAndBackFromALeadingTabWithoutSkippingColumns(t *testing.T) {
 	// End-to-end regression test for the same clamp() bug as
 	// TestClampLeavesAValidColumnAloneEvenPastTheLinesRawRuneCount: walking
 	// right past a leading tab's trailing text used to jump straight to the
 	// end of the line as soon as cursorCol exceeded the line's raw rune
 	// count (4, for "\tfoo"), skipping columns 5 and 6 ('o' and 'o')
-	// entirely instead of landing on each one in turn.
+	// entirely instead of landing on each one in turn. In Normal mode the
+	// walk stops on the last character (6, the second 'o'), never past it
+	// — see clampToLastChar.
 	v := NewView()
 	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"\tfoo"}, IndentWidth: 4}}}
 	v.active = 0
 	tb := v.activeTab()
 
-	want := []int{4, 5, 6, 7, 7} // past the tab, then one column per letter, pinned at the end
+	want := []int{4, 5, 6, 6, 6} // past the tab, then one column per letter, pinned at the last one
 	for i, w := range want {
 		v.HandleKey(layout.Key{Named: layout.KeyRight})
 		if got := tb.cursorCol; got != w {
@@ -1983,7 +2034,7 @@ func TestArrowKeysWalkPastAndBackFromALeadingTabWithoutSkippingColumns(t *testin
 		}
 	}
 
-	wantBack := []int{6, 5, 4, 0}
+	wantBack := []int{5, 4, 0, 0}
 	for i, w := range wantBack {
 		v.HandleKey(layout.Key{Named: layout.KeyLeft})
 		if got := tb.cursorCol; got != w {
@@ -2009,6 +2060,24 @@ func TestArrowKeysMoveCursorWhileInserting(t *testing.T) {
 	}
 	if v.activeTab().buf.Lines[1] != "two" {
 		t.Fatalf("Lines[1] = %q, want unchanged %q (arrow keys must not insert text)", v.activeTab().buf.Lines[1], "two")
+	}
+}
+
+func TestArrowRightInInsertModeStillReachesOnePastTheEnd(t *testing.T) {
+	// Regression guard: clampToLastChar's Normal-mode tightening must not
+	// leak into Insert mode, which still needs to rest the cursor one past
+	// a line's last character — otherwise typing at the very end of a line
+	// would be impossible.
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.HandleKey(layout.Key{Text: "i"})
+
+	for range 4 {
+		v.HandleKey(layout.Key{Named: layout.KeyRight})
+	}
+	if got := v.activeTab().cursorCol; got != 3 {
+		t.Fatalf("cursorCol = %d, want 3 (one past 'c', for appending — still allowed in Insert mode)", got)
 	}
 }
 
@@ -2064,6 +2133,35 @@ func TestAAtEndOfLineAppendsPastTheEnd(t *testing.T) {
 	}
 }
 
+func TestExitingInsertModeAtEndOfLinePullsTheCursorBackOntoTheLastCharacter(t *testing.T) {
+	// Regression test: typing at the very end of a line leaves the cursor
+	// one past its last character — valid while inserting, but Esc lands
+	// back in Normal mode, which never rests there. exitInsertMode used to
+	// leave cursorCol exactly where Insert mode left it, with nothing to
+	// re-validate it against Normal mode's last-character rule until some
+	// later, unrelated keypress happened to clamp it.
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+
+	pressKeys(v, "$a!") // append after the last character: "abc!"
+	if got := v.activeTab().buf.Lines[0]; got != "abc!" {
+		t.Fatalf("setup: Lines[0] = %q, want %q", got, "abc!")
+	}
+	if got := v.activeTab().cursorCol; got != 4 {
+		t.Fatalf("setup: cursorCol = %d, want 4 (one past '!', mid Insert session)", got)
+	}
+
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	if v.mode != modeNormal {
+		t.Fatal("Esc should return to Normal mode")
+	}
+	if got := v.activeTab().cursorCol; got != 3 {
+		t.Fatalf("cursorCol = %d, want 3 (pulled back onto '!', the new last character)", got)
+	}
+}
+
 func TestUndoRevertsLastInsertSession(t *testing.T) {
 	v := NewView()
 	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
@@ -2087,8 +2185,13 @@ func TestUndoRevertsLastInsertSession(t *testing.T) {
 	if tb.buf.Lines[0] != "abc" {
 		t.Fatalf("Lines[0] = %q, want %q after undo", tb.buf.Lines[0], "abc")
 	}
-	if tb.cursorCol != 3 {
-		t.Fatalf("cursorCol = %d, want 3 (restored to its pre-Insert-session position)", tb.cursorCol)
+	// Undo restores cursorCol to its pre-Insert-session position (3, one
+	// past "abc"'s last character — a valid position to have been typing
+	// from) — but landing back in Normal mode, that position is then
+	// re-validated same as any other Normal-mode action, tightening it to
+	// the now-restored line's actual last character (2).
+	if tb.cursorCol != 2 {
+		t.Fatalf("cursorCol = %d, want 2 (its pre-Insert-session position, re-clamped to Normal mode's last-character rule)", tb.cursorCol)
 	}
 }
 
@@ -2935,8 +3038,11 @@ func TestUndoInOnePaneUndoesEditMadeInAnotherPane(t *testing.T) {
 	if got := v2.activeTab().buf.Lines[0]; got != "line one" {
 		t.Fatalf("pane 2's Lines[0] after undo = %q, want %q (reverts an edit made in pane 1)", got, "line one")
 	}
-	if v2.activeTab().cursorCol != len("line one") {
-		t.Fatalf("expected pane 2's OWN cursor to move to the undone edit's position, got %d", v2.activeTab().cursorCol)
+	// The undone edit's position is one past "line one"'s last character
+	// (where the "!" was appended) — re-clamped to Normal mode's
+	// last-character rule once pane 2's own "u" keypress lands back there.
+	if want := len("line one") - 1; v2.activeTab().cursorCol != want {
+		t.Fatalf("expected pane 2's OWN cursor to move to the undone edit's position, got %d, want %d", v2.activeTab().cursorCol, want)
 	}
 }
 

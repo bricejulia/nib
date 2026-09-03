@@ -229,8 +229,12 @@ func TestDDollarDeletesToEndOfLine(t *testing.T) {
 	if got := tb.buf.Lines[0]; got != "hello " {
 		t.Fatalf("Lines[0] = %q, want %q", got, "hello ")
 	}
-	if tb.cursorCol != 6 {
-		t.Fatalf("cursorCol = %d, want 6", tb.cursorCol)
+	// "hello world" becomes "hello " (6 runes: "hello" + a trailing space)
+	// after "d$" deletes "world" — the cursor lands on that new last
+	// character (the space, col 5), not past it, matching Normal mode's
+	// last-character rule.
+	if tb.cursorCol != 5 {
+		t.Fatalf("cursorCol = %d, want 5", tb.cursorCol)
 	}
 }
 

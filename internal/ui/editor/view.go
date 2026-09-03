@@ -798,7 +798,7 @@ func (v *View) OpenAtLine(path string, line int) {
 	}
 	t.cursorLn = line - 1
 	t.cursorCol = 0
-	v.clamp(t)
+	v.clampToLastChar(t)
 }
 
 // NextTab activates the next open tab, wrapping around.
@@ -2044,7 +2044,7 @@ func (v *View) HandleKey(k layout.Key) bool {
 		}
 	}
 
-	v.clamp(t)
+	v.clampToLastChar(t)
 	return true
 }
 
@@ -2384,7 +2384,7 @@ func (v *View) goToLine(line int) {
 	v.pushJump(t)
 	t.cursorLn = line - 1
 	t.cursorCol = 0
-	v.clamp(t)
+	v.clampToLastChar(t)
 }
 
 // closeActiveTab implements vim's ":q"/":q!": closes the active tab,
@@ -2445,7 +2445,17 @@ func (v *View) enterInsertMode() bool {
 func (v *View) exitInsertMode() {
 	v.mode = modeNormal
 	t := v.activeTab()
-	if t == nil || t.insertSnapshot == nil {
+	if t == nil {
+		return
+	}
+	// The cursor may be resting one past the line's last character —
+	// valid while inserting (typing at the very end of a line needs
+	// exactly that), never in Normal mode. Vim itself moves the cursor
+	// back onto the last character on Esc; re-validate against that
+	// stricter rule now that a mode switch has actually happened, the
+	// same as every other Normal-mode-landing action.
+	v.clampToLastChar(t)
+	if t.insertSnapshot == nil {
 		return
 	}
 	snap := *t.insertSnapshot
@@ -2676,7 +2686,7 @@ func (v *View) handleReplaceCharKey(k layout.Key) bool {
 		return true
 	}
 	v.replaceCharUnderCursor(t, runes[0])
-	v.clamp(t)
+	v.clampToLastChar(t)
 	return true
 }
 
@@ -3026,10 +3036,45 @@ func (v *View) pageSize() int {
 }
 
 // clamp keeps cursorLn within the buffer and cursorCol within the
-// (possibly just-changed) current line's length. There is no "sticky
+// (possibly just-changed) current line's length, allowing cursorCol to
+// rest one column past the line's last character. There is no "sticky
 // column" — moving through a short line and back to a long one does not
 // remember the original column, an acceptable simplification for now.
+//
+// That one-past-the-end position is needed for Insert-mode text entry
+// (appending after the last character) and for mouse-driven cursor/
+// selection placement (clicking past the end of a line, or a triple-click
+// selecting to the end of the last line — see selection.go). See
+// clampToLastChar for genuine Normal-mode keyboard/programmatic
+// navigation, which — like vim — never rests the cursor past a line's
+// last character.
 func (v *View) clamp(t *tab) {
+	v.clampCursor(t, true)
+}
+
+// clampToLastChar is clamp's stricter sibling: it never leaves cursorCol
+// past a (non-empty) line's last character, matching vim's own rule that
+// the cursor always rests ON a character outside Insert mode. Used at
+// every clamp-call site that's genuine Normal-mode keyboard/programmatic
+// navigation — motions, jumps, search, x/X, p, ... — never at one that's
+// Insert-mode text entry or GUI-style mouse placement (see each call
+// site's own comment for which bucket it's in).
+//
+// Deliberately a separate function rather than a v.mode check inside
+// clamp itself: several clamp() call sites run while v.mode == modeNormal
+// yet still need the one-past-the-end position clamp already allows —
+// mouse click/selection placement (selection.go), and the defensive
+// per-frame re-validation in Render/RefreshBuffer, which re-clamp
+// regardless of mode and would otherwise silently chew one character off
+// of every mouse-placed cursor on the very next frame. Mode alone can't
+// tell those apart from real keyboard navigation; only the call site can.
+func (v *View) clampToLastChar(t *tab) {
+	v.clampCursor(t, false)
+}
+
+// clampCursor is clamp/clampToLastChar's shared implementation.
+// allowOnePastEnd selects which of the two behaviors above applies.
+func (v *View) clampCursor(t *tab, allowOnePastEnd bool) {
 	if t.cursorLn < 0 {
 		t.cursorLn = 0
 	}
@@ -3061,7 +3106,10 @@ func (v *View) clamp(t *tab) {
 	// length) — it's still O(that huge cursorCol). Checking the ceiling
 	// here, bounded to exactly maxRenderLineRunes regardless of how far
 	// cursorCol already is, is what keeps it from staying expensive
-	// forever once it's overshot once.
+	// forever once it's overshot once. maxRenderLineRunes always lands ON
+	// a real character on such a line (there's strictly more content past
+	// the cap), never past the true end, so this is unaffected by
+	// allowOnePastEnd and returns before reaching that logic below.
 	if t.cursorCol > maxRenderLineRunes {
 		if _, _, longEnough := runePrefix(line, maxRenderLineRunes); longEnough {
 			t.cursorCol = maxRenderLineRunes
@@ -3077,26 +3125,31 @@ func (v *View) clamp(t *tab) {
 	// cursorCol) stops as soon as it's seen one raw rune past cursorCol, so
 	// a line with MORE raw runes than that (truncated=true) is guaranteed —
 	// tab expansion never shrinks — to expand to more than cursorCol runes
-	// too, without ever looking at the rest of the line. Only when the raw
-	// line has cursorCol runes or fewer (truncated=false, and rawPrefix is
-	// then the WHOLE line) does the actual expanded length need computing.
-	// Same reasoning as cursorDisplayColumn's doc comment.
-	rawPrefix, lineLen, truncated := runePrefix(line, t.cursorCol)
+	// too, without ever looking at the rest of the line: cursorCol is
+	// strictly before the line's end either way, so there's nothing for
+	// either clamp variant to do. Only when the raw line has cursorCol
+	// runes or fewer (truncated=false, and rawPrefix is then the WHOLE
+	// line) does the actual expanded length need computing. Same reasoning
+	// as cursorDisplayColumn's doc comment.
+	rawPrefix, _, truncated := runePrefix(line, t.cursorCol)
 	if truncated {
 		return
 	}
-	// t.cursorCol > lineLen only means cursorCol might be out of bounds —
-	// tab expansion never shrinks, so a line with a tab in it commonly
-	// expands to MORE columns than it has raw runes, and a cursorCol
-	// sitting anywhere in that gap (raw rune count < cursorCol <= true
-	// expanded length) is perfectly valid, not an overshoot. Only clamp
-	// once the true expanded length is in hand and cursorCol actually
-	// exceeds it — checking against lineLen (the raw count) first, above,
-	// is only what decides whether that true length needs computing at
-	// all, never a substitute for comparing against it.
-	if t.cursorCol > lineLen {
-		if expandedLen := len([]rune(textwidth.ExpandTabs(rawPrefix, tabWidthOf(t)))); t.cursorCol > expandedLen {
-			t.cursorCol = expandedLen
+	// rawPrefix is the whole line here, so this is the line's true
+	// expanded length, computed at most once per call and bounded by the
+	// same rawPrefix already in hand — not a second full-line scan.
+	expandedLen := len([]rune(textwidth.ExpandTabs(rawPrefix, tabWidthOf(t))))
+	if t.cursorCol > expandedLen {
+		t.cursorCol = expandedLen
+	}
+	if !allowOnePastEnd {
+		// vim's rule: never past the last character outside Insert mode.
+		// An empty line has no "last character" to rest on, so 0 is as
+		// far as this goes either way.
+		if expandedLen == 0 {
+			t.cursorCol = 0
+		} else if t.cursorCol >= expandedLen {
+			t.cursorCol = expandedLen - 1
 		}
 	}
 }
