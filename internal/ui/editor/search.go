@@ -233,7 +233,7 @@ func (v *View) cancelSearch() {
 	v.searchMatches = nil
 	if t := v.activeTab(); t != nil {
 		t.cursorLn, t.cursorCol = v.searchOriginLn, v.searchOriginCol
-		v.clamp(t)
+		v.clampToLastChar(t)
 	}
 }
 
@@ -344,5 +344,5 @@ func (v *View) jumpToMatch(i int) {
 	m := v.searchMatches[i]
 	t.cursorLn = m.ln
 	t.cursorCol = expandedColForRawIndexIn(t.buf, m.ln, m.start, tabWidthOf(t))
-	v.clamp(t)
+	v.clampToLastChar(t)
 }

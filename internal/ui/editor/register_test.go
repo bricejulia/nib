@@ -424,8 +424,8 @@ func TestDollarAndZeroJumpToLineEnds(t *testing.T) {
 	if !v.HandleKey(layout.Key{Text: "$"}) {
 		t.Fatal("expected '$' to be consumed")
 	}
-	if col := v.activeTab().cursorCol; col != 5 {
-		t.Fatalf("cursorCol = %d, want 5 (one past the last rune, like End)", col)
+	if col := v.activeTab().cursorCol; col != 4 {
+		t.Fatalf("cursorCol = %d, want 4 (on the last rune, like End — never past it in Normal mode)", col)
 	}
 
 	if !v.HandleKey(layout.Key{Text: "0"}) {
@@ -443,9 +443,10 @@ func TestDollarOnATabbedLineUsesExpandedWidth(t *testing.T) {
 
 	v.HandleKey(layout.Key{Text: "$"})
 
-	// tabWidth 4: the tab expands to 4 runes, plus "ab" = 6.
-	if col := v.activeTab().cursorCol; col != 6 {
-		t.Fatalf("cursorCol = %d, want 6", col)
+	// tabWidth 4: the tab expands to 4 runes, plus "ab" = 6 total, so the
+	// last rune ('b') sits at column 5 — never past it in Normal mode.
+	if col := v.activeTab().cursorCol; col != 5 {
+		t.Fatalf("cursorCol = %d, want 5", col)
 	}
 }
 

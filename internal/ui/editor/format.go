@@ -69,7 +69,7 @@ func (v *View) applyTextEdits(t *tab, edits []lsp.TextEdit) {
 	t.buf.Restore(lines)
 	v.pushUndoIfChanged(t, before)
 	v.onBufferEdited(t)
-	v.clamp(t)
+	v.clampToLastChar(t)
 }
 
 // applyTextEdit replaces the span from e.Range.Start to e.Range.End — RAW

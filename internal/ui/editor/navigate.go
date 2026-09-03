@@ -202,7 +202,7 @@ func (v *View) jumpBack() {
 		}
 	}
 	t.cursorLn, t.cursorCol = loc.ln, loc.col
-	v.clamp(t)
+	v.clampToLastChar(t)
 }
 
 // goToParent implements "go to parent": moves the cursor to the start of
@@ -305,7 +305,7 @@ func (v *View) goToDefinitionLSP(t *tab, lang string) bool {
 		if target == t.path {
 			t.cursorLn = loc.Range.Start.Line
 			t.cursorCol = expandedColForRawIndexIn(t.buf, loc.Range.Start.Line, loc.Range.Start.Character, tabWidthOf(t))
-			v.clamp(t)
+			v.clampToLastChar(t)
 			return
 		}
 		// Cross-file definition: open (or switch to) the target file and

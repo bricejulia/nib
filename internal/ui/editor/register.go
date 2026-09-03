@@ -109,7 +109,7 @@ func (v *View) deleteLines(t *tab, count int) {
 	t.cursorCol = 0
 	v.pushUndoIfChanged(t, before)
 	v.onBufferEdited(t)
-	v.clamp(t) // the deleted range may have reached the last line
+	v.clampToLastChar(t) // the deleted range may have reached the last line
 }
 
 // changeLines implements vim's "cc" (count == 1) and "3cc" (count > 1):
@@ -155,7 +155,7 @@ func (v *View) deleteRange(t *tab, startLn, startCol, endLn, endCol int) {
 	t.cursorCol = expandedColForRawIndex(t.buf.Lines[startLn], startCol, tabWidthOf(t))
 	v.pushUndoIfChanged(t, before)
 	v.onBufferEdited(t)
-	v.clamp(t)
+	v.clampToLastChar(t)
 }
 
 // yankRange implements a charwise yank operator (e.g. "yw", "y$", "yiw")
@@ -210,7 +210,7 @@ func (v *View) putAfter(t *tab) {
 	}
 	v.pushUndoIfChanged(t, before)
 	v.onBufferEdited(t)
-	v.clamp(t)
+	v.clampToLastChar(t)
 }
 
 // putCharwise splices a partial-line fragment in after the cursor — the
