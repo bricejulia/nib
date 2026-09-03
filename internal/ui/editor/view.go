@@ -1822,11 +1822,14 @@ func rawIndexForExpandedCol(line string, col, tabWidth int) int {
 		tabWidth = 8
 	}
 	expanded, runeIdx := 0, 0
-	for i, r := range line {
+	for _, r := range line {
 		if r == '\t' {
 			span := tabWidth - (expanded % tabWidth)
 			if col == expanded {
-				return i // squarely at the tab's own start: that's its raw index
+				// Squarely at the tab's own start: that's its raw index.
+				// runeIdx, not a byte offset — line can contain multi-byte
+				// UTF-8 runes before this tab, where the two diverge.
+				return runeIdx
 			}
 			if col < expanded+span {
 				return runeIdx + 1 // strictly inside the tab's span: snap past it, not into it
