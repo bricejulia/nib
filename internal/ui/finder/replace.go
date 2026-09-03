@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"time"
-	"unicode"
 
 	"github.com/bricejulia/nib/internal/config"
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/textwidth"
 	"github.com/bricejulia/nib/internal/ui/editor"
+	"github.com/bricejulia/nib/internal/ui/textfield"
 )
 
 // ReplaceDefaultKeybinds are the replace-in-path overlay's built-in
@@ -42,74 +42,6 @@ const (
 	focusResults
 )
 
-// textField is a single-line, always-typeable text input — the same shape
-// filetree's in-pane prompt uses (a []rune buffer plus a caret index,
-// prompt.go), factored out here since ReplaceView needs two independent
-// instances (Find: and Replace:) rather than filetree's one.
-type textField struct {
-	buf   []rune
-	caret int
-}
-
-func (f *textField) String() string { return string(f.buf) }
-
-// textBeforeCaret is what CursorPosition measures the terminal caret's
-// column from, mirroring filetree.View.CursorPosition's own caretCol
-// computation.
-func (f *textField) textBeforeCaret() string { return string(f.buf[:f.caret]) }
-
-// handleKey edits the field in place, reporting whether it consumed k.
-// Named keys it doesn't itself handle (Tab, Enter, Esc, arrows-that-aren't-
-// Left/Right, paging) are left unconsumed so the caller can act on them —
-// exactly how filetree's prompt reserves Esc for itself while still typing
-// every other character.
-func (f *textField) handleKey(k layout.Key) bool {
-	switch k.Named {
-	case layout.KeyBackspace:
-		if f.caret > 0 {
-			f.buf = append(f.buf[:f.caret-1], f.buf[f.caret:]...)
-			f.caret--
-		}
-		return true
-	case layout.KeyLeft:
-		if f.caret > 0 {
-			f.caret--
-		}
-		return true
-	case layout.KeyRight:
-		if f.caret < len(f.buf) {
-			f.caret++
-		}
-		return true
-	case layout.KeyHome:
-		f.caret = 0
-		return true
-	case layout.KeyEnd:
-		f.caret = len(f.buf)
-		return true
-	}
-	// Any other named key (Tab, Enter, Esc, Up/Down, paging) is left to the
-	// caller. Space is the exception: App's translateKey promotes it to a
-	// Named value while leaving Text intact, so without this a space would
-	// never make it into typed text.
-	if k.Named != "" && k.Named != layout.KeySpace {
-		return false
-	}
-	if k.Text == "" || k.Mods&(layout.ModCtrl|layout.ModAlt|layout.ModSuper) != 0 {
-		return false
-	}
-	for _, r := range k.Text {
-		if !unicode.IsPrint(r) {
-			continue
-		}
-		f.buf = append(f.buf, 0)
-		copy(f.buf[f.caret+1:], f.buf[f.caret:])
-		f.buf[f.caret] = r
-		f.caret++
-	}
-	return true
-}
-
 // replaceRow is one row of ReplaceView's flattened, occurrence-level
 // results list — either a file header (one per matching file, its own
 // checkbox toggling every occurrence beneath it) or a single occurrence
@@ -141,8 +73,8 @@ type ReplaceSearchResult struct {
 type ReplaceView struct {
 	root string
 
-	find    textField
-	replace textField
+	find    textfield.TextField
+	replace textfield.TextField
 	focus   inputFocus
 
 	matches []contentMatch // raw searchContent results, one per matched line
@@ -194,8 +126,8 @@ func (v *ReplaceView) Title() string { return "Find & Replace in Path" }
 // Open resets the view to a blank query, ready to be shown.
 func (v *ReplaceView) Open() {
 	v.cancelPendingSearch()
-	v.find = textField{}
-	v.replace = textField{}
+	v.find = textfield.TextField{}
+	v.replace = textfield.TextField{}
 	v.focus = focusFind
 	v.matches = nil
 	v.rows = nil
@@ -413,7 +345,7 @@ func (v *ReplaceView) fireReplace(occs []editor.Occurrence) {
 // aren't listed in ReplaceDefaultKeybinds. Enter is likewise structural
 // while focus is off the results list (advance to the next field, same as
 // Tab). Everything else routes to whichever field has focus (typing, never
-// through the keymap — see textField.handleKey) or, once focus is on the
+// through the keymap — see textfield.TextField.HandleKey) or, once focus is on the
 // results list, through v.keymap.
 func (v *ReplaceView) HandleKey(k layout.Key) bool {
 	if k.EventType == layout.EventRelease {
@@ -453,7 +385,7 @@ func (v *ReplaceView) HandleKey(k layout.Key) bool {
 		if v.focus == focusReplace {
 			field = &v.replace
 		}
-		if field.handleKey(k) && v.focus == focusFind {
+		if field.HandleKey(k) && v.focus == focusFind {
 			v.refilter()
 		}
 		return true
@@ -496,9 +428,9 @@ func (v *ReplaceView) CursorPosition() (int, int, bool) {
 	}
 	switch v.focus {
 	case focusFind:
-		return textwidth.DisplayWidth(findLabel + v.find.textBeforeCaret()), 0, true
+		return textwidth.DisplayWidth(findLabel + v.find.TextBeforeCaret()), 0, true
 	case focusReplace:
-		return textwidth.DisplayWidth(replaceLabel + v.replace.textBeforeCaret()), 1, true
+		return textwidth.DisplayWidth(replaceLabel + v.replace.TextBeforeCaret()), 1, true
 	default:
 		return 0, 0, false
 	}

@@ -50,6 +50,7 @@ var sections = []section{
 			{"PageUp PageDown", "Move by a page"},
 			{"Home End, 0 $", "Start / end of line"},
 			{"g G", "First / last line"},
+			{"w e b", "Move to next word / end of word / previous word"},
 			{"i", "Enter Insert mode"},
 			{"a", "Enter Insert mode, after the cursor"},
 			{"o", "Open a new line below and enter Insert mode"},
@@ -58,6 +59,7 @@ var sections = []section{
 			{"r<char>", "Replace character under cursor"},
 			{"dd", "Delete (cut) this line"},
 			{"yy", "Yank (copy) this line"},
+			{"cc", "Change (delete + enter Insert mode) this line"},
 			{"p", "Put (paste) after this line"},
 			{"y", "Copy the mouse selection (to the clipboard too)"},
 			{"Esc", "Return to Normal mode"},
@@ -117,6 +119,7 @@ var sections = []section{
 			{"a", "New file (end with \"/\" for a directory)"},
 			{"r", "Rename / move: edit the path, Enter"},
 			{"d", "Delete (confirm y/N)"},
+			{"] [", "Cycle view: files / changed files"},
 			{"Esc", "Cancel the prompt"},
 		},
 	},
@@ -163,8 +166,10 @@ var sections = []section{
 	{
 		Title: "Help",
 		Bindings: []binding{
+			{"<type>", "Filter the list by key or description"},
 			{"Up Down PageUp PageDown", "Scroll"},
-			{"Esc", "Close"},
+			{"Home End", "Jump to the top / bottom"},
+			{"Esc", "Close (also clears the search)"},
 		},
 	},
 }

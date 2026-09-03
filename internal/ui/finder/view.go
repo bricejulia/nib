@@ -16,6 +16,7 @@ import (
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/textwidth"
 	"github.com/bricejulia/nib/internal/ui/gitstyle"
+	"github.com/bricejulia/nib/internal/ui/textfield"
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
@@ -88,7 +89,7 @@ type View struct {
 	contentMatches []contentMatch // content mode: git grep hits
 
 	status    map[string]gitstatus.Status // keyed by repo-relative path
-	query     textField
+	query     textfield.TextField
 	cursor    int
 	scrollTop int
 
@@ -158,7 +159,7 @@ func (v *View) Open() {
 	v.cancelPendingSearch()
 	v.items = listFiles(v.root)
 	v.mode = modeFiles
-	v.query = textField{}
+	v.query = textfield.TextField{}
 	v.cursor = 0
 	v.scrollTop = 0
 	v.refilter()
@@ -172,8 +173,7 @@ func (v *View) Open() {
 func (v *View) OpenWithQuery(query string) {
 	v.Open()
 	v.mode = modeContent
-	runes := []rune(query)
-	v.query = textField{buf: runes, caret: len(runes)}
+	v.query = textfield.New(query)
 	v.refilter()
 }
 
@@ -271,7 +271,7 @@ func (v *View) refilterContent() {
 	v.cancelPendingSearch() // stops any prior timer; bumps searchGen for us too
 	v.contentMatches = nil
 
-	if len(v.query.buf) < minContentQueryLen {
+	if v.query.Len() < minContentQueryLen {
 		v.clampCursor()
 		return
 	}
@@ -345,7 +345,7 @@ func (v *View) CursorPosition() (int, int, bool) {
 	if v.mode == modeReplace {
 		return v.replace.CursorPosition()
 	}
-	return len(v.promptPrefix()) + v.query.caret, 0, true
+	return len(v.promptPrefix()) + v.query.Caret(), 0, true
 }
 
 func (v *View) Render(w layout.Window) {
@@ -372,7 +372,7 @@ func (v *View) Render(w layout.Window) {
 		return
 	}
 
-	if v.mode == modeContent && len(v.query.buf) < minContentQueryLen {
+	if v.mode == modeContent && v.query.Len() < minContentQueryLen {
 		w.Println(1, layout.Segment{
 			Text:  fmt.Sprintf("type at least %d characters to search file contents", minContentQueryLen),
 			Style: layout.Style{Attr: layout.AttrDim},
@@ -383,7 +383,7 @@ func (v *View) Render(w layout.Window) {
 		switch {
 		case v.searching:
 			w.Println(1, layout.Segment{Text: "searching…", Style: layout.Style{Attr: layout.AttrDim}})
-		case len(v.query.buf) > 0:
+		case v.query.Len() > 0:
 			w.Println(1, layout.Segment{Text: "no matches", Style: layout.Style{Attr: layout.AttrDim}})
 		}
 		return
@@ -462,12 +462,12 @@ func (v *View) HandleKey(k layout.Key) bool {
 
 	// Left/Right/Home/End/Backspace and typed text all edit the query's
 	// caret directly, checking k.Named first and never consulting
-	// v.keymap — the same pattern textField.handleKey already implements
-	// for ReplaceView's own Find/Replace fields (replace.go), and
+	// v.keymap — the same pattern textfield.TextField.HandleKey already
+	// implements for ReplaceView's own Find/Replace fields (replace.go), and
 	// handlePromptKey's for the file tree's inline prompt. Only
 	// Esc/Tab/Enter/Up/Down are ever remappable actions in this mode (see
 	// DefaultKeybinds); every other key stays typeable.
-	if v.query.handleKey(k) {
+	if v.query.HandleKey(k) {
 		v.refilter()
 	}
 	return true
