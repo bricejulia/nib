@@ -334,6 +334,37 @@ func TestSearchNextAndPrevWrapAround(t *testing.T) {
 	}
 }
 
+func TestSearchNextFindsAMatchOnALineWithANonASCIICharacterBeforeATab(t *testing.T) {
+	// Regression test for the rawIndexForExpandedCol byte/rune bug: with the
+	// cursor sitting squarely at a tab's own column, on a line where a
+	// multi-byte rune ("é") comes before that tab, stepSearch used to derive
+	// an overshot "current position" that made 'n' skip right past a match
+	// starting immediately after the tab, on the very same line — falling
+	// through to wrap around to an earlier match instead. An earlier match
+	// on line 0 is what makes that wrap-around visible: with only one match
+	// in the whole buffer, "skip past it" and "wrap back to it" land on the
+	// same place, hiding the bug.
+	v := NewView()
+	v.tabs = []*tab{{path: "t.txt", buf: &Buffer{Path: "t.txt", Lines: []string{
+		"mytext here too",
+		"é\tmytext",
+	}, IndentWidth: 4}}}
+	v.active = 0
+	tb := v.activeTab()
+	tb.cursorLn = 1
+	tb.cursorCol = 1 // squarely at the tab's own start, right after 'é'
+
+	v.searchPattern = "mytext"
+	v.HandleKey(layout.Key{Text: "n"})
+
+	if tb.cursorLn != 1 {
+		t.Fatalf("cursorLn = %d, want 1 (the match right after the cursor, on the same line — not wrapped to line 0)", tb.cursorLn)
+	}
+	if got := tb.cursorCol; got != 4 {
+		t.Fatalf("cursorCol = %d, want 4 (landed on 'mytext', right after the expanded tab)", got)
+	}
+}
+
 func TestSearchNextWithoutAnActiveSearchIsNoop(t *testing.T) {
 	v, tb := searchView()
 	startLn := tb.cursorLn

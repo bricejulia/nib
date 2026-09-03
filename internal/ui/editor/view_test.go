@@ -1872,6 +1872,47 @@ func TestRawExpandedColumnRoundTripThroughTab(t *testing.T) {
 	}
 }
 
+func TestRawIndexForExpandedColUsesRuneIndexNotByteOffsetBeforeATab(t *testing.T) {
+	// "é" is a 2-byte UTF-8 rune (rune index 0, byte offset 0-1), so the
+	// tab right after it sits at rune index 1 but byte offset 2. Landing
+	// squarely at the tab's own expanded column must return its RUNE index
+	// (1) — regression test for a bug where the "col == expanded" branch
+	// returned the range loop's byte offset instead, overshooting by
+	// however many extra bytes any earlier multi-byte rune added.
+	const line = "é\tfoo"
+	const tabWidth = 4
+
+	if got := rawIndexForExpandedCol(line, 1, tabWidth); got != 1 {
+		t.Fatalf("raw index at the tab's own start = %d, want 1 (its rune index, not a byte offset)", got)
+	}
+}
+
+func TestArrowRightCrossesATabAfterANonASCIICharacter(t *testing.T) {
+	// Regression test: a multi-byte rune ("é") before the tab used to make
+	// rawIndexForExpandedCol return a byte offset instead of a rune index
+	// once the cursor reached the tab's own column, overshooting into (or
+	// past) the text after the tab on the very next press.
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"é\tabc"}, IndentWidth: 4}}}
+	v.active = 0
+	v.activeTab().cursorCol = 0 // sitting on 'é'
+
+	v.HandleKey(layout.Key{Named: layout.KeyRight}) // cross 'é'
+	if got := v.activeTab().cursorCol; got != 1 {
+		t.Fatalf("cursorCol = %d, want 1 (right after 'é', squarely at the tab's own start)", got)
+	}
+
+	v.HandleKey(layout.Key{Named: layout.KeyRight}) // cross the whole tab
+	if got := v.activeTab().cursorCol; got != 4 {
+		t.Fatalf("cursorCol = %d, want 4 (past the whole 4-wide tab in one press, not overshot into 'abc')", got)
+	}
+
+	v.HandleKey(layout.Key{Named: layout.KeyLeft}) // back across the tab
+	if got := v.activeTab().cursorCol; got != 1 {
+		t.Fatalf("cursorCol = %d, want 1 (back at the tab's own start)", got)
+	}
+}
+
 func TestArrowRightCrossesALeadingTabInOnePress(t *testing.T) {
 	v := NewView()
 	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"\tabc"}, IndentWidth: 4}}}
