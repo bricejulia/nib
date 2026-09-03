@@ -99,8 +99,9 @@ var globalDefaultKeybinds = config.Defaults{
 	// keyboard protocol's full modifier state, which tmux doesn't negotiate
 	// (its own "extended-keys" disambiguation defaults to off) — degrading
 	// there to indistinguishable-from-Ctrl+r, which editor's own keymap used
-	// to claim for redo. Redo now lives on bare "r" instead (see
-	// editor.DefaultKeybinds) specifically to free this up: a bare
+	// to claim for redo. Redo now lives on Shift+U instead (see
+	// editor.DefaultKeybinds) — bare "r" is vim's own replace-char-under-
+	// cursor gesture — specifically to free Ctrl+r up: a bare
 	// Ctrl+<letter> needs no modifier disambiguation and no macOS
 	// Option-as-Alt terminal setting, so it's reliably representable
 	// everywhere with zero configuration.

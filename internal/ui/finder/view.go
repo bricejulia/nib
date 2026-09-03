@@ -31,17 +31,7 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "Enter", Action: "open_selection"},
 	{Trigger: "Down", Action: "move_down"},
 	{Trigger: "Up", Action: "move_up"},
-	{Trigger: "Right", Action: "peek_right"},
-	{Trigger: "Left", Action: "peek_left"},
-	{Trigger: "Backspace", Action: "backspace"},
 }
-
-// hScrollStep is how many display columns Left/Right shift the view of a
-// result line that's wider than the modal — Left/Right are otherwise
-// unused in the finder (unlike the file tree, where they expand/collapse),
-// so they're free for "peek right/left to see the rest of this long
-// path/line" instead.
-const hScrollStep = 10
 
 type mode int
 
@@ -98,10 +88,9 @@ type View struct {
 	contentMatches []contentMatch // content mode: git grep hits
 
 	status    map[string]gitstatus.Status // keyed by repo-relative path
-	query     []rune
+	query     textField
 	cursor    int
 	scrollTop int
-	hScroll   int // display columns; how far the selected row is peeked right
 
 	// lastListRows is the last Render's visible result-row count (listRows
 	// there is otherwise local to Render), kept for ScrollState/ScrollTo —
@@ -169,7 +158,7 @@ func (v *View) Open() {
 	v.cancelPendingSearch()
 	v.items = listFiles(v.root)
 	v.mode = modeFiles
-	v.query = v.query[:0]
+	v.query = textField{}
 	v.cursor = 0
 	v.scrollTop = 0
 	v.refilter()
@@ -183,7 +172,8 @@ func (v *View) Open() {
 func (v *View) OpenWithQuery(query string) {
 	v.Open()
 	v.mode = modeContent
-	v.query = []rune(query)
+	runes := []rune(query)
+	v.query = textField{buf: runes, caret: len(runes)}
 	v.refilter()
 }
 
@@ -242,7 +232,6 @@ func (v *View) cancelPendingSearch() {
 }
 
 func (v *View) refilter() {
-	v.hScroll = 0 // a changed result set means "start peeking from the left again"
 	switch v.mode {
 	case modeContent:
 		v.refilterContent()
@@ -253,7 +242,7 @@ func (v *View) refilter() {
 
 func (v *View) refilterFiles() {
 	v.fileMatches = v.fileMatches[:0]
-	query := string(v.query)
+	query := v.query.String()
 	for _, it := range v.items {
 		score, ok := fuzzyMatch(query, it)
 		if !ok {
@@ -282,13 +271,13 @@ func (v *View) refilterContent() {
 	v.cancelPendingSearch() // stops any prior timer; bumps searchGen for us too
 	v.contentMatches = nil
 
-	if len(v.query) < minContentQueryLen {
+	if len(v.query.buf) < minContentQueryLen {
 		v.clampCursor()
 		return
 	}
 
 	gen := v.searchGen
-	query := string(v.query)
+	query := v.query.String()
 	root := v.root
 
 	if v.Post == nil {
@@ -356,7 +345,7 @@ func (v *View) CursorPosition() (int, int, bool) {
 	if v.mode == modeReplace {
 		return v.replace.CursorPosition()
 	}
-	return len(v.promptPrefix()) + len(v.query), 0, true
+	return len(v.promptPrefix()) + v.query.caret, 0, true
 }
 
 func (v *View) Render(w layout.Window) {
@@ -368,11 +357,11 @@ func (v *View) Render(w layout.Window) {
 	cols, rows := w.Size()
 	w.Clear()
 
-	hint := "(Tab: search content, ←→: see full line)"
+	hint := "(Tab: search content)"
 	if v.mode == modeContent {
-		hint = "(Tab: find & replace, ←→: see full line)"
+		hint = "(Tab: find & replace)"
 	}
-	w.Println(0, layout.Segment{Text: v.promptPrefix() + string(v.query) + "  " + hint})
+	w.Println(0, layout.Segment{Text: v.promptPrefix() + v.query.String() + "  " + hint})
 
 	listRows := rows - 1
 	if listRows < 0 {
@@ -383,7 +372,7 @@ func (v *View) Render(w layout.Window) {
 		return
 	}
 
-	if v.mode == modeContent && len(v.query) < minContentQueryLen {
+	if v.mode == modeContent && len(v.query.buf) < minContentQueryLen {
 		w.Println(1, layout.Segment{
 			Text:  fmt.Sprintf("type at least %d characters to search file contents", minContentQueryLen),
 			Style: layout.Style{Attr: layout.AttrDim},
@@ -394,7 +383,7 @@ func (v *View) Render(w layout.Window) {
 		switch {
 		case v.searching:
 			w.Println(1, layout.Segment{Text: "searching…", Style: layout.Style{Attr: layout.AttrDim}})
-		case len(v.query) > 0:
+		case len(v.query.buf) > 0:
 			w.Println(1, layout.Segment{Text: "no matches", Style: layout.Style{Attr: layout.AttrDim}})
 		}
 		return
@@ -410,15 +399,6 @@ func (v *View) Render(w layout.Window) {
 		v.scrollTop = 0
 	}
 
-	// hScroll is a manual "peek right" offset (via Left/Right), clamped
-	// each frame against the SELECTED row's actual width — so you can
-	// never scroll past the end of the very line you're looking at, the
-	// same policy the editor pane uses for its own horizontal scroll.
-	if v.cursor >= 0 && v.cursor < v.resultCount() {
-		selectedText := rowSegmentsText(v.rowSegments(v.cursor))
-		v.hScroll = textwidth.ClampScroll(v.hScroll, textwidth.DisplayWidth(selectedText), cols)
-	}
-
 	for i := 0; i < listRows; i++ {
 		idx := v.scrollTop + i
 		if idx >= v.resultCount() {
@@ -430,7 +410,7 @@ func (v *View) Render(w layout.Window) {
 				segs[j].Style.Attr |= layout.AttrReverse
 			}
 		}
-		segs = textwidth.SliceSegmentsByDisplayColumn(segs, v.hScroll, cols)
+		segs = textwidth.SliceSegmentsByDisplayColumn(segs, 0, cols)
 		w.Println(1+i, segs...)
 	}
 }
@@ -478,29 +458,16 @@ func (v *View) HandleKey(k layout.Key) bool {
 	case "move_up":
 		v.moveCursor(-1)
 		return true
-	case "peek_right":
-		v.hScroll += hScrollStep // clamped against the selected row's width in Render
-		return true
-	case "peek_left":
-		v.hScroll -= hScrollStep
-		if v.hScroll < 0 {
-			v.hScroll = 0
-		}
-		return true
-	case "backspace":
-		if len(v.query) > 0 {
-			v.query = v.query[:len(v.query)-1]
-			v.refilter()
-		}
-		return true
 	}
 
-	// No bound action for this exact key: fall through to typing it into
-	// the query, as long as it's plain text with no Ctrl/Alt/Super held —
-	// this is what lets a "finder" scope override stick to Ctrl/Alt/Super
-	// combos (or named keys) without ever swallowing normal typing.
-	if k.Text != "" && k.Mods&(layout.ModCtrl|layout.ModAlt|layout.ModSuper) == 0 {
-		v.query = append(v.query, []rune(k.Text)...)
+	// Left/Right/Home/End/Backspace and typed text all edit the query's
+	// caret directly, checking k.Named first and never consulting
+	// v.keymap — the same pattern textField.handleKey already implements
+	// for ReplaceView's own Find/Replace fields (replace.go), and
+	// handlePromptKey's for the file tree's inline prompt. Only
+	// Esc/Tab/Enter/Up/Down are ever remappable actions in this mode (see
+	// DefaultKeybinds); every other key stays typeable.
+	if v.query.handleKey(k) {
 		v.refilter()
 	}
 	return true
@@ -551,7 +518,6 @@ func (v *View) ScrollTo(top int) {
 	if v.cursor >= total {
 		v.cursor = total - 1
 	}
-	v.hScroll = 0 // peeking is per-row: start from the left on the new selection, same as moveCursor
 }
 
 func (v *View) selectCurrent() {
@@ -574,7 +540,6 @@ func (v *View) moveCursor(delta int) {
 	if n := v.resultCount(); v.cursor >= n {
 		v.cursor = n - 1
 	}
-	v.hScroll = 0 // peeking is per-row: start from the left on the new selection
 }
 
 // rowSegments builds the full (unclipped) styled segments for result row

@@ -775,6 +775,69 @@ func TestSetKeymapLeavesUnrelatedDefaultsIntact(t *testing.T) {
 	}
 }
 
+func TestGoToLinePushesAJump(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+	tb := v.activeTab()
+	tb.cursorLn, tb.cursorCol = 0, 2
+	startLn, startCol := tb.cursorLn, tb.cursorCol
+
+	v.goToLine(3)
+
+	if len(v.jumpStack) != 1 {
+		t.Fatalf("expected one jump pushed, got %d", len(v.jumpStack))
+	}
+	if v.jumpStack[0].ln != startLn || v.jumpStack[0].col != startCol {
+		t.Fatalf("pushed jump = %+v, want (%d,%d)", v.jumpStack[0], startLn, startCol)
+	}
+
+	v.jumpBack()
+	if tb.cursorLn != startLn || tb.cursorCol != startCol {
+		t.Fatalf("cursor after jumpBack = (%d,%d), want (%d,%d)", tb.cursorLn, tb.cursorCol, startLn, startCol)
+	}
+}
+
+func TestOpenAtLinePushesAJumpOnTheSourcePane(t *testing.T) {
+	v := NewView()
+	pathA := fixturePath(t, "editor_sample.txt")
+	v.Open(pathA)
+	tb := v.activeTab()
+	tb.cursorLn, tb.cursorCol = 1, 0
+	startLn, startCol := tb.cursorLn, tb.cursorCol
+
+	v.OpenAtLine("/some/other/file.txt", 10)
+
+	if len(v.jumpStack) != 1 {
+		t.Fatalf("expected one jump pushed, got %d", len(v.jumpStack))
+	}
+	if got := v.jumpStack[0]; got.path != pathA || got.ln != startLn || got.col != startCol {
+		t.Fatalf("pushed jump = %+v, want path %q at (%d,%d)", got, pathA, startLn, startCol)
+	}
+
+	v.jumpBack()
+	if v.activeTab().path != pathA {
+		t.Fatalf("expected jumpBack to reopen %q, got %q", pathA, v.activeTab().path)
+	}
+	if v.activeTab().cursorLn != startLn || v.activeTab().cursorCol != startCol {
+		t.Fatalf("cursor after jumpBack = (%d,%d), want (%d,%d)", v.activeTab().cursorLn, v.activeTab().cursorCol, startLn, startCol)
+	}
+}
+
+func TestOpenAtLineWithNoLineStillPushesAJump(t *testing.T) {
+	v := NewView()
+	pathA := fixturePath(t, "editor_sample.txt")
+	v.Open(pathA)
+
+	v.OpenAtLine("/some/other/file.txt", 0)
+
+	if len(v.jumpStack) != 1 {
+		t.Fatalf("expected a jump pushed even for a plain file switch (line=0), got %d", len(v.jumpStack))
+	}
+	if v.jumpStack[0].path != pathA {
+		t.Fatalf("pushed jump path = %q, want %q", v.jumpStack[0].path, pathA)
+	}
+}
+
 func TestOpenAtLineMovesCursorToRequestedLine(t *testing.T) {
 	v := NewView()
 	v.OpenAtLine(fixturePath(t, "editor_sample.txt"), 3) // 1-based
@@ -1601,8 +1664,8 @@ func TestRedoReappliesUndoneInsertSession(t *testing.T) {
 		t.Fatalf("expected undo to revert to %q, got %q", "abc", v.activeTab().buf.Lines[0])
 	}
 
-	if !v.HandleKey(layout.Key{Text: "r"}) {
-		t.Fatal("expected 'r' to be consumed")
+	if !v.HandleKey(layout.Key{Text: "U"}) {
+		t.Fatal("expected 'U' to be consumed")
 	}
 	if got := v.activeTab().buf.Lines[0]; got != "abcd" {
 		t.Fatalf("Lines[0] = %q, want %q after redo", got, "abcd")
@@ -1650,8 +1713,8 @@ func TestUndoAndRedoOnEmptyStacksAreNoops(t *testing.T) {
 	if !v.HandleKey(layout.Key{Text: "u"}) {
 		t.Fatal("expected 'u' to still be consumed with an empty undo stack")
 	}
-	if !v.HandleKey(layout.Key{Text: "r"}) {
-		t.Fatal("expected 'r' to still be consumed with an empty redo stack")
+	if !v.HandleKey(layout.Key{Text: "U"}) {
+		t.Fatal("expected 'U' to still be consumed with an empty redo stack")
 	}
 	if got := v.activeTab().buf.Lines[0]; got != "abc" {
 		t.Fatalf("Lines[0] = %q, want unchanged %q", got, "abc")
@@ -1761,7 +1824,7 @@ func TestUndoSaveRedoShowsDirtyWhenBufferDivergesFromDisk(t *testing.T) {
 	}
 	v.HandleKey(layout.Key{Text: "s", Mods: layout.ModCtrl}) // disk: "original"
 
-	v.HandleKey(layout.Key{Text: "r"}) // buffer: "original!" again
+	v.HandleKey(layout.Key{Text: "U"}) // buffer: "original!" again
 	if got := v.activeTab().buf.Lines[0]; got != "original!" {
 		t.Fatalf("Lines[0] = %q, want %q after redo", got, "original!")
 	}
@@ -1833,6 +1896,150 @@ func TestXAtEndOfLineIsNoopAndPushesNoUndoEntry(t *testing.T) {
 	}
 	if len(v.activeTab().buf.undoStack) != 0 {
 		t.Fatalf("expected no undo entry for a no-op 'x', got %d", len(v.activeTab().buf.undoStack))
+	}
+}
+
+func TestReplaceCharOverwritesRuneUnderCursorAndStaysInPlace(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 1 // sitting on 'b'
+
+	if !v.HandleKey(layout.Key{Text: "r"}) {
+		t.Fatal("'r' should be consumed")
+	}
+	if !v.awaitingReplaceChar {
+		t.Fatal("expected 'r' to arm awaitingReplaceChar")
+	}
+	if !v.HandleKey(layout.Key{Text: "X"}) {
+		t.Fatal("the replacement character should be consumed")
+	}
+
+	if got := v.activeTab().buf.Lines[0]; got != "aXc" {
+		t.Fatalf("Lines[0] = %q, want %q", got, "aXc")
+	}
+	if v.activeTab().cursorCol != 1 {
+		t.Fatalf("cursorCol = %d, want 1 (stays in place, unlike Insert mode)", v.activeTab().cursorCol)
+	}
+	if v.mode != modeNormal {
+		t.Fatal("'r<char>' must not enter Insert mode")
+	}
+	if v.awaitingReplaceChar {
+		t.Fatal("expected awaitingReplaceChar cleared after the replacement lands")
+	}
+}
+
+func TestReplaceCharEscCancelsWithNoChange(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 1
+
+	v.HandleKey(layout.Key{Text: "r"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	if got := v.activeTab().buf.Lines[0]; got != "abc" {
+		t.Fatalf("Lines[0] = %q, want unchanged %q", got, "abc")
+	}
+	if v.awaitingReplaceChar {
+		t.Fatal("expected awaitingReplaceChar cleared after Esc")
+	}
+}
+
+func TestReplaceCharWithNamedKeyCancelsWithoutApplying(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 1
+
+	v.HandleKey(layout.Key{Text: "r"})
+	v.HandleKey(layout.Key{Named: layout.KeyDown})
+
+	if got := v.activeTab().buf.Lines[0]; got != "abc" {
+		t.Fatalf("Lines[0] = %q, want unchanged %q", got, "abc")
+	}
+	if v.activeTab().cursorCol != 1 {
+		t.Fatalf("cursorCol = %d, want unchanged 1 (the arrow key should not move the cursor either)", v.activeTab().cursorCol)
+	}
+	if v.awaitingReplaceChar {
+		t.Fatal("expected awaitingReplaceChar cleared, not left armed")
+	}
+}
+
+func TestReplaceCharIsUndoable(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 1
+
+	v.HandleKey(layout.Key{Text: "r"})
+	v.HandleKey(layout.Key{Text: "X"})
+	if got := v.activeTab().buf.Lines[0]; got != "aXc" {
+		t.Fatalf("setup: Lines[0] = %q, want %q", got, "aXc")
+	}
+
+	v.HandleKey(layout.Key{Text: "u"})
+	if got := v.activeTab().buf.Lines[0]; got != "abc" {
+		t.Fatalf("Lines[0] after undo = %q, want %q", got, "abc")
+	}
+}
+
+func TestReplaceCharAtEndOfLineIsNoop(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{""}}}}
+	v.active = 0
+
+	v.HandleKey(layout.Key{Text: "r"})
+	v.HandleKey(layout.Key{Text: "X"})
+
+	if got := v.activeTab().buf.Lines[0]; got != "" {
+		t.Fatalf("Lines[0] = %q, want unchanged empty", got)
+	}
+	if len(v.activeTab().buf.undoStack) != 0 {
+		t.Fatalf("expected no undo entry for a no-op 'r', got %d", len(v.activeTab().buf.undoStack))
+	}
+}
+
+func TestExitEditingModesClearsAwaitingReplaceChar(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 1
+
+	v.HandleKey(layout.Key{Text: "r"})
+	if !v.awaitingReplaceChar {
+		t.Fatal("setup: expected 'r' to arm awaitingReplaceChar")
+	}
+
+	v.ExitEditingModes()
+	if v.awaitingReplaceChar {
+		t.Fatal("expected ExitEditingModes to clear awaitingReplaceChar")
+	}
+
+	// The next keypress must behave as a fresh Normal-mode key, not as a
+	// replacement character for the now-discarded "r".
+	v.HandleKey(layout.Key{Text: "x"})
+	if got := v.activeTab().buf.Lines[0]; got != "ac" {
+		t.Fatalf("Lines[0] = %q, want %q ('x' should run its own action, not be swallowed as a replacement char)", got, "ac")
+	}
+}
+
+func TestBareRDoesNotTriggerRedo(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(layout.Key{Text: "d"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+	v.HandleKey(layout.Key{Text: "u"}) // undo "d", populating the redo stack
+
+	v.HandleKey(layout.Key{Text: "r"}) // arms replace_char; must NOT redo
+	if got := v.activeTab().buf.Lines[0]; got != "abc" {
+		t.Fatalf("Lines[0] = %q, want %q (bare 'r' alone must not redo)", got, "abc")
+	}
+	if !v.awaitingReplaceChar {
+		t.Fatal("expected bare 'r' to arm awaitingReplaceChar")
 	}
 }
 

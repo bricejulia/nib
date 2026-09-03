@@ -165,8 +165,10 @@ func positionForByteOffset(buf *Buffer, offset uint32) (ln, rawCol int) {
 const maxJumpEntries = 100
 
 // pushJump records where the cursor is now, for a later jumpBack (Ctrl+b)
-// to return to — called by goToParent/goToDefinition just before they move
-// the cursor.
+// to return to — called by goToParent/goToDefinition, a committed or
+// stepped search match (jumpToMatch, search.go), ":<line>" (goToLine), and
+// the finder's "open at line" (OpenAtLine), all just before they move the
+// cursor.
 //
 // The stack lives on the View (the pane), not on a tab, and stores the path
 // alongside the position: a real go-to-definition frequently lands in a
@@ -181,9 +183,9 @@ func (v *View) pushJump(t *tab) {
 	v.jumpStack = append(v.jumpStack, jumpLocation{path: t.path, ln: t.cursorLn, col: t.cursorCol})
 }
 
-// jumpBack returns to the position saved by the most recent goToParent/
-// goToDefinition, reopening (or switching to) its file first if the jump
-// crossed files. A no-op on an empty jump stack.
+// jumpBack returns to the position saved by the most recent jump (see
+// pushJump), reopening (or switching to) its file first if the jump crossed
+// files. A no-op on an empty jump stack.
 func (v *View) jumpBack() {
 	if len(v.jumpStack) == 0 {
 		return

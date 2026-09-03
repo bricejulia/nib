@@ -71,12 +71,17 @@ var DefaultKeybinds = config.Defaults{
 	// the "tabmode" directive in internal/config.
 	{Trigger: "Ctrl+Alt+t", Action: "toggle_tab_mode"},
 	{Trigger: "u", Action: "undo"},
-	// Bare "r", not Ctrl+r: frees Ctrl+r up as the GLOBAL "open_replace"
-	// binding (see cmd/nib/main.go), which needs it to be unclaimed here —
-	// layout.Dispatch tries this pane's own keymap before ever falling
-	// back to the global one, so as long as Ctrl+r meant redo here, the
-	// global binding could never fire while an editor pane had focus.
-	{Trigger: "r", Action: "redo"},
+	// "r" is vim's replace-char-under-cursor ("r<char>"): the key
+	// immediately following this one is captured raw, bypassing v.keymap,
+	// so any printable character works as the replacement — see
+	// handleReplaceCharKey. That's also why redo lives on Shift+U instead
+	// of bare "r" here: freeing "r" for this vim gesture. Ctrl+r stays
+	// claimed globally for "open_replace" (see cmd/nib/main.go),
+	// unaffected either way — layout.Dispatch tries this pane's own
+	// keymap before ever falling back to the global one, but neither "r"
+	// nor "U" collides with Ctrl+r.
+	{Trigger: "r", Action: "replace_char"},
+	{Trigger: "U", Action: "redo"},
 	{Trigger: ":", Action: "command_mode"},
 	{Trigger: "Ctrl+g", Action: "go_to_parent"},
 	{Trigger: "Ctrl+]", Action: "go_to_definition"},
@@ -294,6 +299,16 @@ type View struct {
 	// for free. See pendingOperator and tryCompleteOperator in motion.go.
 	pendingOp pendingOperator
 
+	// awaitingReplaceChar is true right after "r" (replace_char) has been
+	// pressed, waiting on the very next key to use as the replacement —
+	// vim's "r<char>". Checked at the very top of HandleKey's Normal-mode
+	// path (see handleReplaceCharKey), bypassing v.keymap entirely so
+	// every printable character — including ones bound to other actions,
+	// like "d" or "j" — is a valid replacement. Cleared by
+	// ExitEditingModes so losing focus mid-"r" doesn't leave the pane
+	// stuck waiting for a char forever.
+	awaitingReplaceChar bool
+
 	// OnAllTabsClosed, if set, is called whenever CloseTab/CloseAllTabs
 	// (directly, or via the ":q"/":qa" family — see closeActiveTab/
 	// closeAllTabsCmd) leaves this pane with zero open tabs. Set by
@@ -360,10 +375,11 @@ type View struct {
 	searchMatches                   []searchMatch
 	searchOriginLn, searchOriginCol int
 
-	// jumpStack holds positions saved by goToParent/goToDefinition (see
-	// navigate.go), popped by jumpBack (Ctrl+b). Per-pane, and each entry
-	// records a path as well as a position, because a go-to-definition can
-	// land in a different file — see pushJump.
+	// jumpStack holds positions saved by any jump-like action (see
+	// pushJump's doc comment in navigate.go for the full list), popped by
+	// jumpBack (Ctrl+b). Per-pane, and each entry records a path as well as
+	// a position, because a jump — e.g. go-to-definition — can land in a
+	// different file.
 	jumpStack []jumpLocation
 
 	// store resolves Open's path to a *Buffer — see BufferStore. Defaults
@@ -720,7 +736,16 @@ func (v *View) Open(path string) {
 // clamped to the buffer's bounds — e.g. for jumping to a content-search
 // match. Unlike Open, this always moves the cursor, even if path was
 // already open in another tab.
+//
+// Pushes onto the jump stack first (see pushJump), before Open can switch
+// tabs — capturing wherever this pane's tab was before the jump, so
+// jumpBack (Ctrl+b) can return to it. Pushed even when line <= 0: opening a
+// different file from the finder is itself a navigable jump, matching
+// vim's own jumplist behavior for ":e".
 func (v *View) OpenAtLine(path string, line int) {
+	if t := v.activeTab(); t != nil {
+		v.pushJump(t)
+	}
 	v.Open(path)
 	if line <= 0 {
 		return
@@ -1779,6 +1804,15 @@ func (v *View) HandleKey(k layout.Key) bool {
 		// Falls through to the Normal-mode keymap below.
 	}
 
+	// "r" arms this on its own press (see the "replace_char" case below);
+	// the very next key is the replacement character itself, captured here
+	// before it can be mistaken for a count digit, an operator, or any
+	// other bound action — the same "capture literal next input"
+	// precedent handleSearchKey sets for its own single-key prompt.
+	if v.awaitingReplaceChar {
+		return v.handleReplaceCharKey(k)
+	}
+
 	// A digit (other than a bare "0", vim's own line_start motion) always
 	// accumulates into the count prefix ahead of everything else — the "3"
 	// of "3dd" or "3j" is never itself an action, whether or not an
@@ -1887,6 +1921,11 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.redo(t)
 	case "delete_char_forward":
 		v.deleteCharForward(t)
+	case "replace_char":
+		// No count-prefix support (vim's "3rx"): matches delete_char_forward/
+		// delete_char_backward just above, which also ignore v.count — count
+		// was already reset to 0 above regardless.
+		v.awaitingReplaceChar = true
 	case "delete_char_backward":
 		v.deleteCharBackward(t)
 	case "put_after":
@@ -2265,6 +2304,7 @@ func (v *View) goToLine(line int) {
 	if t == nil || t.buf == nil {
 		return
 	}
+	v.pushJump(t)
 	t.cursorLn = line - 1
 	t.cursorCol = 0
 	v.clamp(t)
@@ -2359,6 +2399,11 @@ func (v *View) ExitEditingModes() {
 	// complete an operator armed arbitrarily long ago.
 	v.pendingOp = pendingOperator{}
 	v.count = 0
+	// A bare "r" awaiting its replacement character is discarded too, for
+	// the same reason: without this, focus returning later would replay
+	// the pending press's next keystroke as a replacement instead of its
+	// own normal action.
+	v.awaitingReplaceChar = false
 	// Likewise a drag interrupted by focus moving elsewhere: the release that
 	// would have ended it is going to another pane, so nothing else would ever
 	// clear this. The selection ITSELF is kept — it survives losing focus the
@@ -2516,6 +2561,64 @@ func (v *View) deleteCharForward(t *tab) {
 	before := snapshotTab(t)
 	_, newRaw := t.buf.DeleteBackward(t.cursorLn, raw+1) // deletes exactly the rune at raw
 	t.cursorCol = expandedColForRawIndex(t.buf.Lines[t.cursorLn], newRaw, tabWidthOf(t))
+	v.pushUndoIfChanged(t, before)
+	v.onBufferEdited(t)
+}
+
+// handleReplaceCharKey handles the key immediately following "r": vim's
+// replace-char-under-cursor. Bypasses v.keymap entirely, checking k.Named
+// first — the same "capture literal next input" pattern handleSearchKey
+// uses for its own prompt — so every printable character is a valid
+// replacement, including ones bound to other Normal-mode actions (e.g.
+// "d", "j"). Esc cancels with no change, matching vim; any other named
+// key (an arrow, Enter, Tab, ...) or a Ctrl/Alt/Super-modified key also
+// cancels without applying, rather than staying armed — vim aborts on
+// those too instead of beeping and waiting. r<Enter> (vim's "replace with
+// a line break") is out of scope: ReplaceRune only ever swaps one rune
+// for one rune, never changes the line count.
+func (v *View) handleReplaceCharKey(k layout.Key) bool {
+	v.awaitingReplaceChar = false
+
+	if k.Named == layout.KeyEsc {
+		return true
+	}
+	if k.Named != "" && k.Named != layout.KeySpace {
+		return true
+	}
+	if k.Text == "" || k.Mods&(layout.ModCtrl|layout.ModAlt|layout.ModSuper) != 0 {
+		return true
+	}
+
+	runes := []rune(k.Text)
+	if len(runes) == 0 {
+		return true
+	}
+
+	t := v.activeTab()
+	if t == nil {
+		return true
+	}
+	v.replaceCharUnderCursor(t, runes[0])
+	v.clamp(t)
+	return true
+}
+
+// replaceCharUnderCursor implements vim's "r<char>": overwrites the single
+// rune under the cursor with r and leaves the cursor in place afterward —
+// unlike Insert-mode typing, which advances. A no-op on an empty line or
+// when the cursor is already past the last rune, mirroring
+// deleteCharForward's own guard. Recorded as its own undo entry, the same
+// as a single "x" press.
+func (v *View) replaceCharUnderCursor(t *tab, r rune) {
+	if t.buf == nil {
+		return
+	}
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
+	if raw >= len([]rune(t.buf.Lines[t.cursorLn])) {
+		return
+	}
+	before := snapshotTab(t)
+	t.buf.ReplaceRune(t.cursorLn, raw, r)
 	v.pushUndoIfChanged(t, before)
 	v.onBufferEdited(t)
 }
