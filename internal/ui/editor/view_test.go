@@ -447,7 +447,21 @@ func TestArrowKeyNavigationStaysBoundedOnPathologicallyLongLine(t *testing.T) {
 	w := newFakeWindow(40, 10)
 	v.Render(w)
 
-	const presses = 500
+	// 50, not the 500 this started with: CI runs the full suite under
+	// -race -coverprofile (see .github/workflows/ci.yml), and both add
+	// real per-keypress overhead on top of the bounded (but not free)
+	// clamp cost each press already pays — enough that 500+500 presses
+	// measured over a second under that combination even on a quiet
+	// machine, leaving a shared/loaded CI runner little margin before
+	// tripping the deadline below. The bounded-cost property this
+	// regresses on is caught just as reliably at this scale: reverting to
+	// the O(line length) bug this guards against would make even a
+	// handful of presses on a 5,000,000-rune line blow well past this
+	// deadline, so the press count is about keeping CI stable, not about
+	// how many are needed to detect the regression. Same reasoning as
+	// TestArrowKeyNavigationStaysBoundedAfterCursorOvershootsTheRenderCap's
+	// own workload reduction, below.
+	const presses = 50
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < presses; i++ {
