@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/bricejulia/nib/internal/layout"
 )
 
 func fixturePath(t *testing.T, name string) string {
@@ -502,6 +505,102 @@ func TestSavePreservesFileMode(t *testing.T) {
 	}
 }
 
+func TestHasDiskConflictFalseWhenUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if conflict, err := buf.HasDiskConflict(); err != nil || conflict {
+		t.Fatalf("HasDiskConflict() = (%v, %v), want (false, nil)", conflict, err)
+	}
+}
+
+func TestHasDiskConflictTrueAfterExternalWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Simulate an external editor rewriting the file. Chtimes sets an
+	// unambiguously different mtime rather than relying on real elapsed
+	// time between the two writes, which some filesystems' coarser mtime
+	// resolution could otherwise mask.
+	if err := os.WriteFile(path, []byte("changed elsewhere"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	conflict, err := buf.HasDiskConflict()
+	if err != nil {
+		t.Fatalf("HasDiskConflict: %v", err)
+	}
+	if !conflict {
+		t.Fatal("expected a conflict after an external write changed the file's mtime/size")
+	}
+}
+
+func TestHasDiskConflictFalseWhenFileDeleted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	conflict, err := buf.HasDiskConflict()
+	if conflict {
+		t.Fatal("expected no conflict when the file was deleted — Save recreates it")
+	}
+	if !os.IsNotExist(err) {
+		t.Fatalf("HasDiskConflict() err = %v, want os.IsNotExist", err)
+	}
+}
+
+func TestSaveUpdatesDiskBaselineSoASubsequentConflictCheckIsFalse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	buf.InsertText(0, len(buf.Lines[0]), "!")
+	if err := buf.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// This app's own write must not read back as an external conflict —
+	// see Save's re-stat of its own baseline.
+	if conflict, err := buf.HasDiskConflict(); err != nil || conflict {
+		t.Fatalf("HasDiskConflict() after Save = (%v, %v), want (false, nil)", conflict, err)
+	}
+}
+
 func TestLoadStripsCRLFAndSaveWritesItBack(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "crlf.txt")
@@ -662,6 +761,147 @@ func TestRestoreDirtyReflectsSaveThatHappenedAfterTheSnapshot(t *testing.T) {
 	buf.Restore(edited) // redo: buffer has "original!" again, disk has "original"
 	if !buf.Dirty {
 		t.Fatal("expected Dirty after redo: buffer diverges from disk again, must not read as saved")
+	}
+}
+
+func TestReloadReplacesContentAndClearsDirty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	buf.InsertText(0, len(buf.Lines[0]), "!") // in-memory-only edit: "original!"
+	if !buf.Dirty {
+		t.Fatal("expected Dirty before Reload")
+	}
+
+	if err := os.WriteFile(path, []byte("changed externally"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buf.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if len(buf.Lines) != 1 || buf.Lines[0] != "changed externally" {
+		t.Fatalf("Lines = %+v, want the file's on-disk content", buf.Lines)
+	}
+	if buf.Dirty {
+		t.Fatal("expected Dirty to clear after Reload discards the in-memory edit")
+	}
+}
+
+func TestReloadClearsUndoHistory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	buf.undoStack = []undoEntry{{lines: []string{"before"}}}
+	buf.redoStack = []undoEntry{{lines: []string{"after"}}}
+
+	if err := os.WriteFile(path, []byte("changed externally"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := buf.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	if len(buf.undoStack) != 0 || len(buf.redoStack) != 0 {
+		t.Fatalf("undoStack/redoStack = %+v/%+v, want both cleared", buf.undoStack, buf.redoStack)
+	}
+}
+
+func TestReloadDropsHighlightCache(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	buf.highlighted = [][]layout.Segment{{{Text: "stale"}}}
+
+	if err := os.WriteFile(path, []byte("changed externally"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := buf.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	if buf.highlighted != nil {
+		t.Fatalf("highlighted = %+v, want nil after Reload replaces content wholesale", buf.highlighted)
+	}
+}
+
+func TestReloadUpdatesDiskBaseline(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("changed externally"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buf.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if buf.ExternallyModified {
+		t.Fatal("expected ExternallyModified to clear after Reload resyncs the baseline")
+	}
+	if conflict, err := buf.HasDiskConflict(); err != nil || conflict {
+		t.Fatalf("HasDiskConflict() after Reload = (%v, %v), want (false, nil)", conflict, err)
+	}
+}
+
+func TestReloadLeavesBufferUntouchedOnError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	buf.InsertText(0, len(buf.Lines[0]), "!")
+	edited := append([]string(nil), buf.Lines...)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := buf.Reload(); err == nil {
+		t.Fatal("expected Reload to fail once the file is gone")
+	}
+
+	if !linesEqual(buf.Lines, edited) {
+		t.Fatalf("Lines = %+v, want the in-memory edit left untouched: %+v", buf.Lines, edited)
+	}
+	if !buf.Dirty {
+		t.Fatal("expected Dirty to remain true after a failed Reload")
 	}
 }
 

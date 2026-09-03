@@ -190,6 +190,34 @@ func TestViewRenderShowsLineStatusMarkerInGutter(t *testing.T) {
 	}
 }
 
+// TestViewApplyLineStatusSkippedWhileExternallyModified is a regression
+// test: gitstatus.FileHunks reads the file straight off disk, so a fresh
+// result is indexed against whatever's on disk RIGHT NOW — but while
+// ExternallyModified is true, the buffer hasn't caught up to that yet.
+// Applying the new hunks anyway would draw gutter markers next to lines
+// the editor isn't actually showing; the old (still-accurate, since the
+// buffer hasn't changed) lineStatus must be left alone instead.
+func TestViewApplyLineStatusSkippedWhileExternallyModified(t *testing.T) {
+	v := NewView()
+	path := fixturePath(t, "editor_sample.txt")
+	v.Open(path)
+
+	stale := map[int]gitstatus.LineStatus{0: gitstatus.LineAdded}
+	v.ApplyLineStatus(path, stale)
+	v.activeTab().buf.ExternallyModified = true
+
+	v.ApplyLineStatus(path, map[int]gitstatus.LineStatus{1: gitstatus.LineModified})
+
+	w := newFakeWindow(40, 10)
+	v.Render(w)
+	if got := w.segs[1][gitMarkerSeg]; got.Text != gitstyle.LineMarker(gitstatus.LineAdded) {
+		t.Errorf("row 1 marker = %+v, want the stale (pre-conflict) marker to remain, %q", got, gitstyle.LineMarker(gitstatus.LineAdded))
+	}
+	if got := w.segs[2][gitMarkerSeg]; got.Text != " " {
+		t.Errorf("row 2 marker = %+v, want no marker — the new hunks must not have been applied", got)
+	}
+}
+
 // Gutter segment indices within a rendered body row, in renderBody's order:
 // diagnostic marker, git-diff marker, then the line number.
 const (
@@ -1478,6 +1506,303 @@ func TestCtrlSSavesActiveTabToDisk(t *testing.T) {
 	}
 }
 
+func TestSaveActiveDetectsConflictAndDoesNotWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conflict.txt")
+	if err := os.WriteFile(path, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewView()
+	v.Open(path)
+	v.HandleKey(layout.Key{Text: "i"})
+	v.activeTab().cursorCol = len(v.activeTab().buf.Lines[0])
+	v.HandleKey(layout.Key{Text: "!"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	// Simulate an external editor rewriting the file after nib loaded it.
+	if err := os.WriteFile(path, []byte("changed elsewhere"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	var got SaveConflict
+	calls := 0
+	v.OnSaveConflict = func(c SaveConflict, onResolved func()) {
+		calls++
+		got = c
+	}
+
+	v.HandleKey(layout.Key{Text: "s", Mods: layout.ModCtrl})
+
+	if calls != 1 {
+		t.Fatalf("OnSaveConflict called %d times, want 1", calls)
+	}
+	if got.Path != path || got.Buf != v.activeTab().buf {
+		t.Fatalf("SaveConflict = %+v, want Path=%q Buf=%p", got, path, v.activeTab().buf)
+	}
+	if !v.activeTab().buf.Dirty {
+		t.Fatal("expected Dirty to remain true — the conflicting save must not have written")
+	}
+
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) != "changed elsewhere" {
+		t.Fatalf("file contents = %q, want the external write left untouched", onDisk)
+	}
+}
+
+// TestColonWqRetriesCloseAfterConflictResolved is a regression test: a
+// naive v.saveActive(); v.closeActiveTab(false) pair sees Dirty still
+// true at the moment of the conflict (the real save hasn't happened yet
+// — resolving it is asynchronous, driven by whatever OnSaveConflict does)
+// and correctly refuses to close then, but a ":wq" that never retries the
+// close once the conflict is actually resolved silently stops being a
+// quit at all. saveActiveThen (via commitCommand's "wq"/"x") must retry.
+func TestColonWqRetriesCloseAfterConflictResolved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conflict.txt")
+	if err := os.WriteFile(path, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewView()
+	v.Open(path)
+	v.HandleKey(layout.Key{Text: "i"})
+	v.activeTab().cursorCol = len(v.activeTab().buf.Lines[0])
+	v.HandleKey(layout.Key{Text: "!"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	if err := os.WriteFile(path, []byte("changed elsewhere"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stand in for cmd/nib/main.go's reloadconfirm wiring: capture
+	// onResolved instead of calling it immediately, to simulate the
+	// prompt staying up until the user answers it.
+	var onResolved func()
+	v.OnSaveConflict = func(c SaveConflict, resolved func()) {
+		if err := c.Buf.Save(); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		onResolved = resolved
+	}
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "w"})
+	v.HandleKey(layout.Key{Text: "q"})
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if len(v.tabs) != 1 {
+		t.Fatalf("expected the tab to stay open while the conflict is unresolved, got %d tabs", len(v.tabs))
+	}
+	if onResolved == nil {
+		t.Fatal("expected OnSaveConflict to have been called")
+	}
+
+	// The user picks "Keep mine" in the (simulated) prompt.
+	onResolved()
+
+	if len(v.tabs) != 0 {
+		t.Fatalf(":wq should have closed the tab once the conflict resolved, got %d remaining", len(v.tabs))
+	}
+}
+
+// TestColonWqDoesNotCloseIfConflictCancelled complements the above: if
+// the user cancels the prompt instead, onResolved is never called (see
+// OnSaveConflict's contract), and the tab must stay open indefinitely,
+// not close on its own.
+func TestColonWqDoesNotCloseIfConflictCancelled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conflict.txt")
+	if err := os.WriteFile(path, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewView()
+	v.Open(path)
+	v.HandleKey(layout.Key{Text: "i"})
+	v.activeTab().cursorCol = len(v.activeTab().buf.Lines[0])
+	v.HandleKey(layout.Key{Text: "!"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	if err := os.WriteFile(path, []byte("changed elsewhere"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	v.OnSaveConflict = func(c SaveConflict, resolved func()) {
+		// Cancel: never call resolved.
+	}
+
+	v.HandleKey(layout.Key{Text: ":"})
+	v.HandleKey(layout.Key{Text: "w"})
+	v.HandleKey(layout.Key{Text: "q"})
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if len(v.tabs) != 1 {
+		t.Fatalf("expected the tab to stay open, got %d tabs", len(v.tabs))
+	}
+	if !v.activeTab().buf.Dirty {
+		t.Fatal("expected Dirty to remain true — nothing was ever saved")
+	}
+}
+
+func TestSaveDirtyTabsCollectsConflictSeparatelyFromFailure(t *testing.T) {
+	dir := t.TempDir()
+	pathOK := filepath.Join(dir, "ok.txt")
+	pathConflict := filepath.Join(dir, "conflict.txt")
+	if err := os.WriteFile(pathOK, []byte("original ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pathConflict, []byte("original conflict"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewView()
+	v.Open(pathOK)
+	v.Open(pathConflict)
+	v.tabs[0].buf.Lines[0] = "edited ok"
+	v.tabs[0].buf.resync()
+	v.tabs[1].buf.Lines[0] = "edited conflict"
+	v.tabs[1].buf.resync()
+
+	if err := os.WriteFile(pathConflict, []byte("changed elsewhere"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(pathConflict, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	res := v.SaveDirtyTabs()
+	if len(res.Failed) != 0 {
+		t.Fatalf("Failed = %v, want none", res.Failed)
+	}
+	if len(res.Conflicts) != 1 || res.Conflicts[0].Path != pathConflict {
+		t.Fatalf("Conflicts = %+v, want exactly one for %q", res.Conflicts, pathConflict)
+	}
+	if v.tabs[0].buf.Dirty {
+		t.Fatal("expected the non-conflicting tab to have saved and cleared Dirty")
+	}
+	if !v.tabs[1].buf.Dirty {
+		t.Fatal("expected the conflicting tab to remain Dirty — nothing was written for it")
+	}
+}
+
+func TestRefreshBufferClampsCursorAfterShorterReload(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shrink.txt")
+	if err := os.WriteFile(path, []byte("one\ntwo\nthree\nfour"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewView()
+	v.Open(path)
+	v.activeTab().cursorLn = 3 // "four", the last line
+
+	if err := os.WriteFile(path, []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	buf := v.activeTab().buf
+	if err := buf.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	v.RefreshBuffer(buf)
+
+	if v.activeTab().cursorLn >= len(buf.Lines) {
+		t.Fatalf("cursorLn = %d, want clamped within %d line(s)", v.activeTab().cursorLn, len(buf.Lines))
+	}
+}
+
+func TestExternallyModifiedMarkerAppearsInTabBar(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{path: "f.txt", buf: &Buffer{Lines: []string{"x"}, ExternallyModified: true}}}
+	v.active = 0
+
+	if got := tabDisplayNames(v.tabs)[0]; !strings.Contains(got, "⟳") {
+		t.Errorf("tab label = %q, want an externally-modified marker", got)
+	}
+	if got := v.StatusText(); !strings.Contains(got, "-- MODIFIED ON DISK --") {
+		t.Errorf("StatusText() = %q, want a MODIFIED ON DISK indicator", got)
+	}
+}
+
+func TestExternallyModifiedMarkerOmittedWhenDetached(t *testing.T) {
+	// A deleted file is reported as that, specifically — not also as
+	// "merely modified" (see CloseTabsUnder, which never clears
+	// ExternallyModified when it sets detached).
+	v := NewView()
+	v.tabs = []*tab{{path: "f.txt", detached: true, buf: &Buffer{Lines: []string{"x"}, ExternallyModified: true}}}
+	v.active = 0
+
+	if got := tabDisplayNames(v.tabs)[0]; strings.Contains(got, "⟳") {
+		t.Errorf("tab label = %q, did not expect an externally-modified marker on a detached tab", got)
+	}
+}
+
+func TestJustReloadedShowsStatusLineNoticeUntilNextKey(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{path: "f.txt", buf: &Buffer{Lines: []string{"x"}}, justReloaded: true}}
+	v.active = 0
+
+	if got := v.StatusText(); !strings.Contains(got, "-- RELOADED --") {
+		t.Errorf("StatusText() = %q, want a RELOADED notice", got)
+	}
+
+	// A tooltip, not a mode: the very next key dismisses it (see HandleKey
+	// clearing every tab's justReloaded alongside hoverText/gitPopup/etc).
+	v.HandleKey(layout.Key{Named: layout.KeyRight})
+
+	if got := v.StatusText(); strings.Contains(got, "RELOADED") {
+		t.Errorf("StatusText() = %q, expected the notice to be dismissed by the next key", got)
+	}
+}
+
+func TestMarkJustReloadedOnlyFlagsTabsShowingThatBuffer(t *testing.T) {
+	v := NewView()
+	buf := &Buffer{Lines: []string{"x"}}
+	other := &Buffer{Lines: []string{"y"}}
+	v.tabs = []*tab{
+		{path: "a.txt", buf: buf},
+		{path: "b.txt", buf: other},
+	}
+	v.active = 0
+
+	v.MarkJustReloaded(buf)
+
+	if !v.tabs[0].justReloaded {
+		t.Error("expected the tab showing the reloaded buffer to be flagged")
+	}
+	if v.tabs[1].justReloaded {
+		t.Error("did not expect an unrelated tab's buffer to be flagged")
+	}
+}
+
+func TestBufferForPath(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+
+	if got := v.BufferForPath(fixturePath(t, "editor_sample.txt")); got == nil || got != v.activeTab().buf {
+		t.Errorf("BufferForPath = %p, want the open tab's buffer %p", got, v.activeTab().buf)
+	}
+	if got := v.BufferForPath("/no/such/file.txt"); got != nil {
+		t.Errorf("BufferForPath for an unopened path = %v, want nil", got)
+	}
+}
+
 func TestSaveWorksWhileStillInInsertMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "save_me.txt")
@@ -2248,9 +2573,12 @@ func TestSaveDirtyTabsSavesEveryDirtyTabAndClearsDirty(t *testing.T) {
 	v.tabs[0].buf.Lines[0] = "edited a"
 	v.tabs[0].buf.resync()
 
-	failed := v.SaveDirtyTabs()
-	if len(failed) != 0 {
-		t.Fatalf("SaveDirtyTabs() failed = %v, want none", failed)
+	res := v.SaveDirtyTabs()
+	if len(res.Failed) != 0 {
+		t.Fatalf("SaveDirtyTabs() Failed = %v, want none", res.Failed)
+	}
+	if len(res.Conflicts) != 0 {
+		t.Fatalf("SaveDirtyTabs() Conflicts = %v, want none", res.Conflicts)
 	}
 	if v.tabs[0].buf.Dirty {
 		t.Fatal("expected the edited tab's Dirty to be cleared after save")
@@ -2279,9 +2607,9 @@ func TestSaveDirtyTabsReportsFailure(t *testing.T) {
 	v.tabs = []*tab{{path: "missing.txt", buf: &Buffer{Lines: []string{"x"}, Dirty: true, Path: filepath.Join(t.TempDir(), "no-such-dir", "f.txt")}}}
 	v.active = 0
 
-	failed := v.SaveDirtyTabs()
-	if len(failed) != 1 {
-		t.Fatalf("SaveDirtyTabs() failed = %v, want exactly one failure", failed)
+	res := v.SaveDirtyTabs()
+	if len(res.Failed) != 1 {
+		t.Fatalf("SaveDirtyTabs() Failed = %v, want exactly one failure", res.Failed)
 	}
 	if !v.tabs[0].buf.Dirty {
 		t.Fatal("expected Dirty to remain true after a failed save")
