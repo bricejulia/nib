@@ -1930,6 +1930,68 @@ func TestArrowRightCrossesALeadingTabInOnePress(t *testing.T) {
 	}
 }
 
+func TestClampLeavesAValidColumnAloneEvenPastTheLinesRawRuneCount(t *testing.T) {
+	// Regression test: a line with a tab commonly expands to MORE columns
+	// than it has raw runes (tab expansion never shrinks), so a cursorCol
+	// sitting in that gap — greater than the raw rune count, but still at
+	// or under the line's true expanded length — is a perfectly valid
+	// position, not an overshoot. clamp() used to conflate the two: any
+	// cursorCol past the raw rune count got forcibly snapped all the way to
+	// the line's true end, even when it was already in bounds.
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo\t\tbar\t"}, IndentWidth: 4}}}
+	v.active = 0
+	tb := v.activeTab()
+
+	// "foo\t\tbar\t" is 9 raw runes but expands to 12 columns (tab1 at col 3
+	// expands by 1, tab2 at col 4 expands by 4, tab3 at col 11 expands by
+	// 1). Column 10 ("right after 'a'") is past the raw rune count (9) but
+	// well short of the true expanded end (12) — must be left exactly
+	// where it is.
+	tb.cursorCol = 10
+	v.clamp(tb)
+	if got := tb.cursorCol; got != 10 {
+		t.Fatalf("cursorCol = %d, want unchanged 10 (a valid column, not the line's end)", got)
+	}
+
+	// A cursorCol genuinely past the true expanded end must still clamp
+	// down to it.
+	tb.cursorCol = 999
+	v.clamp(tb)
+	if got := tb.cursorCol; got != 12 {
+		t.Fatalf("cursorCol = %d, want 12 (clamped to the line's true expanded end)", got)
+	}
+}
+
+func TestArrowKeysWalkPastAndBackFromALeadingTabWithoutSkippingColumns(t *testing.T) {
+	// End-to-end regression test for the same clamp() bug as
+	// TestClampLeavesAValidColumnAloneEvenPastTheLinesRawRuneCount: walking
+	// right past a leading tab's trailing text used to jump straight to the
+	// end of the line as soon as cursorCol exceeded the line's raw rune
+	// count (4, for "\tfoo"), skipping columns 5 and 6 ('o' and 'o')
+	// entirely instead of landing on each one in turn.
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"\tfoo"}, IndentWidth: 4}}}
+	v.active = 0
+	tb := v.activeTab()
+
+	want := []int{4, 5, 6, 7, 7} // past the tab, then one column per letter, pinned at the end
+	for i, w := range want {
+		v.HandleKey(layout.Key{Named: layout.KeyRight})
+		if got := tb.cursorCol; got != w {
+			t.Fatalf("press %d: cursorCol = %d, want %d", i+1, got, w)
+		}
+	}
+
+	wantBack := []int{6, 5, 4, 0}
+	for i, w := range wantBack {
+		v.HandleKey(layout.Key{Named: layout.KeyLeft})
+		if got := tb.cursorCol; got != w {
+			t.Fatalf("back press %d: cursorCol = %d, want %d", i+1, got, w)
+		}
+	}
+}
+
 func TestArrowKeysMoveCursorWhileInserting(t *testing.T) {
 	v := NewView()
 	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"one", "two"}}}}

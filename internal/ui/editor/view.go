@@ -3085,7 +3085,18 @@ func (v *View) clamp(t *tab) {
 	if truncated {
 		return
 	}
+	// t.cursorCol > lineLen only means cursorCol might be out of bounds —
+	// tab expansion never shrinks, so a line with a tab in it commonly
+	// expands to MORE columns than it has raw runes, and a cursorCol
+	// sitting anywhere in that gap (raw rune count < cursorCol <= true
+	// expanded length) is perfectly valid, not an overshoot. Only clamp
+	// once the true expanded length is in hand and cursorCol actually
+	// exceeds it — checking against lineLen (the raw count) first, above,
+	// is only what decides whether that true length needs computing at
+	// all, never a substitute for comparing against it.
 	if t.cursorCol > lineLen {
-		t.cursorCol = len([]rune(textwidth.ExpandTabs(rawPrefix, tabWidthOf(t))))
+		if expandedLen := len([]rune(textwidth.ExpandTabs(rawPrefix, tabWidthOf(t)))); t.cursorCol > expandedLen {
+			t.cursorCol = expandedLen
+		}
 	}
 }
