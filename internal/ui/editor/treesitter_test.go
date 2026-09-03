@@ -282,11 +282,25 @@ func TestParseTreeReportsAParseThatRanOutOfTime(t *testing.T) {
 	}
 
 	// The timeout is baked into the cached parser, so both it and the cache
-	// entry have to be swapped out and put back.
-	restoreTimeout, restoreCached := highlightTimeoutMicros, parserCache["go"]
+	// entry have to be swapped out and put back. Restoring via a plain
+	// "parserCache[\"go\"] = restoreCached" would be wrong (and was, until
+	// -shuffle=on ordering this test before anything else ever populated
+	// the cache caught it): a single-value map read of an absent key
+	// returns the same nil a present-but-failed entry would, so restoring
+	// unconditionally can plant an explicit nil under "go" — poisoning
+	// every later test's parseTree call in this process with a permanent
+	// "this language's parser failed" cache hit for the rest of the run
+	// (parseTree, unlike highlightSource, has no nil guard before using
+	// the cached value, so that poisoning crashes instead of degrading).
+	restoreTimeout := highlightTimeoutMicros
+	restoreCached, hadCached := parserCache["go"]
 	t.Cleanup(func() {
 		highlightTimeoutMicros = restoreTimeout
-		parserCache["go"] = restoreCached
+		if hadCached {
+			parserCache["go"] = restoreCached
+		} else {
+			delete(parserCache, "go")
+		}
 	})
 	highlightTimeoutMicros = 1 // 1µs: no real parse finishes in that
 	delete(parserCache, "go")
