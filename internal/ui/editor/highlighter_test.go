@@ -334,11 +334,24 @@ func TestHighlightSourceReportsAParseThatRanOutOfTime(t *testing.T) {
 	}
 
 	// The timeout is baked into the cached highlighter, so both it and the
-	// cache entry have to be swapped out and put back.
-	restoreTimeout, restoreCached := highlightTimeoutMicros, highlighterCache["go"]
+	// cache entry have to be swapped out and put back. Restoring via a
+	// plain "highlighterCache[\"go\"] = restoreCached" would be wrong (and
+	// was, until -shuffle=on ordering this test before anything else ever
+	// populated the cache caught it): a single-value map read of an absent
+	// key returns the same nil a present-but-failed entry would, so
+	// restoring unconditionally can plant an explicit nil under "go" —
+	// poisoning every later test's parseTree/highlightSource call in this
+	// process with a permanent "this language's parser/highlighter
+	// failed" cache hit for the rest of the run.
+	restoreTimeout := highlightTimeoutMicros
+	restoreCached, hadCached := highlighterCache["go"]
 	t.Cleanup(func() {
 		highlightTimeoutMicros = restoreTimeout
-		highlighterCache["go"] = restoreCached
+		if hadCached {
+			highlighterCache["go"] = restoreCached
+		} else {
+			delete(highlighterCache, "go")
+		}
 	})
 	highlightTimeoutMicros = 1 // 1µs: no real parse finishes in that
 	delete(highlighterCache, "go")

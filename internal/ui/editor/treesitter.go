@@ -215,6 +215,13 @@ func parseTree(buf *Buffer) (*gotreesitter.Tree, bool) {
 		p.SetTimeoutMicros(highlightTimeoutMicros)
 		parserCache[entry.Name] = p
 	}
+	// Mirrors highlightSource's own nil check on hl: NewParser itself never
+	// returns nil, but a nil parserCache entry (a previous caller's or
+	// test's stale/failed write to this unsynchronized, process-lifetime
+	// map) should degrade to "no parse" here, not crash on a nil receiver.
+	if p == nil {
+		return nil, false
+	}
 
 	tree, err := p.ParseStrict(buf.Source)
 	if err != nil || tree == nil {
