@@ -26,6 +26,7 @@ import (
 	"github.com/bricejulia/nib/internal/ui/help"
 	"github.com/bricejulia/nib/internal/ui/memprompt"
 	"github.com/bricejulia/nib/internal/ui/quitconfirm"
+	"github.com/bricejulia/nib/internal/ui/reloadconfirm"
 	"github.com/bricejulia/nib/internal/ui/statusbar"
 	"github.com/bricejulia/nib/internal/vcs/gitblame"
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
@@ -523,6 +524,93 @@ func run() error {
 		app.ShowOverlay(diffView)
 	}
 
+	// reloadconfirmView is the "Keep mine / Reload from disk / Cancel"
+	// prompt shown when a save conflicts with a change made outside nib
+	// (see editor.View.OnSaveConflict / editor.Buffer.HasDiskConflict).
+	// pendingConflicts is the queue it's draining, one path at a time —
+	// populated with either a single entry (an interactive save hitting a
+	// conflict) or several (saveAllDirty's leftover conflicts, below).
+	// onConflictsResolved, if set, runs once the queue empties — e.g.
+	// quitConfirmView.OnSaveAndQuit (below) uses this to defer app.Quit()
+	// until every conflict is actually resolved, not just kicked off.
+	reloadconfirmView := reloadconfirm.New()
+	var pendingConflicts []editor.SaveConflict
+	var onConflictsResolved func()
+
+	showNextConflict := func() {
+		c := pendingConflicts[0]
+		rel := c.Path
+		if r, err := filepath.Rel(absRoot, c.Path); err == nil {
+			rel = r
+		}
+		reloadconfirmView.Show(rel, len(pendingConflicts)-1)
+		app.ShowOverlay(reloadconfirmView)
+	}
+	advanceConflictQueue := func() {
+		pendingConflicts = pendingConflicts[1:]
+		if len(pendingConflicts) == 0 {
+			app.CloseOverlay()
+			done := onConflictsResolved
+			onConflictsResolved = nil
+			if done != nil {
+				done()
+			}
+			return
+		}
+		showNextConflict()
+	}
+	reloadconfirmView.OnCancel = func() {
+		// Cancel abandons the WHOLE remaining queue, not just this one
+		// file — matching quitconfirm's "Esc always means stay put": a
+		// quit-and-save that hits a conflict does NOT quit.
+		app.CloseOverlay()
+		pendingConflicts = nil
+		onConflictsResolved = nil
+	}
+	reloadconfirmView.OnKeepMine = func() {
+		c := pendingConflicts[0]
+		if err := c.Buf.Save(); err != nil {
+			debuglog.Error("save %s: %v", c.Path, err)
+		} else {
+			// Save just cleared ExternallyModified (disk now matches the
+			// buffer), which is what unblocks ApplyLineStatus from
+			// accepting a fresh gutter — nothing else re-triggers this on
+			// its own, so ask for it explicitly, mirroring
+			// OnReloadFromDisk below.
+			refreshLineStatusFor(c.Path)
+		}
+		advanceConflictQueue()
+	}
+	reloadconfirmView.OnReloadFromDisk = func() {
+		c := pendingConflicts[0]
+		if err := c.Buf.Reload(); err != nil {
+			debuglog.Error("reload %s: %v", c.Path, err)
+		} else {
+			for _, p := range editorPanes {
+				p.view.RefreshBuffer(c.Buf)
+			}
+			refreshLineStatusFor(c.Path)
+		}
+		advanceConflictQueue()
+	}
+	// queueConflicts shows the first of conflicts (if any) and calls onDone
+	// once every one of them has been resolved (immediately, if conflicts
+	// is empty). The single code path both an interactive single-file save
+	// (via wireEditorPane's OnSaveConflict, below) and a save-all's batch
+	// of conflicts (via saveAllDirty, further down) route through, so
+	// there's exactly one queue-draining implementation.
+	queueConflicts := func(conflicts []editor.SaveConflict, onDone func()) {
+		if len(conflicts) == 0 {
+			if onDone != nil {
+				onDone()
+			}
+			return
+		}
+		pendingConflicts = conflicts
+		onConflictsResolved = onDone
+		showNextConflict()
+	}
+
 	// wireEditorPane attaches every callback an editor pane needs to reach
 	// the rest of the application. Called for the initial pane below and for
 	// each pane trySplit creates, so a new split is never quietly missing a
@@ -546,6 +634,24 @@ func run() error {
 			return gitstatus.FileHunkAt(absRoot, path, line)
 		}
 		v.OnShowFileDiff = openFileDiff
+		// A save that finds its file changed on disk since nib last synced
+		// with it (see editor.Buffer.HasDiskConflict) hands off here rather
+		// than writing — queueConflicts shows reloadconfirmView, guarded
+		// against clobbering whatever overlay is already up (e.g. two
+		// panes racing to save the same shared Buffer at once), same guard
+		// promptToFreeMemory uses below. onResolved maps directly onto
+		// queueConflicts' onDone for this single-conflict batch: called
+		// once Keep mine/Reload is chosen, never if the user cancels —
+		// exactly the contract editor.View.OnSaveConflict documents, and
+		// what lets a ":wq" that hit a conflict (see saveActiveThen)
+		// correctly retry closing the tab afterward instead of not
+		// quitting at all.
+		v.OnSaveConflict = func(c editor.SaveConflict, onResolved func()) {
+			if app.OverlayActive() {
+				return
+			}
+			queueConflicts([]editor.SaveConflict{c}, onResolved)
+		}
 		// Copying a mouse selection reaches the system clipboard through
 		// here — the editor pane speaks no OSC 52 itself, same arrangement
 		// as the git callbacks above. The yank register (SetRegister) is what
@@ -797,6 +903,20 @@ func run() error {
 		return paths
 	}
 
+	// bufferForPath returns the open *editor.Buffer for path across every
+	// pane (they'd all share the same one if more than one pane has it
+	// open — see editor.BufferStore), or nil if it isn't open anywhere —
+	// used by the fsnotify handler below to decide whether an external
+	// change is safe to auto-reload.
+	bufferForPath := func(path string) *editor.Buffer {
+		for _, p := range editorPanes {
+			if buf := p.view.BufferForPath(path); buf != nil {
+				return buf
+			}
+		}
+		return nil
+	}
+
 	// largestOpenBuffer returns the path and byte size of the single
 	// largest buffer open across every editor pane, or ("", 0) if none
 	// are open — used by the memory watchdog below to name which open
@@ -810,15 +930,22 @@ func run() error {
 		return path, sizeBytes
 	}
 
-	// saveAllDirty saves every unsaved file across every editor pane. A
-	// buffer shared by two panes is simply no longer Dirty by the time the
-	// second pane's SaveDirtyTabs runs, so this never double-writes.
-	saveAllDirty := func() {
+	// saveAllDirty saves every unsaved file across every editor pane, then
+	// calls onDone — immediately if nothing conflicted, or once every
+	// conflict found along the way has been resolved through
+	// reloadconfirmView (see queueConflicts). A buffer shared by two panes
+	// is simply no longer Dirty by the time the second pane's
+	// SaveDirtyTabs runs, so this never double-writes.
+	saveAllDirty := func(onDone func()) {
+		var conflicts []editor.SaveConflict
 		for _, p := range editorPanes {
-			for path, err := range p.view.SaveDirtyTabs() {
+			res := p.view.SaveDirtyTabs()
+			for path, err := range res.Failed {
 				debuglog.Error("save %s: %v", path, err)
 			}
+			conflicts = append(conflicts, res.Conflicts...)
 		}
+		queueConflicts(conflicts, onDone)
 	}
 
 	// quitConfirmView warns before quitting would silently discard unsaved
@@ -828,8 +955,11 @@ func run() error {
 	quitConfirmView.OnCancel = app.CloseOverlay
 	quitConfirmView.OnSaveAndQuit = func() {
 		app.CloseOverlay()
-		saveAllDirty()
-		app.Quit()
+		// app.Quit only fires once every conflict saveAllDirty finds is
+		// actually resolved; Cancel on any of them (see reloadconfirmView)
+		// aborts the quit entirely, same as declining quitConfirmView
+		// itself would.
+		saveAllDirty(app.Quit)
 	}
 	quitConfirmView.OnDiscardAndQuit = func() {
 		app.CloseOverlay()
@@ -1016,10 +1146,42 @@ func run() error {
 				// so a file open in an editor pane that an external delete
 				// (from outside nib) just removed is only found by statting
 				// every open path against disk, same as the tree's own
-				// re-scan just did for the paths it knows about.
+				// re-scan just did for the paths it knows about. A path that
+				// still exists but whose mtime/size no longer matches what
+				// nib last synced with (see editor.Buffer.NoteDiskStat) gets
+				// flagged live in its tab(s) — the save-time conflict check
+				// (see editor.View.saveTab) does its own fresh stat later,
+				// so this is purely the proactive indicator, not the guard.
 				for _, path := range openPathsNotYetDetached() {
-					if _, err := os.Stat(path); os.IsNotExist(err) {
+					info, err := os.Stat(path)
+					if os.IsNotExist(err) {
 						closeDeletedPath(path)
+						continue
+					}
+					if err != nil {
+						continue // unreadable for some other reason; leave state as-is
+					}
+					for _, p := range editorPanes {
+						p.view.NoteDiskStat(path, info)
+					}
+					// A buffer with no local edits has nothing to lose, so
+					// there's no real conflict to ask about (unlike the
+					// dirty case, resolved via OnSaveConflict) — silently
+					// pull in the external change rather than leave it
+					// merely flagged. RefreshBuffer/MarkJustReloaded are
+					// fanned out over every pane the same way
+					// reloadconfirmView's own OnReloadFromDisk does, since
+					// this buffer may be shared (see BufferStore).
+					if buf := bufferForPath(path); buf != nil && buf.ExternallyModified && !buf.Dirty {
+						if err := buf.Reload(); err != nil {
+							debuglog.Warn("auto-reload %s: %v", path, err)
+						} else {
+							for _, p := range editorPanes {
+								p.view.RefreshBuffer(buf)
+								p.view.MarkJustReloaded(buf)
+							}
+							refreshLineStatusFor(path)
+						}
 					}
 				}
 			}

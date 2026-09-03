@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/textfile"
@@ -114,6 +115,28 @@ type Buffer struct {
 	// buffer. The in-progress (not yet committed) session's snapshot
 	// stays on tab, not here — see tab.insertSnapshot's doc comment.
 	undoStack, redoStack []undoEntry
+
+	// diskModTime and diskSize are Path's mtime and size as of the last
+	// Load, Save or Reload — the baseline every disk-change check compares
+	// a fresh os.Stat against (see diskChanged, NoteDiskStat,
+	// HasDiskConflict). Deliberately mtime+size rather than a content hash:
+	// cheap, no extra read of the file, and Save re-stats immediately after
+	// writing (see Save) so this app's own writes update the baseline
+	// before an external file-watcher's own debounce ever gets a chance to
+	// see the old one.
+	diskModTime time.Time
+	diskSize    int64
+
+	// ExternallyModified is true when the most recent NoteDiskStat found
+	// Path's on-disk mtime/size diverged from diskModTime/diskSize — a
+	// live "something outside nib touched this file" indicator for the
+	// tab bar and status line (see tabDisplayNames/StatusText). Cleared by
+	// Save and Reload, both of which resync the baseline. Lives here
+	// rather than on a tab: every pane sharing this Buffer (see
+	// BufferStore) is looking at the same file on disk and must show the
+	// same indicator, not go stale in whichever pane didn't happen to
+	// notice the change.
+	ExternallyModified bool
 }
 
 // maxLoadableFileSize bounds how large a file Load will read into memory
@@ -143,39 +166,151 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
-// Load reads path into a Buffer.
-func Load(path string) (*Buffer, error) {
-	mode := os.FileMode(defaultSaveMode)
+// loadedFile is the on-disk content Load and Reload both produce by
+// reading, decoding and line-splitting a path — factored out so the two
+// can never drift on how a file's bytes become Lines/Charset/EOL/
+// HasLongLine/the disk-sync baseline. Load turns this into a brand new
+// *Buffer; Reload applies it over an existing one instead (see Reload for
+// what that leaves untouched).
+type loadedFile struct {
+	lines       []string
+	source      []byte
+	mode        os.FileMode
+	charset     textfile.Charset
+	eol         textfile.EOL
+	hasLongLine bool
+	modTime     time.Time
+	size        int64
+}
+
+func loadFile(path string) (loadedFile, error) {
+	lf := loadedFile{mode: defaultSaveMode}
 	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode()
+		lf.mode = info.Mode()
+		lf.modTime = info.ModTime()
+		lf.size = info.Size()
 		if info.Size() > maxLoadableFileSize {
-			return nil, fmt.Errorf("file too large to open (%s, limit %s)",
+			return loadedFile{}, fmt.Errorf("file too large to open (%s, limit %s)",
 				humanBytes(info.Size()), humanBytes(maxLoadableFileSize))
 		}
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return loadedFile{}, err
 	}
 	text, charset, err := textfile.Decode(data)
 	if err != nil {
-		return nil, err
+		return loadedFile{}, err
 	}
 	lines, eol := textfile.SplitLines(text)
-	source := strings.Join(lines, "\n")
-	hasLongLine := false
+	lf.lines = lines
+	lf.source = []byte(strings.Join(lines, "\n"))
+	lf.charset, lf.eol = charset, eol
 	for _, ln := range lines {
 		if _, _, truncated := runePrefix(ln, maxRenderLineRunes); truncated {
-			hasLongLine = true
+			lf.hasLongLine = true
 			break
 		}
 	}
+	return lf, nil
+}
+
+// Load reads path into a Buffer.
+func Load(path string) (*Buffer, error) {
+	lf, err := loadFile(path)
+	if err != nil {
+		return nil, err
+	}
 	return &Buffer{
-		Lines: lines, Path: path, Source: []byte(source), mode: mode,
-		saved:   append([]string(nil), lines...),
-		Charset: charset, EOL: eol,
-		HasLongLine: hasLongLine,
+		Lines: lf.lines, Path: path, Source: lf.source, mode: lf.mode,
+		saved:   append([]string(nil), lf.lines...),
+		Charset: lf.charset, EOL: lf.eol,
+		HasLongLine: lf.hasLongLine,
+		diskModTime: lf.modTime, diskSize: lf.size,
 	}, nil
+}
+
+// Reload re-reads Path from disk, replacing this Buffer's content
+// wholesale — the "Reload from disk" side of the save-time conflict
+// prompt (see HasDiskConflict and cmd/nib/main.go's reloadconfirm
+// wiring). Shares loadFile with Load, so the two decode pipelines can
+// never diverge.
+//
+// Unlike Load, this mutates an EXISTING Buffer that undo history and
+// per-language editor settings already belong to:
+//   - saved resets to the freshly-read lines, and Dirty is recomputed via
+//     resync() rather than set directly, per Dirty's own invariant above
+//     — any in-memory edits are simply discarded, which is the point of
+//     choosing this over keeping them.
+//   - undoStack/redoStack are cleared: they hold snapshots of content
+//     that no longer exists anywhere the user asked to keep, and
+//     replaying one after a reload would resurrect exactly the edits
+//     just discarded.
+//   - highlighted is dropped, exactly as Restore/Repath already do:
+//     content is replaced wholesale, so there's no line-to-line mapping
+//     from the old cache to preserve.
+//   - IndentUseSpaces/IndentWidth are left untouched — an editor
+//     preference for the language, not a property of these bytes.
+//
+// On error (e.g. the file vanished between the conflict being detected
+// and the user choosing to reload), b is left completely untouched.
+//
+// The caller is responsible for re-submitting this buffer for
+// highlighting and clamping every tab showing it back into bounds — see
+// View.RefreshBuffer, which Reload knows nothing of (panes, cursors and
+// the highlight worker are all View's concern, not Buffer's).
+func (b *Buffer) Reload() error {
+	lf, err := loadFile(b.Path)
+	if err != nil {
+		return err
+	}
+	b.Lines = lf.lines
+	b.mode = lf.mode
+	b.Charset = lf.charset
+	b.EOL = lf.eol
+	b.HasLongLine = lf.hasLongLine
+	b.saved = append([]string(nil), lf.lines...)
+	b.highlighted = nil
+	b.undoStack = nil
+	b.redoStack = nil
+	b.diskModTime = lf.modTime
+	b.diskSize = lf.size
+	b.ExternallyModified = false
+	b.resync()
+	return nil
+}
+
+// diskChanged reports whether info's mtime/size differs from the
+// baseline captured at the last Load, Save or Reload. Shared by
+// NoteDiskStat (the live tab-bar indicator) and HasDiskConflict (the
+// save-time check), so the two can never disagree about what counts as
+// "changed".
+func (b *Buffer) diskChanged(info os.FileInfo) bool {
+	return !info.ModTime().Equal(b.diskModTime) || info.Size() != b.diskSize
+}
+
+// NoteDiskStat applies a pre-fetched os.Stat(Path) result to
+// ExternallyModified — called from the fsnotify-driven refresh loop (see
+// View.NoteDiskStat / cmd/nib/main.go), which already has to stat every
+// open path anyway to catch deletions, so this reuses that same stat
+// rather than taking a second one.
+func (b *Buffer) NoteDiskStat(info os.FileInfo) {
+	b.ExternallyModified = b.diskChanged(info)
+}
+
+// HasDiskConflict stats Path fresh and reports whether it changed since
+// this Buffer last synced with it — the save-time check (see
+// View.saveTab). err is the raw os.Stat error: os.IsNotExist(err) means
+// the file was deleted, which callers should treat as "no conflict" and
+// let Save recreate it, exactly as it already does today; any other
+// non-nil err means "couldn't tell", which callers should also treat as
+// no conflict and let Save's own WriteFile surface the real problem.
+func (b *Buffer) HasDiskConflict() (conflict bool, err error) {
+	info, err := os.Stat(b.Path)
+	if err != nil {
+		return false, err
+	}
+	return b.diskChanged(info), nil
 }
 
 // Repath points the buffer at newPath — what Save writes to from now on —
@@ -537,6 +672,14 @@ func (b *Buffer) Restore(lines []string) {
 // original file's permission bits (see Load) and its detected charset/EOL
 // (see textfile), records that content as the new saved baseline, and
 // clears Dirty.
+//
+// It also re-stats Path right after the write and refreshes
+// diskModTime/diskSize/ExternallyModified from that — synchronously, in
+// this same call. That's what keeps this app's own write from later
+// being mistaken for an external change: by the time an fsnotify-driven
+// refresh (debounced by ~200ms — see cmd/nib/main.go) gets around to
+// calling NoteDiskStat, the baseline it compares against already
+// reflects this write.
 func (b *Buffer) Save() error {
 	data, err := textfile.Encode(textfile.JoinLines(b.Lines, b.EOL), b.Charset)
 	if err != nil {
@@ -547,6 +690,14 @@ func (b *Buffer) Save() error {
 	}
 	b.saved = append([]string(nil), b.Lines...)
 	b.Dirty = false
+	b.ExternallyModified = false
+	if info, err := os.Stat(b.Path); err == nil {
+		b.diskModTime = info.ModTime()
+		b.diskSize = info.Size()
+	}
+	// Else: leave the previous baseline in place — a rare TOCTOU where the
+	// file we just wrote can't be stat'ed back; a later refresh may show a
+	// false ExternallyModified until the next successful stat corrects it.
 	return nil
 }
 

@@ -2,6 +2,7 @@ package editor
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -242,6 +243,20 @@ type tab struct {
 	// buffer works normally, ":w" recreates the file and clears it (see
 	// saveActive), ":q!" throws it away.
 	detached bool
+
+	// justReloaded is true right after cmd/nib/main.go's fsnotify handler
+	// silently auto-reloaded this tab's buffer — only ever done for a
+	// CLEAN buffer (no local edits at risk, so no conflict to ask about;
+	// see Buffer.HasDiskConflict for the case that DOES need asking).
+	// Shown as a transient "-- RELOADED --" status-line notice (see
+	// StatusText) so a content swap the user didn't ask for doesn't pass
+	// completely unannounced, and dismissed by the very next keypress
+	// (see HandleKey) — the same "tooltip, not a mode" lifetime as
+	// hoverText/gitPopup/showDiagnostics. Per-tab rather than on Buffer:
+	// it's a one-shot UI notice, not document or sync state, so two split
+	// panes on the same reloaded buffer each get their own until each is
+	// individually dismissed.
+	justReloaded bool
 }
 
 // View is the editor pane: zero or more open tabs, each with its own
@@ -365,6 +380,19 @@ type View struct {
 	// in a popup this pane draws. Same plain-callback pattern as
 	// OnAllTabsClosed.
 	OnShowFileDiff func(path string)
+
+	// OnSaveConflict, if set, is called instead of writing to disk when a
+	// save (see saveActive/saveTab) finds the target file changed on disk
+	// since this Buffer last synced with it (see Buffer.HasDiskConflict) —
+	// cmd/nib/main.go wires this to show the "Keep mine / Reload from disk
+	// / Cancel" prompt (internal/ui/reloadconfirm). onResolved, passed
+	// through from saveActiveThen, must be called once the conflict is
+	// actually resolved (Keep mine or Reload chosen) and must NOT be
+	// called if the user cancels instead. Left nil (a bare NewView(), e.g.
+	// every test in this package that doesn't set it), a conflicting save
+	// just proceeds anyway — the same "no overlay plumbing outside
+	// main.go" fallback OnShowFileDiff/OnAllTabsClosed already have.
+	OnSaveConflict func(conflict SaveConflict, onResolved func())
 
 	// In-file search state (see search.go). searchBuf is what's typed at the
 	// "/" prompt; searchPattern is the last committed pattern, which n/N
@@ -658,9 +686,23 @@ func (v *View) OpenPaths() []string {
 // FileHunks) for the open tab whose path matches path, redrawn on the
 // next Render. A no-op if path isn't currently open — a tab can close
 // between the caller listing OpenPaths and computing its status.
+//
+// Also a no-op while the tab's buffer is ExternallyModified: FileHunks
+// reads path straight off disk, so lines is indexed against the file's
+// CURRENT on-disk content — but the buffer hasn't caught up to that yet
+// (see Buffer.NoteDiskStat), so applying lines here would draw markers
+// next to lines the editor isn't actually showing. Leaving the previous
+// lineStatus in place instead is correct, not just inert: it was
+// computed the last time disk and buffer actually matched, so it's still
+// accurate for what's currently rendered. Once the conflict resolves
+// (Keep mine or Reload — see cmd/nib/main.go's reloadconfirm wiring),
+// that flow re-triggers a fresh call here itself.
 func (v *View) ApplyLineStatus(path string, lines map[int]gitstatus.LineStatus) {
 	for _, t := range v.tabs {
 		if t.path == path {
+			if t.buf != nil && t.buf.ExternallyModified {
+				return
+			}
 			t.lineStatus = lines
 			return
 		}
@@ -1107,6 +1149,23 @@ func (v *View) StatusText() string {
 	if t.buf.HasLongLine {
 		prefix += "-- LONG LINE -- "
 	}
+	// Same reasoning as the detached case above: said here as well as in
+	// the tab bar's own marker (see tabDisplayNames), so it's visible
+	// without hunting for a small glyph. !t.detached: a deleted file is
+	// reported as that, more specifically, instead.
+	if t.buf.ExternallyModified && !t.detached {
+		prefix += "-- MODIFIED ON DISK -- "
+	}
+	// A clean buffer with no local edits at risk gets silently
+	// auto-reloaded rather than asked about (see cmd/nib/main.go's
+	// fsnotify handler) — this is the one-shot notice for that, so a
+	// content swap the user didn't ask for isn't entirely unannounced.
+	// Mutually exclusive with the MODIFIED ON DISK case above: a
+	// successful reload is what clears ExternallyModified in the first
+	// place (see Buffer.Reload).
+	if t.justReloaded {
+		prefix += "-- RELOADED -- "
+	}
 	return fmt.Sprintf("%sLn %d, Col %d", prefix, t.cursorLn+1, t.cursorCol+1)
 }
 
@@ -1387,6 +1446,13 @@ func tabDisplayNames(tabs []*tab) []string {
 			// pathologically long line stays marked, not only the active
 			// one via StatusText.
 			names[i] += " ⚠"
+		}
+		if t.buf != nil && t.buf.ExternallyModified && !t.detached {
+			// Someone outside nib touched this file (see
+			// Buffer.NoteDiskStat) — !t.detached skips it once the file's
+			// actually gone, which is the more specific "-- DELETED --"/✗
+			// case above, not "merely modified".
+			names[i] += " ⟳"
 		}
 	}
 	return names
@@ -1792,6 +1858,11 @@ func (v *View) HandleKey(k layout.Key) bool {
 	v.gitPopup = nil
 	v.hoverText = ""
 	v.signatureHelp = nil
+	// Same lifetime, but per-tab rather than pane-wide — see
+	// tab.justReloaded's doc comment.
+	for _, t := range v.tabs {
+		t.justReloaded = false
+	}
 
 	switch v.mode {
 	case modeInsert:
@@ -2283,11 +2354,14 @@ func (v *View) commitCommand() {
 	case "w":
 		v.saveActive()
 	case "x":
-		v.saveActive()
-		v.closeActiveTab(false)
+		v.saveActiveThen(func() { v.closeActiveTab(false) })
 	case "wq":
-		v.saveActive()
-		v.closeActiveTab(false) // if the save failed, Dirty is still true and this correctly still refuses
+		// closeActiveTab consults Dirty itself, so it correctly still
+		// refuses if the save failed — and, via saveActiveThen, correctly
+		// waits to even try until a conflict prompt (see OnSaveConflict)
+		// has actually been resolved, rather than firing immediately
+		// alongside a save that hasn't happened yet.
+		v.saveActiveThen(func() { v.closeActiveTab(false) })
 	default:
 		debuglog.Warn("editor: unknown command %q", cmd)
 	}
@@ -2714,30 +2788,100 @@ func (v *View) refreshSyntaxDiagnostics(t *tab) {
 	t.diagnostics = diagnosticsByLine(syntaxDiagnostics(t.buf))
 }
 
-// saveActive writes the active tab's buffer back to disk. A failure is
+// SaveConflict pairs a path with the shared Buffer whose disk copy
+// changed since it was last synced (see Buffer.HasDiskConflict) —
+// returned by saveTab/SaveDirtyTabs instead of writing, for the caller
+// to resolve with the user's help (see cmd/nib/main.go's reloadconfirm
+// wiring) rather than silently clobbering disk or silently discarding
+// in-memory edits.
+type SaveConflict struct {
+	Path string
+	Buf  *Buffer
+}
+
+// saveActive writes the active tab's buffer back to disk, unless it
+// conflicts with a change made outside nib (see saveTab), in which case
+// OnSaveConflict is asked to resolve it instead. A write failure is
 // logged rather than shown in the pane — the buffer's Dirty flag simply
 // stays true, so the tab's dirty marker keeps reflecting that the edit is
 // still unsaved.
 func (v *View) saveActive() {
+	v.saveActiveThen(nil)
+}
+
+// saveActiveThen is saveActive, followed by onDone once the save has
+// actually been resolved: immediately, if there was no conflict (or none
+// wired up to prompt about — see OnSaveConflict's nil fallback); or once
+// the user has picked Keep mine or Reload from the resulting prompt, for
+// a conflicted one. onDone is deliberately NOT called if the user
+// cancels that prompt instead — nothing was resolved, so whatever onDone
+// was going to do next must not happen either.
+//
+// commitCommand's ":x"/":wq" is what needs this: without it, the
+// synchronous v.saveActive(); v.closeActiveTab(false) pair used to see
+// Dirty still true (the real save hadn't happened yet — the user hadn't
+// even seen the prompt) and correctly refuse to close, but then nothing
+// ever retried the close once the conflict actually got resolved, so a
+// ":wq" that hit a conflict silently stopped being a quit at all. Note
+// closeActiveTab already consults Dirty itself, so retrying it here is
+// safe to do unconditionally, regardless of which option was chosen.
+func (v *View) saveActiveThen(onDone func()) {
 	t := v.activeTab()
 	if t == nil || t.buf == nil {
 		return
 	}
-	if err := v.saveTab(t); err != nil {
+	ok, conflict, err := v.saveTab(t)
+	if err != nil {
 		debuglog.Error("save %s: %v", t.buf.Path, err)
+		return
+	}
+	if ok {
+		if onDone != nil {
+			onDone()
+		}
+		return
+	}
+	if v.OnSaveConflict != nil {
+		v.OnSaveConflict(conflict, onDone)
+		return
+	}
+	if err := t.buf.Save(); err != nil {
+		debuglog.Error("save %s: %v", t.buf.Path, err)
+		return
+	}
+	t.detached = false
+	if onDone != nil {
+		onDone()
 	}
 }
 
-// saveTab saves t's buffer to disk. The file exists again on success, so
-// the tab is no longer detached (see CloseTabsUnder). Note a save can
-// still fail with ENOENT when it was the tab's parent DIRECTORY that was
-// deleted — Dirty stays true in that case, which is the honest outcome.
-func (v *View) saveTab(t *tab) error {
+// saveTab saves t's buffer to disk, unless Buffer.HasDiskConflict reports
+// the file changed on disk since this Buffer last synced with it — in
+// which case NOTHING is written, ok is false, and conflict describes what
+// needs resolving. Dirty stays true in that case, which is what already
+// makes ":x"/":wq" (see commitCommand) correctly refuse to close
+// afterward — no separate check needed there.
+//
+// The file exists again after a successful write, so the tab is no
+// longer detached (see CloseTabsUnder). Note a save can still fail with
+// ENOENT when it was the tab's parent DIRECTORY that was deleted — Dirty
+// stays true in that case too, which is the honest outcome.
+//
+// A stat error other than the file being deleted is treated as "no
+// conflict" (proceed, let Save's own WriteFile report the real problem).
+// The file having been deleted is ALSO treated as "no conflict": Save
+// recreates it, which is the right outcome for a file that vanished out
+// from under an edit still in memory — see CloseTabsUnder for the
+// companion case (a CLEAN buffer's file being deleted).
+func (v *View) saveTab(t *tab) (ok bool, conflict SaveConflict, err error) {
+	if has, statErr := t.buf.HasDiskConflict(); statErr == nil && has {
+		return false, SaveConflict{Path: t.path, Buf: t.buf}, nil
+	}
 	if err := t.buf.Save(); err != nil {
-		return err
+		return false, SaveConflict{}, err
 	}
 	t.detached = false
-	return nil
+	return true, SaveConflict{}, nil
 }
 
 // DirtyPaths returns the paths of every tab open in this pane whose
@@ -2768,25 +2912,106 @@ func (v *View) DetachedPaths() []string {
 	return paths
 }
 
-// SaveDirtyTabs saves every tab open in this pane with unsaved changes,
-// returning the error for each save that failed, keyed by path. A buffer
-// shared with another pane (see BufferStore) that this pane's own dirty
-// scan just saved is simply no longer Dirty by the time that other pane's
-// SaveDirtyTabs runs, so it costs nothing to call this once per pane.
-func (v *View) SaveDirtyTabs() map[string]error {
-	var failed map[string]error
+// SaveDirtyTabsResult is one pane's dirty-save sweep: Failed holds real
+// I/O errors keyed by path, exactly as SaveDirtyTabs used to return on
+// its own; Conflicts holds every dirty tab skipped because its file
+// changed on disk since it was last synced (see Buffer.HasDiskConflict)
+// — for the caller to resolve, one at a time, the same way a single
+// interactive save does via OnSaveConflict.
+type SaveDirtyTabsResult struct {
+	Failed    map[string]error
+	Conflicts []SaveConflict
+}
+
+// SaveDirtyTabs saves every tab open in this pane with unsaved changes. A
+// buffer shared with another pane (see BufferStore) that this pane's own
+// dirty scan just saved is simply no longer Dirty by the time that other
+// pane's SaveDirtyTabs runs, so it costs nothing to call this once per
+// pane.
+func (v *View) SaveDirtyTabs() SaveDirtyTabsResult {
+	var res SaveDirtyTabsResult
 	for _, t := range v.tabs {
 		if t.buf == nil || !t.buf.Dirty {
 			continue
 		}
-		if err := v.saveTab(t); err != nil {
-			if failed == nil {
-				failed = map[string]error{}
+		ok, conflict, err := v.saveTab(t)
+		if err != nil {
+			if res.Failed == nil {
+				res.Failed = map[string]error{}
 			}
-			failed[t.path] = err
+			res.Failed[t.path] = err
+			continue
+		}
+		if !ok {
+			res.Conflicts = append(res.Conflicts, conflict)
 		}
 	}
-	return failed
+	return res
+}
+
+// RefreshBuffer re-submits buf for highlighting and clamps every tab in
+// this pane showing it back into bounds — used after Buffer.Reload
+// replaces content wholesale (see cmd/nib/main.go's reloadconfirm
+// wiring). A no-op for a pane with no tab on buf, so it's safe to call
+// across every editor pane unconditionally, the same fan-out-and-let-
+// each-pane-decide shape closeDeletedPath already uses.
+func (v *View) RefreshBuffer(buf *Buffer) {
+	found := false
+	for _, t := range v.tabs {
+		if t.buf != buf {
+			continue
+		}
+		found = true
+		t.detached = false
+		t.lineStatus = nil // stale gutter markers, computed against the old content
+		v.clamp(t)
+	}
+	if found {
+		v.submitHighlight(buf, true)
+	}
+}
+
+// NoteDiskStat applies a pre-fetched os.Stat(path) result to whichever
+// open tab in this pane has it, updating that tab's Buffer's
+// ExternallyModified flag (see Buffer.NoteDiskStat). A no-op if path
+// isn't open in this pane — cmd/nib/main.go calls this across every
+// pane, most of which won't have this particular path open.
+func (v *View) NoteDiskStat(path string, info os.FileInfo) {
+	if t := v.tabForPath(path); t != nil && t.buf != nil {
+		t.buf.NoteDiskStat(info)
+	}
+}
+
+// BufferForPath returns the open *Buffer for path in this pane, or nil if
+// path isn't open here — used by cmd/nib/main.go's fsnotify handler to
+// find the (possibly shared across panes — see BufferStore) Buffer for a
+// path without needing to know which pane originally opened it, so it
+// can decide whether an external change is safe to auto-reload (see
+// MarkJustReloaded) rather than merely flag.
+func (v *View) BufferForPath(path string) *Buffer {
+	if t := v.tabForPath(path); t != nil {
+		return t.buf
+	}
+	return nil
+}
+
+// MarkJustReloaded flags every tab in this pane showing buf as having
+// just been silently auto-reloaded — see tab.justReloaded and
+// cmd/nib/main.go's fsnotify handler, which calls this immediately after
+// Buffer.Reload succeeds for a CLEAN buffer (no local edits at risk, so
+// nothing to ask the user about — contrast the conflict prompt a DIRTY
+// buffer gets instead, via OnSaveConflict). Distinct from RefreshBuffer,
+// which every reload path (this automatic one, or the user explicitly
+// choosing "Reload from disk" on a conflict) needs; this transient
+// notice is only wanted for the automatic, unannounced case — a manual
+// choice already told the user directly, via the prompt they just
+// answered.
+func (v *View) MarkJustReloaded(buf *Buffer) {
+	for _, t := range v.tabs {
+		if t.buf == buf {
+			t.justReloaded = true
+		}
+	}
 }
 
 func (v *View) pageSize() int {
