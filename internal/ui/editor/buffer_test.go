@@ -147,6 +147,32 @@ func TestInsertTextInsertsAtRuneIndexAndMarksDirty(t *testing.T) {
 	}
 }
 
+func TestReplaceRuneOverwritesAtIndexAndMarksDirty(t *testing.T) {
+	b := &Buffer{Lines: []string{"abc"}}
+	b.ReplaceRune(0, 1, 'X')
+	if b.Lines[0] != "aXc" {
+		t.Fatalf("Lines[0] = %q, want %q", b.Lines[0], "aXc")
+	}
+	if !b.Dirty {
+		t.Fatal("expected Dirty to be true after ReplaceRune")
+	}
+	if string(b.Source) != "aXc" {
+		t.Fatalf("Source = %q, want Lines resynced", b.Source)
+	}
+}
+
+func TestReplaceRuneOutOfRangeIsNoop(t *testing.T) {
+	b := &Buffer{Lines: []string{"abc", ""}}
+	b.ReplaceRune(0, 3, 'X') // one past the last rune
+	if b.Lines[0] != "abc" {
+		t.Fatalf("Lines[0] = %q, want unchanged %q", b.Lines[0], "abc")
+	}
+	b.ReplaceRune(1, 0, 'X') // empty line
+	if b.Lines[1] != "" {
+		t.Fatalf("Lines[1] = %q, want unchanged empty", b.Lines[1])
+	}
+}
+
 func TestSplitLineSplitsAtRuneIndex(t *testing.T) {
 	b := &Buffer{Lines: []string{"one", "abcdef", "three"}}
 	b.SplitLine(1, 3)

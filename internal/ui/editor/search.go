@@ -327,12 +327,20 @@ func (v *View) matchIndexFrom(ln, rawCol int, forward bool) int {
 	return len(v.searchMatches) - 1 // wrapped past the start
 }
 
-// jumpToMatch moves the cursor to the match at index i.
+// jumpToMatch moves the cursor to the match at index i, pushing the
+// pre-move position onto the jump stack first (see pushJump) — the single
+// choke point both commitSearch (Enter) and searchNext/searchPrev (n/N)
+// jump through, so this alone gives Ctrl+b coverage for both without
+// duplicating the push at each call site. Safe to push unconditionally
+// here specifically because incremental typing of the pattern
+// (refreshSearchHighlights) never calls this function — only an actual
+// cursor-moving commit or step does.
 func (v *View) jumpToMatch(i int) {
 	t := v.activeTab()
 	if t == nil || i < 0 || i >= len(v.searchMatches) {
 		return
 	}
+	v.pushJump(t)
 	m := v.searchMatches[i]
 	t.cursorLn = m.ln
 	t.cursorCol = expandedColForRawIndexIn(t.buf, m.ln, m.start, tabWidthOf(t))

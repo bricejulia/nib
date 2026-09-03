@@ -163,13 +163,54 @@ func TestRenderPopupClampsToRemainingRows(t *testing.T) {
 	}
 }
 
-func TestRenderPopupNoRoomBelowDrawsNothing(t *testing.T) {
+func TestRenderPopupNoRoomBelowFlipsUpward(t *testing.T) {
 	w := newFakeWindow(40, 5)
 	renderPopup(w, 40, 5, 0, 4, []string{"content"}, -1) // anchored on the last row
+
+	if !strings.Contains(w.lines[3], "content") {
+		t.Errorf("row 3 = %q, want the popup flipped to draw just above the anchor row", w.lines[3])
+	}
+	if strings.Contains(w.lines[4], "content") {
+		t.Errorf("row 4 (the anchor row) unexpectedly drew popup content: %q", w.lines[4])
+	}
+}
+
+func TestRenderPopupNoRoomEitherDirectionDrawsNothing(t *testing.T) {
+	// A single-row window: anchored on row 0, nothing above (row 0 is
+	// always the tab bar) and nothing below either.
+	w := newFakeWindow(40, 1)
+	renderPopup(w, 40, 1, 0, 0, []string{"content"}, -1)
 
 	for i, l := range w.lines {
 		if strings.Contains(l, "content") {
 			t.Fatalf("row %d unexpectedly drew popup content: %q", i, l)
+		}
+	}
+}
+
+func TestRenderPopupFlipsUpwardWhenBelowInsufficientButAboveFits(t *testing.T) {
+	w := newFakeWindow(40, 10)
+	renderPopup(w, 40, 10, 0, 8, []string{"one", "two", "three"}, -1) // below=1, above=7
+
+	for i, want := range []string{"one", "two", "three"} {
+		row := 5 + i // anchorRow(8) - total(3) + i
+		if !strings.Contains(w.lines[row], want) {
+			t.Errorf("row %d = %q, want to contain %q", row, w.lines[row], want)
+		}
+	}
+	if strings.Contains(w.lines[8], "one") || strings.Contains(w.lines[8], "two") || strings.Contains(w.lines[8], "three") {
+		t.Errorf("anchor row 8 unexpectedly drew popup content: %q", w.lines[8])
+	}
+}
+
+func TestRenderPopupPrefersBelowWhenBothFit(t *testing.T) {
+	w := newFakeWindow(40, 20)
+	renderPopup(w, 40, 20, 0, 10, []string{"one", "two", "three"}, -1) // below=9, above=9: both fit
+
+	for i, want := range []string{"one", "two", "three"} {
+		row := 11 + i
+		if !strings.Contains(w.lines[row], want) {
+			t.Errorf("row %d = %q, want to contain %q (still prefers drawing below)", row, w.lines[row], want)
 		}
 	}
 }

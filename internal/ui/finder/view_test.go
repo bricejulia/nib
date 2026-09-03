@@ -128,8 +128,8 @@ func TestSetKeymapAddsCtrlBoundActionWithoutBreakingTyping(t *testing.T) {
 	// Plain "n" (no modifier) must still be typed into the query, not
 	// treated as a binding — overriding Ctrl+n must not affect it.
 	v.HandleKey(layout.Key{Text: "n"})
-	if string(v.query) != "n" {
-		t.Fatalf("query = %q, want \"n\" (plain typing unaffected by the Ctrl+n override)", string(v.query))
+	if v.query.String() != "n" {
+		t.Fatalf("query = %q, want \"n\" (plain typing unaffected by the Ctrl+n override)", v.query.String())
 	}
 }
 
@@ -141,8 +141,8 @@ func TestSetKeymapOverridingAPlainLetterStopsItFromBeingTyped(t *testing.T) {
 	if v.cursor != 1 {
 		t.Fatalf("cursor = %d, want 1 (j remapped to move_down)", v.cursor)
 	}
-	if len(v.query) != 0 {
-		t.Fatalf("query = %q, want empty: a plain-letter override intentionally stops that letter from being typed", string(v.query))
+	if len(v.query.buf) != 0 {
+		t.Fatalf("query = %q, want empty: a plain-letter override intentionally stops that letter from being typed", v.query.String())
 	}
 }
 
@@ -268,95 +268,85 @@ func TestViewEnterWithNoMatchesDoesNotCallOnSelect(t *testing.T) {
 	}
 }
 
-func TestViewRightArrowRevealsTruncatedPath(t *testing.T) {
-	longPath := "some/very/deeply/nested/directory/structure/that/is/quite/long/main.go"
-	v := newTestView(longPath)
-
-	w := newFakeWindow(30, 10)
-	v.Render(w)
-	if strings.Contains(w.lines[1], "main.go") {
-		t.Fatalf("expected the filename to be truncated off in a narrow window, got %q", w.lines[1])
+func TestViewLeftRightMoveCaretWithinQuery(t *testing.T) {
+	v := newTestView("abc.go")
+	for _, r := range "abc" {
+		v.HandleKey(layout.Key{Text: string(r)})
 	}
+	v.HandleKey(layout.Key{Named: layout.KeyLeft})
+	v.HandleKey(layout.Key{Named: layout.KeyLeft})
+	v.HandleKey(layout.Key{Text: "X"})
 
-	for i := 0; i < 10; i++ {
-		v.HandleKey(layout.Key{Named: layout.KeyRight})
-		v.Render(w)
-	}
-	if !strings.Contains(w.lines[1], "main.go") {
-		t.Errorf("expected repeated Right presses to scroll far enough to reveal main.go, got %q", w.lines[1])
+	if got := v.query.String(); got != "aXbc" {
+		t.Fatalf("query = %q, want %q", got, "aXbc")
 	}
 }
 
-func TestViewLeftArrowScrollsBack(t *testing.T) {
-	longPath := "some/very/deeply/nested/directory/structure/that/is/quite/long/main.go"
-	v := newTestView(longPath)
-	w := newFakeWindow(30, 10)
-	v.Render(w)
-
-	for i := 0; i < 10; i++ {
-		v.HandleKey(layout.Key{Named: layout.KeyRight})
+func TestViewHomeEndJumpCaretToQueryEnds(t *testing.T) {
+	v := newTestView("abc.go")
+	for _, r := range "abc" {
+		v.HandleKey(layout.Key{Text: string(r)})
 	}
-	v.Render(w)
-	scrolledFar := v.hScroll
+
+	v.HandleKey(layout.Key{Named: layout.KeyHome})
+	v.HandleKey(layout.Key{Text: "X"})
+	if got := v.query.String(); got != "Xabc" {
+		t.Fatalf("query = %q, want %q", got, "Xabc")
+	}
+
+	v.HandleKey(layout.Key{Named: layout.KeyEnd})
+	v.HandleKey(layout.Key{Text: "Y"})
+	if got := v.query.String(); got != "XabcY" {
+		t.Fatalf("query = %q, want %q", got, "XabcY")
+	}
+}
+
+func TestViewBackspaceDeletesAtCaretNotAlwaysLast(t *testing.T) {
+	v := newTestView("abc.go")
+	for _, r := range "abc" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyLeft}) // caret now before "c"
+	v.HandleKey(layout.Key{Named: layout.KeyBackspace})
+
+	if got := v.query.String(); got != "ac" {
+		t.Fatalf("query = %q, want %q (deleted at caret, not the last rune)", got, "ac")
+	}
+}
+
+func TestViewCursorPositionReflectsCaretPosition(t *testing.T) {
+	v := newTestView("abc.go")
+	for _, r := range "abc" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyLeft})
+
+	col, _, ok := v.CursorPosition()
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if want := len(v.promptPrefix()) + 2; col != want {
+		t.Errorf("cursor col = %d, want %d (caret before the last rune)", col, want)
+	}
+}
+
+func TestViewLeftRightDoNotFilterResults(t *testing.T) {
+	v := newTestView("main.go", "utils.go")
+	for _, r := range "main" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	before := append([]scoredItem(nil), v.fileMatches...)
+	beforeCursor := v.cursor
 
 	v.HandleKey(layout.Key{Named: layout.KeyLeft})
-	v.Render(w)
-	if v.hScroll >= scrolledFar {
-		t.Errorf("expected Left to scroll back, hScroll went from %d to %d", scrolledFar, v.hScroll)
+	v.HandleKey(layout.Key{Named: layout.KeyLeft})
+	v.HandleKey(layout.Key{Named: layout.KeyRight})
+
+	if len(v.fileMatches) != len(before) {
+		t.Fatalf("fileMatches changed after only moving the caret: got %v, want %v", v.fileMatches, before)
 	}
-}
-
-func TestViewHScrollClampsToSelectedRowWidth(t *testing.T) {
-	v := newTestView("short.go")
-	w := newFakeWindow(80, 10) // window much wider than the content
-
-	for i := 0; i < 20; i++ {
-		v.HandleKey(layout.Key{Named: layout.KeyRight})
-	}
-	v.Render(w)
-
-	if v.hScroll != 0 {
-		t.Errorf("expected hScroll to clamp to 0 when the row already fits entirely, got %d", v.hScroll)
-	}
-}
-
-func TestViewHScrollResetsWhenCursorMoves(t *testing.T) {
-	v := newTestView(
-		"some/very/deeply/nested/path/one/main.go",
-		"b.go",
-	)
-	w := newFakeWindow(30, 10)
-	v.Render(w)
-
-	for i := 0; i < 10; i++ {
-		v.HandleKey(layout.Key{Named: layout.KeyRight})
-	}
-	v.Render(w)
-	if v.hScroll == 0 {
-		t.Fatal("expected hScroll to have advanced before moving the cursor")
-	}
-
-	v.HandleKey(layout.Key{Named: layout.KeyDown})
-	if v.hScroll != 0 {
-		t.Errorf("expected hScroll to reset to 0 after moving to a different row, got %d", v.hScroll)
-	}
-}
-
-func TestViewHScrollResetsWhenQueryChanges(t *testing.T) {
-	v := newTestView("some/very/deeply/nested/path/one/main.go")
-	w := newFakeWindow(30, 10)
-	v.Render(w)
-
-	for i := 0; i < 10; i++ {
-		v.HandleKey(layout.Key{Named: layout.KeyRight})
-	}
-	if v.hScroll == 0 {
-		t.Fatal("expected hScroll to have advanced before typing")
-	}
-
-	v.HandleKey(layout.Key{Text: "m"})
-	if v.hScroll != 0 {
-		t.Errorf("expected hScroll to reset to 0 after the query changes, got %d", v.hScroll)
+	if v.cursor != beforeCursor {
+		t.Errorf("cursor (result selection) = %d, want unchanged %d", v.cursor, beforeCursor)
 	}
 }
 
@@ -426,8 +416,8 @@ func TestOpenWithQueryEntersContentModeWithQueryPreFilled(t *testing.T) {
 	if v.mode != modeContent {
 		t.Fatal("expected OpenWithQuery to switch to content-search mode")
 	}
-	if string(v.query) != "myIdentifier" {
-		t.Errorf("query = %q, want %q", string(v.query), "myIdentifier")
+	if v.query.String() != "myIdentifier" {
+		t.Errorf("query = %q, want %q", v.query.String(), "myIdentifier")
 	}
 }
 

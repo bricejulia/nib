@@ -216,6 +216,23 @@ func (b *Buffer) InsertText(ln, col int, s string) int {
 	return col + len(ins)
 }
 
+// ReplaceRune overwrites the single rune at line ln, rune index col, with
+// r — vim's "r<char>". Unlike InsertText/DeleteBackward, the rune count on
+// the line never changes, so the highlight cache only needs clearing for
+// this one line (spliceHighlight(ln, 1, 1)), not splicing. A no-op if col
+// is out of range (e.g. an empty line has nothing under the cursor to
+// replace).
+func (b *Buffer) ReplaceRune(ln, col int, r rune) {
+	runes := []rune(b.Lines[ln])
+	if col < 0 || col >= len(runes) {
+		return
+	}
+	runes[col] = r
+	b.Lines[ln] = string(runes)
+	b.spliceHighlight(ln, 1, 1)
+	b.resync()
+}
+
 // SplitLine splits line ln at rune index col into two lines: ln keeps the
 // runes before col, a new line at ln+1 holds the rest — used for the
 // Enter key. Rebuilt as a fresh slice (rather than shifting elements in

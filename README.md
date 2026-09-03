@@ -26,8 +26,8 @@ servers — in a codebase small enough to read in an afternoon.
 ## What it does
 
 - **Modal editing** — Normal/Insert/Command modes, `hjkl` navigation, `i`/`a`/`o`,
-  `x`/`X`, `u` + `r` undo/redo with vim's own granularity (one Insert
-  session = one undo step).
+  `x`/`X`, `r<char>` replace-under-cursor, `u` / `U` undo/redo with vim's own
+  granularity (one Insert session = one undo step).
 - **Syntax highlighting** via tree-sitter, across ~186 languages.
 - **Syntax error detection** for every trusted grammar, with no language
   server needed — tree-sitter is error-tolerant, so it points at where a
@@ -233,10 +233,11 @@ Press `?` in nib for this list at runtime. Every binding is rebindable
 | `o` | Open a line below and insert |
 | `Esc` | Back to Normal mode |
 | `x` / `X` | Delete the character under / before the cursor |
+| `r<char>` | Replace the character under the cursor with `<char>` |
 | `dd` / `yy` | Delete (cut) / yank (copy) this line |
 | `p` | Put (paste) after this one — a line, or a fragment if the last copy was a selection |
 | `Enter`, `Backspace`, `Tab` | Newline, delete back, insert a tab (Insert mode) |
-| `u` / `r` | Undo / redo |
+| `u` / `U` | Undo / redo |
 | `Ctrl+S` | Save |
 
 ### Editor — mouse
@@ -278,7 +279,7 @@ terminals bypass this while a modifier is held (`Option` on macOS).
 | Key | Action |
 | --- | --- |
 | `Ctrl+]` | Go to definition (LSP when available, else same-file) |
-| `Ctrl+B` | Jump back |
+| `Ctrl+B` | Jump back to before the last jump (go-to-definition/-parent, a search match, `:<line>`, or opening a finder result) |
 | `Ctrl+G` | Go to parent node in the syntax tree |
 | `Ctrl+Space` | Autocomplete (LSP members, else buffer words) |
 | `K` | Show error/warning details for this line |
@@ -330,8 +331,9 @@ marked `-- DELETED --` so `:w` can write the file back.
 ### Finder
 
 `Tab` cycles filename search → content search → find & replace (see below) →
-back to filename search · `Enter` opens · `↑`/`↓` selects · `←`/`→` peeks at a
-long line · `Esc` closes
+back to filename search · `Enter` opens · `↑`/`↓` selects · `←`/`→`/`Home`/`End`
+move the caret in the query (e.g. to add a prefix to a pre-filled word) ·
+`Esc` closes
 
 The filename and content-search modes show each file's git status marker in
 the leftmost column, colored the same way the file tree colors it.
@@ -367,9 +369,10 @@ pane is rewritten on disk directly, preserving its permissions.
 
 Bare `Ctrl+R`, not `Ctrl+Shift+R`: the latter is only reliably distinguishable
 from plain `Ctrl+R` on terminals reporting the kitty keyboard protocol's full
-modifier state, which tmux doesn't negotiate by default. Redo lives on bare
-`r` instead of `Ctrl+R` specifically so this binding could move there — a
-plain `Ctrl+`letter needs no modifier disambiguation and no terminal-specific
+modifier state, which tmux doesn't negotiate by default. Redo lives on
+`Shift+U` instead of `Ctrl+R` specifically so this binding could move there —
+bare `r` is vim's own replace-char-under-cursor gesture, and a plain
+`Ctrl+`letter needs no modifier disambiguation and no terminal-specific
 configuration, so it's reliably representable everywhere. Remap either one
 via `Ctrl+O` if it collides with something else on your setup.
 

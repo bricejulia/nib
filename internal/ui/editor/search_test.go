@@ -196,6 +196,62 @@ func TestSlashPromptShowsInStatusBarAndJumpsOnEnter(t *testing.T) {
 	}
 }
 
+func TestCommitSearchPushesAJump(t *testing.T) {
+	v, tb := searchView()
+	startLn, startCol := tb.cursorLn, tb.cursorCol
+
+	v.HandleKey(layout.Key{Text: "/"})
+	for _, r := range "beta" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+
+	if len(v.jumpStack) != 1 {
+		t.Fatalf("expected one jump pushed by the search commit, got %d", len(v.jumpStack))
+	}
+	if v.jumpStack[0].ln != startLn || v.jumpStack[0].col != startCol {
+		t.Fatalf("pushed jump = %+v, want (%d,%d)", v.jumpStack[0], startLn, startCol)
+	}
+}
+
+func TestSearchNextPushesAJumpPerStep(t *testing.T) {
+	v, _ := searchView() // "alpha" on lines 0 and 2
+	v.HandleKey(layout.Key{Text: "/"})
+	for _, r := range "alpha" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyEnter}) // commit: 1 push
+
+	v.searchNext()
+	v.searchNext()
+
+	if len(v.jumpStack) != 3 {
+		t.Fatalf("expected 3 jumps pushed (commit + 2 steps), got %d", len(v.jumpStack))
+	}
+}
+
+func TestJumpBackAfterSearchReturnsToOrigin(t *testing.T) {
+	v, tb := searchView()
+	tb.cursorLn, tb.cursorCol = 1, 2
+	startLn, startCol := tb.cursorLn, tb.cursorCol
+
+	v.HandleKey(layout.Key{Text: "/"})
+	for _, r := range "alpha" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+	if tb.cursorLn == startLn && tb.cursorCol == startCol {
+		t.Fatal("expected the search commit to actually move the cursor")
+	}
+
+	if !v.HandleKey(ctrlKey("b")) {
+		t.Fatal("expected Ctrl+b to be consumed")
+	}
+	if tb.cursorLn != startLn || tb.cursorCol != startCol {
+		t.Fatalf("cursor = (%d,%d), want the pre-search (%d,%d)", tb.cursorLn, tb.cursorCol, startLn, startCol)
+	}
+}
+
 func TestSearchEscRestoresCursorAndClearsHighlights(t *testing.T) {
 	v, tb := searchView()
 	tb.cursorLn, tb.cursorCol = 2, 3

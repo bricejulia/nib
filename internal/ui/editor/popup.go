@@ -8,10 +8,10 @@ import (
 	"github.com/bricejulia/nib/internal/textwidth"
 )
 
-// renderPopup draws lines as a floating box on the rows directly below
-// (anchorCol, anchorRow) — coordinates in this View's own window space, so
-// callers pass what CursorPosition reports. selected, when >= 0, marks one
-// row as highlighted; pass -1 for a popup with no selection.
+// renderPopup draws lines as a floating box anchored at (anchorCol,
+// anchorRow) — coordinates in this View's own window space, so callers pass
+// what CursorPosition reports. selected, when >= 0, marks one row as
+// highlighted; pass -1 for a popup with no selection.
 //
 // Shared by the autocomplete menu (see completion.go) and the diagnostic
 // details popup (see diagnostics.go), because the fiddly parts are the same
@@ -21,8 +21,8 @@ import (
 // so a short row would leave stale glyphs from the file content already
 // drawn underneath showing through.
 //
-// If there isn't room below the anchor, fewer rows are drawn (no
-// flip-above-anchor, a deferred nicety).
+// Prefers drawing below the anchor (the original, and still the common,
+// placement); see renderStyledPopup for what happens when there isn't room.
 func renderPopup(w layout.Window, cols, rows, anchorCol, anchorRow int, lines []string, selected int) {
 	styled := make([]popupLine, len(lines))
 	for i, l := range lines {
@@ -42,20 +42,52 @@ type popupLine struct {
 
 // renderStyledPopup is renderPopup with a per-row style. It carries all the
 // actual logic; renderPopup is the unstyled convenience wrapper over it.
+//
+// Prefers drawing below the anchor row (today's original behavior,
+// unchanged when there's room), but flips to draw ABOVE the anchor row
+// instead when there isn't enough room below yet there is enough room
+// above — e.g. a popup triggered near the bottom of the pane. Falls back to
+// a downward clip, same as before this flip existed, only when neither
+// direction has enough room for everything. Row 0 is always the tab bar
+// (see View.CursorPosition), never available for popup content, so
+// "above" tops out at row 1.
 func renderStyledPopup(w layout.Window, cols, rows, anchorCol, anchorRow int, lines []popupLine, selected int) {
-	maxRows := rows - anchorRow - 1
-	if maxRows <= 0 || len(lines) == 0 {
+	total := len(lines)
+	if total == 0 {
 		return
 	}
-	n := len(lines)
-	if n > maxRows {
-		n = maxRows
+
+	below := rows - anchorRow - 1
+	above := anchorRow - 1
+
+	var startRow, n int
+	switch {
+	case below >= total:
+		// Fits below already: today's normal, unclipped case.
+		startRow, n = anchorRow+1, total
+	case above >= total:
+		// Doesn't fit below, but fits fully above: flip, ending just
+		// above the anchor row instead of truncating (or, worse, hiding
+		// the popup entirely).
+		startRow, n = anchorRow-total, total
+	default:
+		// Neither direction has enough room for everything: fall back to
+		// the original clipped-downward behavior.
+		n = below
+		if n < 0 {
+			n = 0
+		}
+		startRow = anchorRow + 1
 	}
+	if n <= 0 {
+		return
+	}
+	lines = lines[:n]
 
 	// Width is measured in display columns, not bytes: a message can contain
 	// anything, including non-ASCII.
 	width := 0
-	for _, l := range lines[:n] {
+	for _, l := range lines {
 		if dw := textwidth.DisplayWidth(l.Text); dw > width {
 			width = dw
 		}
@@ -86,7 +118,7 @@ func renderStyledPopup(w layout.Window, cols, rows, anchorCol, anchorRow int, li
 		if trailing := cols - anchorCol - width; trailing > 0 {
 			segs = append(segs, layout.Segment{Text: strings.Repeat(" ", trailing)})
 		}
-		w.Println(anchorRow+1+i, segs...)
+		w.Println(startRow+i, segs...)
 	}
 }
 
