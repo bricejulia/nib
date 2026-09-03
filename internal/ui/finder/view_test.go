@@ -141,7 +141,7 @@ func TestSetKeymapOverridingAPlainLetterStopsItFromBeingTyped(t *testing.T) {
 	if v.cursor != 1 {
 		t.Fatalf("cursor = %d, want 1 (j remapped to move_down)", v.cursor)
 	}
-	if len(v.query.buf) != 0 {
+	if v.query.Len() != 0 {
 		t.Fatalf("query = %q, want empty: a plain-letter override intentionally stops that letter from being typed", v.query.String())
 	}
 }

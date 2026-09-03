@@ -964,12 +964,22 @@ func (a *App) render() {
 	a.rects = layout.Compute(a.root, layout.Rect{W: cols, H: rows})
 
 	full.Clear()
-	cursorShown := a.renderNode(a.root, full)
 
+	// While an overlay is active, the pane tree underneath is still drawn
+	// (its cells remain visible around/behind the modal box), but its
+	// cursor claim must not survive: renderNode has no idea an overlay is
+	// covering it, so a focused pane that wants the cursor (e.g. the
+	// editor) would otherwise leave the terminal's one hardware cursor
+	// sitting at its own position, painted right on top of the overlay's
+	// content, for every overlay type that doesn't itself claim the cursor
+	// (help, debug log, quit-confirm, mem-prompt all don't). So with an
+	// overlay up, only renderOverlay's own claim counts.
+	var cursorShown bool
 	if a.overlay != nil {
-		if a.renderOverlay(full, cols, rows) {
-			cursorShown = true
-		}
+		a.renderNode(a.root, full)
+		cursorShown = a.renderOverlay(full, cols, rows)
+	} else {
+		cursorShown = a.renderNode(a.root, full)
 	}
 
 	if !cursorShown {
