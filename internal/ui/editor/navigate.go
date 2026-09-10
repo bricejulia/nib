@@ -360,3 +360,58 @@ func (v *View) goToDefinitionTreeSitter(t *tab) {
 	}
 	debuglog.Warn("go to definition: no declaration found for %q", word)
 }
+
+// ExecuteAction runs a named editor command outside the normal key-dispatch
+// path — used by the action popup (internal/ui/actionpopup), which looks
+// commands up by id rather than by key. Deliberately a curated subset of
+// HandleKey's normal-mode switch: no movement, no vim operators, no
+// mode-entry keys (insert_mode, next_tab, ...) — those aren't meaningful
+// without an actual keypress driving them. Kept in sync by hand with
+// HandleKey, the same tradeoff internal/ui/help/bindings.go already makes
+// for its own hand-maintained list.
+func (v *View) ExecuteAction(action string) bool {
+	t := v.activeTab()
+	if t == nil {
+		return false
+	}
+	switch action {
+	case "save":
+		v.saveActive()
+	case "undo":
+		v.undo(t)
+	case "redo":
+		v.redo(t)
+	case "go_to_parent":
+		v.goToParent(t)
+	case "go_to_definition":
+		v.goToDefinition(t)
+	case "jump_back":
+		v.jumpBack()
+	case "search_next":
+		v.searchNext()
+	case "search_prev":
+		v.searchPrev()
+	case "toggle_tab_mode":
+		if t.buf != nil {
+			t.buf.IndentUseSpaces = !t.buf.IndentUseSpaces
+		}
+	case "show_hover":
+		v.triggerHover(t)
+	case "trigger_signature_help":
+		v.triggerSignatureHelp()
+	case "format_document":
+		v.triggerFormat()
+	case "show_blame":
+		v.showBlame(t)
+	case "show_line_diff":
+		v.showLineDiff(t)
+	case "show_file_diff":
+		if v.OnShowFileDiff != nil && t.path != "" {
+			v.OnShowFileDiff(t.path)
+		}
+	default:
+		return false
+	}
+	v.clampToLastChar(t)
+	return true
+}
