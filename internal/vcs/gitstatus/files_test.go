@@ -54,7 +54,7 @@ func newFilesTestRepo(t *testing.T) string {
 
 func TestListFilesIncludesTrackedAndUntrackedExcludesIgnored(t *testing.T) {
 	dir := newFilesTestRepo(t)
-	got, err := ListFiles(dir)
+	got, err := ListFiles(dir, "")
 	if err != nil {
 		t.Fatalf("ListFiles: %v", err)
 	}
@@ -74,7 +74,19 @@ func TestListFilesIncludesTrackedAndUntrackedExcludesIgnored(t *testing.T) {
 
 func TestListFilesNonRepoErrors(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := ListFiles(dir); err == nil {
+	if _, err := ListFiles(dir, ""); err == nil {
 		t.Fatal("expected an error listing files outside a git repo")
+	}
+}
+
+func TestListFilesScopeNarrowsToSubtree(t *testing.T) {
+	dir := newFilesTestRepo(t)
+	got, err := ListFiles(dir, "src")
+	if err != nil {
+		t.Fatalf("ListFiles: %v", err)
+	}
+	want := []string{"src/main.go"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }

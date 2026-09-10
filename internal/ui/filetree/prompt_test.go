@@ -660,6 +660,23 @@ func TestCreateTargetDirResolution(t *testing.T) {
 	}
 }
 
+// TestSelectedDirMatchesCreateTargetDir checks the exported wrapper
+// (used by the finder's "search in folder" action, see cmd/nib/main.go)
+// stays in lockstep with createTargetDir's own resolution rules.
+func TestSelectedDirMatchesCreateTargetDir(t *testing.T) {
+	v, root, _ := promptFixture(t)
+
+	selectRow(t, v, "sub")
+	if got, want := v.SelectedDir(), filepath.Join(root, "sub"); got != want {
+		t.Errorf("SelectedDir() on a dir = %q, want %q", got, want)
+	}
+
+	v.cursor = -1
+	if got := v.SelectedDir(); got != root {
+		t.Errorf("SelectedDir() with no selection = %q, want %q", got, root)
+	}
+}
+
 func TestPromptAltLeftRightWordNav(t *testing.T) {
 	v, _, _ := promptFixture(t)
 	selectRow(t, v, "a.txt")

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/bricejulia/nib/internal/config"
@@ -32,6 +33,48 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "Enter", Action: "open_selection"},
 	{Trigger: "Down", Action: "move_down"},
 	{Trigger: "Up", Action: "move_up"},
+	// Jumps focus into (or back out of) the folder-scope field below the
+	// query prompt — see focusScope, Render, and HandleKey. Not Ctrl+g
+	// (editor's own "go to parent node") or Ctrl+l (global's own
+	// "reload_config"): the finder overlay owns all input while shown, so
+	// neither would actually collide, but the same physical key meaning
+	// something else depending on context is still a confusing default.
+	// Ctrl+k is otherwise unused across every scope in this codebase.
+	{Trigger: "Ctrl+k", Action: "focus_scope"},
+}
+
+// viewFocus is which field a keystroke currently goes to: the search
+// query (the default) or the folder-scope field below it. A distinct type
+// from ReplaceView's own inputFocus (focusFind/focusReplace/focusResults)
+// even though the concept is the same — the two views' focus states don't
+// overlap enough to share one enum.
+type viewFocus int
+
+const (
+	focusQuery viewFocus = iota
+	focusScope
+)
+
+// normalizeScope trims a user-typed or pre-filled scope path down to the
+// form listFiles/searchContent expect: forward-slash separated, no
+// leading/trailing slashes, "" meaning "whole project".
+func normalizeScope(s string) string {
+	s = filepath.ToSlash(strings.Trim(s, "/"))
+	if s == "." {
+		return ""
+	}
+	return s
+}
+
+// relScope returns dir's path relative to root as a normalizeScope-ready
+// string, or "" if dir equals root or isn't under it — root-relative
+// scoping only ever narrows within the project, never outside it.
+func relScope(root, dir string) string {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
 type mode int
@@ -88,8 +131,16 @@ type View struct {
 	fileMatches    []scoredItem
 	contentMatches []contentMatch // content mode: git grep hits
 
-	status    map[string]gitstatus.Status // keyed by repo-relative path
-	query     textfield.TextField
+	status map[string]gitstatus.Status // keyed by repo-relative path
+	query  textfield.TextField
+
+	// scopeField is the folder-scope text field rendered below the query
+	// prompt (see Render) — editable for the life of the popup, unlike the
+	// one-shot root a File/OpenScoped starting value only pre-fills it
+	// with. "" (the default) means "whole project"; see normalizeScope.
+	scopeField textfield.TextField
+	focus      viewFocus
+
 	cursor    int
 	scrollTop int
 
@@ -140,24 +191,56 @@ func (v *View) SetKeymap(overrides map[string]string) {
 	v.keymap = DefaultKeybinds.Resolve(overrides)
 }
 
+// scopeLabel prefixes the folder-scope field, mirroring ReplaceView's own
+// findLabel/replaceLabel convention.
+const scopeLabel = "Folder: "
+
 func (v *View) Title() string {
+	base := "Find File"
 	switch v.mode {
+	case modeFiles:
+		// base already set above.
 	case modeContent:
-		return "Find in Files"
+		base = "Find in Files"
 	case modeReplace:
 		return v.replace.Title()
-	default:
-		return "Find File"
 	}
+	if scope := v.currentScope(); scope != "" {
+		return base + " — " + scope
+	}
+	return base
 }
 
-// Open (re)indexes the project's files, resets the query/cursor, and
-// always starts back in file-name mode. A fresh index on every open is
-// simpler than caching-with-invalidation and fast enough in practice (a
-// single `git ls-files` call) — see listFiles.
+// currentScope is the scope field's text, normalized — "" means "whole
+// project". Read fresh on every search rather than cached, since the
+// field is editable for the life of the popup (see scopeField).
+func (v *View) currentScope() string {
+	return normalizeScope(v.scopeField.String())
+}
+
+// Open (re)indexes the project's files, resets the query/cursor/scope,
+// and always starts back in file-name mode. A fresh index on every open
+// is simpler than caching-with-invalidation and fast enough in practice
+// (a single `git ls-files` call) — see listFiles.
 func (v *View) Open() {
+	v.openScoped("")
+}
+
+// OpenScoped is like Open, but pre-fills the folder-scope field with
+// absDir (converted to a path relative to the project root) instead of
+// leaving it empty. The field stays editable once the popup is open (see
+// scopeField, HandleKey's "focus_scope" action) — this is only a starting
+// value, not a locked mode. Used by the file tree's Ctrl+P handler (see
+// cmd/nib/main.go) when the tree, not an editor pane, has focus.
+func (v *View) OpenScoped(absDir string) {
+	v.openScoped(relScope(v.root, absDir))
+}
+
+func (v *View) openScoped(scope string) {
 	v.cancelPendingSearch()
-	v.items = listFiles(v.root)
+	v.scopeField = textfield.New(scope)
+	v.focus = focusQuery
+	v.items = listFiles(v.root, scope)
 	v.mode = modeFiles
 	v.query = textfield.TextField{}
 	v.cursor = 0
@@ -181,8 +264,20 @@ func (v *View) OpenWithQuery(query string) {
 // by the global "find & replace in path" action (Ctrl+R, see cmd/nib/main.go),
 // the same direct-to-mode shortcut OpenWithQuery gives content-search mode.
 func (v *View) OpenReplace() {
-	v.Open()
+	v.openReplace("")
+}
+
+// OpenReplaceScoped is OpenReplace with the folder-scope field (both this
+// View's own and the embedded ReplaceView's — see SetScope) pre-filled
+// from absDir, mirroring OpenScoped.
+func (v *View) OpenReplaceScoped(absDir string) {
+	v.openReplace(relScope(v.root, absDir))
+}
+
+func (v *View) openReplace(scope string) {
+	v.openScoped(scope)
 	v.mode = modeReplace
+	v.replace.SetScope(scope)
 	v.replace.Open()
 }
 
@@ -210,6 +305,7 @@ func (v *View) toggleMode() {
 		v.mode = modeFiles
 	}
 	if v.mode == modeReplace {
+		v.replace.SetScope(v.scopeField.String())
 		v.replace.Open()
 		return
 	}
@@ -279,10 +375,11 @@ func (v *View) refilterContent() {
 	gen := v.searchGen
 	query := v.query.String()
 	root := v.root
+	scope := v.currentScope()
 
 	if v.Post == nil {
 		// No async plumbing wired up (e.g. unit tests): search inline.
-		v.contentMatches, _ = searchContent(root, query)
+		v.contentMatches, _ = searchContent(root, scope, query)
 		v.clampCursor()
 		return
 	}
@@ -290,10 +387,10 @@ func (v *View) refilterContent() {
 	v.searching = true
 	v.debounceTimer = time.AfterFunc(contentSearchDebounce, func() {
 		// Runs on its own goroutine, after the debounce delay. Only
-		// touches local copies (root, query) and the Post callback —
+		// touches local copies (root, scope, query) and the Post callback —
 		// never View fields directly, since those belong to the UI
 		// goroutine.
-		matches, _ := searchContent(root, query)
+		matches, _ := searchContent(root, scope, query)
 		v.Post(SearchResult{gen: gen, matches: matches})
 	})
 }
@@ -310,6 +407,64 @@ func (v *View) ApplyContentResult(r SearchResult) {
 	v.contentMatches = r.matches
 	v.searching = false
 	v.clampCursor()
+}
+
+// FileListResult is a scope-driven file re-index's result, delivered back
+// through the host application's event loop like SearchResult (see
+// View.Post) — editing the scope field in file mode spawns a fresh
+// `git ls-files` call the same way editing the query spawns a fresh
+// `git grep` one in content mode, and neither should run synchronously on
+// the UI thread.
+type FileListResult struct {
+	gen   int
+	items []string
+}
+
+// ApplyFileListResult applies a scope-driven re-index's result — call
+// this from the host application's custom-event handler when it receives
+// a finder.FileListResult (see ui.App.SetCustomEventHandler). A result
+// superseded by newer input (further scope edits, a mode switch, or the
+// finder being closed and reopened) is silently discarded.
+func (v *View) ApplyFileListResult(r FileListResult) {
+	if r.gen != v.searchGen {
+		return
+	}
+	v.items = r.items
+	v.searching = false
+	v.refilterFiles()
+}
+
+// applyScopeChange re-runs the active mode's search using the freshly
+// edited scope field. Content mode's refilterContent already reads the
+// current scope on every call, so it just needs re-invoking (including
+// its own debounce). File mode re-indexes via listFiles, debounced
+// through the same Post/searchGen plumbing so retyping a folder path
+// doesn't spawn one `git ls-files` per keystroke and never blocks the UI
+// thread — see FileListResult/ApplyFileListResult.
+func (v *View) applyScopeChange() {
+	if v.mode == modeContent {
+		v.refilterContent()
+		return
+	}
+
+	v.cancelPendingSearch()
+	v.fileMatches = nil
+
+	gen := v.searchGen
+	root := v.root
+	scope := v.currentScope()
+
+	if v.Post == nil {
+		v.items = listFiles(root, scope)
+		v.refilterFiles()
+		return
+	}
+
+	v.searching = true
+	v.debounceTimer = time.AfterFunc(contentSearchDebounce, func() {
+		items := listFiles(root, scope)
+		v.Post(FileListResult{gen: gen, items: items})
+	})
 }
 
 func (v *View) clampCursor() {
@@ -339,13 +494,37 @@ func (v *View) promptPrefix() string {
 }
 
 // CursorPosition implements layout.CursorProvider, placing the terminal's
-// native cursor right after the typed query on the prompt row — or, in
-// replace mode, wherever ReplaceView.CursorPosition puts it.
+// native cursor right after the typed text in whichever field has focus
+// (query or scope) — or, in replace mode, wherever
+// ReplaceView.CursorPosition puts it.
 func (v *View) CursorPosition() (int, int, bool) {
 	if v.mode == modeReplace {
 		return v.replace.CursorPosition()
 	}
+	if v.focus == focusScope {
+		return len(scopeLabel) + v.scopeField.Caret(), 1, true
+	}
 	return len(v.promptPrefix()) + v.query.Caret(), 0, true
+}
+
+// scopeRowSegments builds the folder-scope field's row: a dim placeholder
+// when empty and unfocused, so it doesn't visually compete with an active
+// search; the real path otherwise, bolded while focused — the same
+// on/unfocused convention ReplaceView's fieldStyle uses for Find/Replace.
+func (v *View) scopeRowSegments() []layout.Segment {
+	text := v.scopeField.String()
+	focused := v.focus == focusScope
+	if text == "" && !focused {
+		return []layout.Segment{{
+			Text:  "(scope: whole project — Ctrl+K to set)",
+			Style: layout.Style{Attr: layout.AttrDim},
+		}}
+	}
+	style := layout.Style{}
+	if focused {
+		style.Attr = layout.AttrBold
+	}
+	return []layout.Segment{{Text: scopeLabel + text, Style: style}}
 }
 
 func (v *View) Render(w layout.Window) {
@@ -362,8 +541,9 @@ func (v *View) Render(w layout.Window) {
 		hint = "(Tab: find & replace)"
 	}
 	w.Println(0, layout.Segment{Text: v.promptPrefix() + v.query.String() + "  " + hint})
+	w.Println(1, v.scopeRowSegments()...)
 
-	listRows := rows - 1
+	listRows := rows - 2
 	if listRows < 0 {
 		listRows = 0
 	}
@@ -373,7 +553,7 @@ func (v *View) Render(w layout.Window) {
 	}
 
 	if v.mode == modeContent && v.query.Len() < minContentQueryLen {
-		w.Println(1, layout.Segment{
+		w.Println(2, layout.Segment{
 			Text:  fmt.Sprintf("type at least %d characters to search file contents", minContentQueryLen),
 			Style: layout.Style{Attr: layout.AttrDim},
 		})
@@ -382,9 +562,9 @@ func (v *View) Render(w layout.Window) {
 	if v.resultCount() == 0 {
 		switch {
 		case v.searching:
-			w.Println(1, layout.Segment{Text: "searching…", Style: layout.Style{Attr: layout.AttrDim}})
+			w.Println(2, layout.Segment{Text: "searching…", Style: layout.Style{Attr: layout.AttrDim}})
 		case v.query.Len() > 0:
-			w.Println(1, layout.Segment{Text: "no matches", Style: layout.Style{Attr: layout.AttrDim}})
+			w.Println(2, layout.Segment{Text: "no matches", Style: layout.Style{Attr: layout.AttrDim}})
 		}
 		return
 	}
@@ -411,7 +591,7 @@ func (v *View) Render(w layout.Window) {
 			}
 		}
 		segs = textwidth.SliceSegmentsByDisplayColumn(segs, 0, cols)
-		w.Println(1+i, segs...)
+		w.Println(2+i, segs...)
 	}
 }
 
@@ -445,6 +625,33 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return v.replace.HandleKey(k)
 	}
 
+	// "focus_scope" is checked before either field's own dispatch below —
+	// it needs to fire regardless of which field currently has focus, the
+	// same way Esc/Tab are checked before the mode/focus branches above.
+	if v.keymap[k.String()] == "focus_scope" {
+		if v.focus == focusScope {
+			v.focus = focusQuery
+		} else {
+			v.focus = focusScope
+		}
+		return true
+	}
+
+	if v.focus == focusScope {
+		// Enter commits the scope edit by returning focus to the query,
+		// mirroring how Enter advances focus in ReplaceView; move_down/
+		// move_up/open_selection don't apply here — they act on the
+		// results list, which isn't what's focused.
+		if k.Named == layout.KeyEnter {
+			v.focus = focusQuery
+			return true
+		}
+		if v.scopeField.HandleKey(k) {
+			v.applyScopeChange()
+		}
+		return true
+	}
+
 	switch v.keymap[k.String()] {
 	case "open_selection":
 		v.selectCurrent()
@@ -465,8 +672,8 @@ func (v *View) HandleKey(k layout.Key) bool {
 	// v.keymap — the same pattern textfield.TextField.HandleKey already
 	// implements for ReplaceView's own Find/Replace fields (replace.go), and
 	// handlePromptKey's for the file tree's inline prompt. Only
-	// Esc/Tab/Enter/Up/Down are ever remappable actions in this mode (see
-	// DefaultKeybinds); every other key stays typeable.
+	// Esc/Tab/Enter/Up/Down/Ctrl+K are ever remappable actions in this
+	// mode (see DefaultKeybinds); every other key stays typeable.
 	if v.query.HandleKey(k) {
 		v.refilter()
 	}

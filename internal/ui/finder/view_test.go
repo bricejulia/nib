@@ -52,8 +52,8 @@ func TestViewListsAllItemsWithEmptyQuery(t *testing.T) {
 	v.Render(w)
 
 	for i, want := range []string{"a.go", "b.go", "c.go"} {
-		if !strings.Contains(w.lines[1+i], want) {
-			t.Errorf("row %d: got %q, want to contain %q", 1+i, w.lines[1+i], want)
+		if !strings.Contains(w.lines[2+i], want) {
+			t.Errorf("row %d: got %q, want to contain %q", 2+i, w.lines[2+i], want)
 		}
 	}
 }
@@ -86,14 +86,14 @@ func TestViewBackspaceRemovesLastQueryRuneAndRefilters(t *testing.T) {
 	v.HandleKey(layout.Key{Text: "x"}) // "mx" matches nothing
 	w := newFakeWindow(40, 10)
 	v.Render(w)
-	if !strings.Contains(w.lines[1], "no matches") {
-		t.Fatalf("expected no matches for \"mx\", got %q", w.lines[1])
+	if !strings.Contains(w.lines[2], "no matches") {
+		t.Fatalf("expected no matches for \"mx\", got %q", w.lines[2])
 	}
 
 	v.HandleKey(layout.Key{Named: layout.KeyBackspace}) // back to "m"
 	v.Render(w)
-	if !strings.Contains(w.lines[1], "main.go") {
-		t.Errorf("expected main.go to match \"m\" after backspace, got %q", w.lines[1])
+	if !strings.Contains(w.lines[2], "main.go") {
+		t.Errorf("expected main.go to match \"m\" after backspace, got %q", w.lines[2])
 	}
 }
 
@@ -437,8 +437,8 @@ func TestViewContentModeRequiresMinimumQueryLength(t *testing.T) {
 
 	w := newFakeWindow(60, 10)
 	v.Render(w)
-	if !strings.Contains(w.lines[1], "type at least") {
-		t.Errorf("expected a prompt to type more characters, got %q", w.lines[1])
+	if !strings.Contains(w.lines[2], "type at least") {
+		t.Errorf("expected a prompt to type more characters, got %q", w.lines[2])
 	}
 }
 

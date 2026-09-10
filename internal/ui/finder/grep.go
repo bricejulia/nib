@@ -26,10 +26,18 @@ type contentMatch struct {
 // via the same "shell out to git" approach the rest of the project uses
 // rather than reimplementing gitignore matching. Returns (nil, nil) for
 // "no matches", which git grep reports as a non-error exit code 1.
-func searchContent(root, query string) ([]contentMatch, error) {
-	cmd := exec.Command("git", "grep",
+//
+// scope, if non-empty, is a root-relative subdirectory narrowing the
+// search to that subtree, passed as git grep's own pathspec — identical
+// results to the unscoped case when scope is "".
+func searchContent(root, scope, query string) ([]contentMatch, error) {
+	args := []string{"grep",
 		"--fixed-strings", "--ignore-case", "-n", "-I", "--untracked",
-		"-e", query, "--")
+		"-e", query, "--"}
+	if scope != "" {
+		args = append(args, scope)
+	}
+	cmd := exec.Command("git", args...)
 	cmd.Dir = root
 
 	out, err := cmd.Output()

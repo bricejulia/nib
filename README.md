@@ -333,10 +333,21 @@ marked `-- DELETED --` so `:w` can write the file back.
 `Tab` cycles filename search → content search → find & replace (see below) →
 back to filename search · `Enter` opens · `↑`/`↓` selects · `←`/`→`/`Home`/`End`
 move the caret in the query (e.g. to add a prefix to a pre-filled word) ·
-`Esc` closes
+`Ctrl+K` edits the folder scope shown below the query · `Esc` closes
 
 The filename and content-search modes show each file's git status marker in
 the leftmost column, colored the same way the file tree colors it.
+
+**Folder scope**: a field below the query narrows every mode (filename,
+content, and find & replace) to one folder — shown as `(scope: whole
+project)` when unset. Opening the finder (`Ctrl+P`) or find & replace
+(`Ctrl+R`) while the file tree is focused pre-fills it from the selected
+folder; either way, it stays editable for as long as the popup is open —
+`Ctrl+K` jumps into it, type a project-relative path, `Enter` jumps back to
+the query. Clear it to go back to searching the whole project. Both filename
+listing and content search implement scoping as a `git ls-files`/`git grep`
+pathspec, so a scoped search stays as fast and `.gitignore`-aware as an
+unscoped one.
 
 ### Diff
 
@@ -355,6 +366,7 @@ with `Ctrl+R`):
 | `Space` | Toggle an occurrence, or a whole file's occurrences |
 | `Enter` | Replace just the occurrence under the cursor (results list) |
 | `a` | Replace every checked occurrence |
+| `Ctrl+K` | Edit the folder scope (`Enter` returns to Find) — see [Finder](#finder) |
 | `Esc` | Close |
 
 A literal (non-regex), case-insensitive search across the project — the same

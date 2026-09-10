@@ -21,21 +21,31 @@ var commonIgnoredDirNames = map[string]bool{
 // worth offering in the finder. It prefers `git ls-files` (fast, and
 // respects .gitignore for free); non-git projects fall back to a plain
 // directory walk skipping commonIgnoredDirNames.
-func listFiles(root string) []string {
-	if files, err := gitstatus.ListFiles(root); err == nil {
+//
+// scope, if non-empty, is a root-relative subdirectory (forward-slash
+// separated, e.g. "src/handlers") narrowing the result to that subtree —
+// see finder.View's scope field. Returned paths stay root-relative
+// regardless of scope, since callers (status-map lookups, filepath.Join
+// on selection) all key off the project root, not the scope.
+func listFiles(root, scope string) []string {
+	if files, err := gitstatus.ListFiles(root, scope); err == nil {
 		return files
 	}
-	return walkFiles(root)
+	return walkFiles(root, scope)
 }
 
-func walkFiles(root string) []string {
+func walkFiles(root, scope string) []string {
+	start := root
+	if scope != "" {
+		start = filepath.Join(root, scope)
+	}
 	var files []string
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(start, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // a permission error on one subtree shouldn't abort the whole walk
 		}
 		if d.IsDir() {
-			if path != root && commonIgnoredDirNames[d.Name()] {
+			if path != start && commonIgnoredDirNames[d.Name()] {
 				return filepath.SkipDir
 			}
 			return nil
