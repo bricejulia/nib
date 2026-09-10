@@ -18,6 +18,7 @@ import (
 	"github.com/bricejulia/nib/internal/memwatch"
 	"github.com/bricejulia/nib/internal/theme"
 	"github.com/bricejulia/nib/internal/ui"
+	"github.com/bricejulia/nib/internal/ui/actionpopup"
 	"github.com/bricejulia/nib/internal/ui/debug"
 	"github.com/bricejulia/nib/internal/ui/diffview"
 	"github.com/bricejulia/nib/internal/ui/editor"
@@ -134,6 +135,14 @@ var globalDefaultKeybinds = config.Defaults{
 	// works the same from Insert mode as everywhere else, and "tree" is
 	// free of collisions with every other pane's own keymap.
 	{Trigger: "Ctrl+t", Action: "reveal_in_tree"},
+	// Ctrl+Shift+A, not a bare Ctrl+letter: matches the mnemonic JetBrains'
+	// own "Find Action" popup uses, at the cost of needing the kitty
+	// keyboard protocol to reliably disambiguate from plain Ctrl+A on
+	// terminals/multiplexers that don't report full modifier state (the
+	// same tradeoff Ctrl+r's own doc comment above already accepts
+	// elsewhere) — trivially remapped via the user's config (Ctrl+O) if
+	// that's ever a problem on a given terminal.
+	{Trigger: "Ctrl+Shift+A", Action: "open_action_popup"},
 }
 
 // editorPane pairs an editor pane's window-tree leaf with its View, so
@@ -499,6 +508,21 @@ func run() error {
 	helpView.SetKeymap(cfg.Overrides("help"))
 	helpView.OnClose = app.CloseOverlay
 	openHelp := func() { app.ShowOverlay(helpView) }
+
+	// actionPopupView is the "Find Action" popup (Ctrl+Shift+A): type to
+	// filter a list of named commands, Enter to run the selected one. Its
+	// OnExecute is wired up further down, once both the actions map and
+	// targetPane exist (see there for why).
+	actionPopupView := actionpopup.New()
+	actionPopupView.SetKeymap(cfg.Overrides("actionpopup"))
+	actionPopupView.OnClose = app.CloseOverlay
+	openActionPopup := func() {
+		actionPopupView.Open(
+			globalDefaultKeybinds.Resolve(cfg.Overrides("global")),
+			editor.DefaultKeybinds.Resolve(cfg.Overrides("editor")),
+		)
+		app.ShowOverlay(actionPopupView)
+	}
 
 	// The whole-file diff ("D" in an editor pane) is a scrollable document,
 	// so it gets the same modal-overlay treatment as the finder and debug
@@ -1021,10 +1045,30 @@ func run() error {
 		"open_debug":           openDebugLog,
 		"open_help":            openHelp,
 		"open_config":          openConfig,
+		"open_action_popup":    openActionPopup,
 		"split_right":          func() { trySplit(layout.Horizontal) },
 		"split_down":           func() { trySplit(layout.Vertical) },
 		"close_pane":           closeFocusedPane,
 		"reveal_in_tree":       revealInTree,
+	}
+
+	// actionPopupView.OnExecute closes the popup first — restoring
+	// whichever pane was really focused underneath it, since
+	// ShowOverlay/CloseOverlay never touch the FocusManager — then
+	// dispatches the selected command: global commands run straight
+	// through the actions map just built, editor commands through
+	// editor.View.ExecuteAction on targetPane(), the same "act on the
+	// editor pane you were just in" fallback openFindReferences/
+	// revealInTree above already rely on.
+	actionPopupView.OnExecute = func(id string) {
+		app.CloseOverlay()
+		if fn, ok := actions[id]; ok {
+			fn()
+			return
+		}
+		if p, ok := targetPane(); ok {
+			p.view.ExecuteAction(id)
+		}
 	}
 
 	// rebuildGlobalKeymap resolves globalDefaultKeybinds against cfg's
@@ -1072,6 +1116,7 @@ func run() error {
 		finderView.Replace().SetKeymap(cfg.Overrides("replace"))
 		debugView.SetKeymap(cfg.Overrides("debug"))
 		helpView.SetKeymap(cfg.Overrides("help"))
+		actionPopupView.SetKeymap(cfg.Overrides("actionpopup"))
 		diffView.SetKeymap(cfg.Overrides("diff"))
 		lspManager.SetServers(mergedLSPServers(cfg))
 		rebuildGlobalKeymap()
