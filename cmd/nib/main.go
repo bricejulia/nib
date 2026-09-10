@@ -135,14 +135,15 @@ var globalDefaultKeybinds = config.Defaults{
 	// works the same from Insert mode as everywhere else, and "tree" is
 	// free of collisions with every other pane's own keymap.
 	{Trigger: "Ctrl+t", Action: "reveal_in_tree"},
-	// Ctrl+Shift+A, not a bare Ctrl+letter: matches the mnemonic JetBrains'
-	// own "Find Action" popup uses, at the cost of needing the kitty
-	// keyboard protocol to reliably disambiguate from plain Ctrl+A on
-	// terminals/multiplexers that don't report full modifier state (the
-	// same tradeoff Ctrl+r's own doc comment above already accepts
-	// elsewhere) — trivially remapped via the user's config (Ctrl+O) if
-	// that's ever a problem on a given terminal.
-	{Trigger: "Ctrl+Shift+A", Action: "open_action_popup"},
+	// Bare Ctrl+j, not Ctrl+Shift+A (JetBrains' own "Find Action" mnemonic,
+	// tried first here): outside the kitty keyboard protocol, a terminal
+	// has no way to report Shift held alongside Ctrl+<letter> — Ctrl+Shift+A
+	// arrives indistinguishable from plain Ctrl+A on most terminals/
+	// multiplexers, which editor.DefaultKeybinds already binds to
+	// "trigger_signature_help", silently stealing the key whenever an
+	// editor pane is focused. A bare Ctrl+<letter> needs no modifier
+	// disambiguation and collides with nothing else's keymap.
+	{Trigger: "Ctrl+j", Action: "open_action_popup"},
 }
 
 // editorPane pairs an editor pane's window-tree leaf with its View, so
@@ -509,7 +510,7 @@ func run() error {
 	helpView.OnClose = app.CloseOverlay
 	openHelp := func() { app.ShowOverlay(helpView) }
 
-	// actionPopupView is the "Find Action" popup (Ctrl+Shift+A): type to
+	// actionPopupView is the "Find Action" popup (Ctrl+j): type to
 	// filter a list of named commands, Enter to run the selected one. Its
 	// OnExecute is wired up further down, once both the actions map and
 	// targetPane exist (see there for why).

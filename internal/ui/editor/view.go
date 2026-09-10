@@ -2297,8 +2297,17 @@ func (v *View) handleInsertKey(k layout.Key) bool {
 		if v.completion != nil {
 			v.refilterCompletion()
 		}
+		return true
 	}
-	return true
+	// Anything else — an unbound Ctrl/Alt/Super combo (e.g. the global
+	// action popup's Ctrl+j), or a named key with no case above
+	// (Home/End/PageUp/PageDown stay Normal-mode only, per the comment
+	// above) — is unclaimed here, so it bubbles to the global keymap via
+	// layout.Dispatch instead of being silently swallowed. Previously this
+	// always reported the key consumed even when nothing happened, which
+	// meant no global shortcut could ever fire while a pane was in Insert
+	// mode.
+	return false
 }
 
 // handleCommandKey handles a key while the pane is in Command mode — a
@@ -2323,8 +2332,12 @@ func (v *View) handleCommandKey(k layout.Key) bool {
 
 	if len(k.Text) == 1 && k.Mods&(layout.ModCtrl|layout.ModAlt|layout.ModSuper) == 0 {
 		v.commandBuf += k.Text
+		return true
 	}
-	return true
+	// See handleInsertKey's identical fallback: an unclaimed key (an
+	// unbound Ctrl/Alt/Super combo, or a named key with no case above)
+	// bubbles to the global keymap rather than being silently swallowed.
+	return false
 }
 
 // commitCommand parses v.commandBuf and executes it, then always closes

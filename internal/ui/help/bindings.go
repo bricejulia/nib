@@ -32,7 +32,7 @@ var sections = []section{
 			{"Ctrl+o", "Open config file"},
 			{"Ctrl+l", "Reload config file"},
 			{"Ctrl+t", "Locate the active file in the file tree"},
-			{"Ctrl+Shift+A", "Open the action popup: search and run any command"},
+			{"Ctrl+j", "Open the action popup: search and run any command"},
 		},
 	},
 	{
