@@ -3,12 +3,12 @@ package filetree
 import (
 	"fmt"
 	"path/filepath"
-	"unicode"
 
 	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/textwidth"
 	"github.com/bricejulia/nib/internal/theme"
+	"github.com/bricejulia/nib/internal/ui/textfield"
 )
 
 // promptMode is which file operation, if any, is currently asking the user
@@ -144,8 +144,7 @@ func (v *View) beginDelete() {
 
 func (v *View) openPrompt(mode promptMode, prefill string) {
 	v.prompt = mode
-	v.promptBuf = []rune(prefill)
-	v.promptCaret = len(v.promptBuf)
+	v.promptField = textfield.New(prefill)
 	v.promptErr = ""
 	v.promptScroll = 0
 }
@@ -160,8 +159,7 @@ func (v *View) CancelPrompt() { v.cancelPrompt() }
 
 func (v *View) cancelPrompt() {
 	v.prompt = promptNone
-	v.promptBuf = nil
-	v.promptCaret = 0
+	v.promptField = textfield.TextField{}
 	v.promptErr = ""
 	v.promptTarget = ""
 	v.promptCount = 0
@@ -205,50 +203,17 @@ func (v *View) handlePromptKey(k layout.Key) bool {
 	case layout.KeyEnter:
 		v.commitPrompt()
 		return true
-	case layout.KeyBackspace:
-		v.promptErr = ""
-		if v.promptCaret > 0 {
-			v.promptBuf = append(v.promptBuf[:v.promptCaret-1], v.promptBuf[v.promptCaret:]...)
-			v.promptCaret--
-		}
-		return true
-	case layout.KeyLeft:
-		if v.promptCaret > 0 {
-			v.promptCaret--
-		}
-		return true
-	case layout.KeyRight:
-		if v.promptCaret < len(v.promptBuf) {
-			v.promptCaret++
-		}
-		return true
-	case layout.KeyHome:
-		v.promptCaret = 0
-		return true
-	case layout.KeyEnd:
-		v.promptCaret = len(v.promptBuf)
-		return true
 	}
 
-	// Any other special key (Tab, the paging keys, a bare Shift press) is
-	// swallowed without being typed. Space is the exception: App's
-	// translateKey promotes the space bar to Named "Space" while leaving
-	// Text " " intact, so without letting it through here a space in a
-	// filename would be silently dropped.
-	if k.Named != "" && k.Named != layout.KeySpace {
-		return true
-	}
-	if k.Text != "" && k.Mods&(layout.ModCtrl|layout.ModAlt|layout.ModSuper) == 0 {
+	// Delegate everything else — Backspace/Left/Right/Home/End (including
+	// their Alt-modified word-nav/word-delete variants) and printable text —
+	// to the shared TextField primitive. Anything it doesn't consume (Tab,
+	// the paging keys, a bare Shift press) is swallowed here too, same as
+	// before: this prompt is modal, and an unconsumed key would otherwise
+	// bubble to the global keymap (see the doc comment above).
+	before := v.promptField.String()
+	if v.promptField.HandleKey(k) && v.promptField.String() != before {
 		v.promptErr = ""
-		for _, r := range k.Text {
-			if !unicode.IsPrint(r) {
-				continue
-			}
-			v.promptBuf = append(v.promptBuf, 0)
-			copy(v.promptBuf[v.promptCaret+1:], v.promptBuf[v.promptCaret:])
-			v.promptBuf[v.promptCaret] = r
-			v.promptCaret++
-		}
 	}
 	return true
 }
@@ -268,7 +233,7 @@ func (v *View) commitPrompt() {
 	case promptConfirmYes:
 		// Anything other than the full word cancels: this is the guard
 		// against a recursive delete, so a near-miss must not go through.
-		if string(v.promptBuf) != "yes" {
+		if v.promptField.String() != "yes" {
 			v.cancelPrompt()
 			return
 		}
@@ -277,7 +242,7 @@ func (v *View) commitPrompt() {
 }
 
 func (v *View) commitCreate() {
-	abs, isDir, err := resolveInRoot(v.root.Path, string(v.promptBuf))
+	abs, isDir, err := resolveInRoot(v.root.Path, v.promptField.String())
 	if err == nil {
 		err = createEntry(abs, isDir)
 	}
@@ -298,7 +263,7 @@ func (v *View) commitCreate() {
 
 func (v *View) commitRename() {
 	src := v.promptTarget
-	dst, _, err := resolveInRoot(v.root.Path, string(v.promptBuf))
+	dst, _, err := resolveInRoot(v.root.Path, v.promptField.String())
 	if err == nil {
 		err = movePath(src, dst)
 	}
@@ -356,7 +321,7 @@ func (v *View) commitDelete(recursive bool) {
 // which this also writes to, with the full context.
 func (v *View) failPrompt(op string, err error) {
 	v.promptErr = err.Error()
-	debuglog.Warn("filetree: %s %q: %v", op, string(v.promptBuf), err)
+	debuglog.Warn("filetree: %s %q: %v", op, v.promptField.String(), err)
 }
 
 func (v *View) notifyMutated() {
@@ -369,7 +334,7 @@ func (v *View) notifyMutated() {
 // stays visible when the typed path is wider than the pane.
 func (v *View) renderPrompt(w layout.Window, row, cols int) {
 	label := v.promptLabel()
-	caretCol := textwidth.DisplayWidth(label + string(v.promptBuf[:v.promptCaret]))
+	caretCol := textwidth.DisplayWidth(label + v.promptField.TextBeforeCaret())
 
 	if caretCol-v.promptScroll >= cols {
 		v.promptScroll = caretCol - cols + 1
@@ -381,7 +346,7 @@ func (v *View) renderPrompt(w layout.Window, row, cols int) {
 		v.promptScroll = 0
 	}
 
-	segs := []layout.Segment{{Text: label + string(v.promptBuf), Style: promptStyle}}
+	segs := []layout.Segment{{Text: label + v.promptField.String(), Style: promptStyle}}
 	if v.promptErr != "" {
 		// After the buffer, never before it: a message in front would shift
 		// the caret column out from under the cursor.
@@ -401,6 +366,6 @@ func (v *View) CursorPosition() (int, int, bool) {
 	if v.prompt == promptNone || v.lastHeight <= 0 {
 		return 0, 0, false
 	}
-	col := textwidth.DisplayWidth(v.promptLabel()+string(v.promptBuf[:v.promptCaret])) - v.promptScroll
+	col := textwidth.DisplayWidth(v.promptLabel()+v.promptField.TextBeforeCaret()) - v.promptScroll
 	return max(col, 0), v.lastHeight - 1, true
 }

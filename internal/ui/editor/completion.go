@@ -15,7 +15,7 @@ const maxCompletionCandidates = 10
 
 // completionState is the in-progress autocomplete popup (Ctrl+Space),
 // kept on View (not tab) since only one pane is ever mid-Insert-session at
-// a time (see ExitEditingModes) — the same reasoning commandBuf already
+// a time (see ExitEditingModes) — the same reasoning commandField already
 // relies on.
 type completionState struct {
 	candidates []string // prefix-filtered, sorted, capped at maxCompletionCandidates

@@ -13,6 +13,7 @@ import (
 	"github.com/bricejulia/nib/internal/lsp"
 	"github.com/bricejulia/nib/internal/textwidth"
 	"github.com/bricejulia/nib/internal/ui/gitstyle"
+	"github.com/bricejulia/nib/internal/ui/textfield"
 	"github.com/bricejulia/nib/internal/vcs/gitblame"
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
@@ -43,6 +44,33 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "h", Action: "move_left"},
 	{Trigger: "Right", Action: "move_right"},
 	{Trigger: "l", Action: "move_right"},
+	// Alt+Left/Right: word-nav, in BOTH Normal and Insert mode — but bound
+	// to their OWN action names (insert_word_backward/insert_word_forward),
+	// deliberately distinct from word_backward/word_forward (what "w"/"b"
+	// use): those two letters must stay literal, insertable text while
+	// Insert mode's own dispatch (handleInsertKey) is scanning the keymap
+	// for action names to intercept, and reusing the same name here would
+	// make plain "b"/"w" keystrokes silently trigger a cursor move instead
+	// of being typed. Normal mode has its own explicit case below that
+	// forwards to the SAME applyMovement("word_backward"/"word_forward")
+	// call "b"/"w" make, so the two stay behaviorally identical without
+	// sharing an action name.
+	{Trigger: "Alt+Left", Action: "insert_word_backward"},
+	{Trigger: "Alt+Right", Action: "insert_word_forward"},
+	// Ghostty (and Terminal.app before it) don't send Option+Left/Right as
+	// a modified arrow key at all — by default they translate it to the
+	// classic Unix readline/emacs "Meta-b"/"Meta-f" word-motion escapes
+	// (literal ESC, then the letter), matching what bash/zsh/vim already
+	// expect from Option+arrow in a terminal. Bound as extra ALIASES to the
+	// exact same two actions above, not a replacement, so both encodings
+	// work depending on the terminal.
+	{Trigger: "Alt+b", Action: "insert_word_backward"},
+	{Trigger: "Alt+f", Action: "insert_word_forward"},
+	// Alt+Backspace: word-DELETE, Insert mode only — there's no Normal-mode
+	// equivalent to alias (Backspace isn't bound to anything in Normal mode
+	// to begin with), so this has no Normal-mode case either; applyMovement
+	// doesn't recognize it, so it's a harmless no-op there.
+	{Trigger: "Alt+Backspace", Action: "delete_word_backward"},
 	{Trigger: "PageDown", Action: "page_down"},
 	{Trigger: "PageUp", Action: "page_up"},
 	{Trigger: "Home", Action: "line_start"},
@@ -292,10 +320,10 @@ type View struct {
 	// ":<line>" prompt is open; see editMode and HandleKey.
 	mode editMode
 
-	// commandBuf holds the characters typed so far in Command mode (see
+	// commandField holds the characters typed so far in Command mode (see
 	// handleCommandKey) — a single command line shared by the pane, like
 	// vim's, not per-tab.
-	commandBuf string
+	commandField textfield.TextField
 
 	// count is the numeric prefix accumulated digit-by-digit before an
 	// operator or a motion — e.g. the "3" of "3dd" or "3j" — with 0 meaning
@@ -394,11 +422,11 @@ type View struct {
 	// main.go" fallback OnShowFileDiff/OnAllTabsClosed already have.
 	OnSaveConflict func(conflict SaveConflict, onResolved func())
 
-	// In-file search state (see search.go). searchBuf is what's typed at the
-	// "/" prompt; searchPattern is the last committed pattern, which n/N
+	// In-file search state (see search.go). searchField is what's typed at
+	// the "/" prompt; searchPattern is the last committed pattern, which n/N
 	// repeat and which stays highlighted. searchOrigin* remembers where the
 	// prompt was opened, so Esc can put the cursor back.
-	searchBuf                       string
+	searchField                     textfield.TextField
 	searchPattern                   string
 	searchMatches                   []searchMatch
 	searchOriginLn, searchOriginCol int
@@ -1124,10 +1152,10 @@ func (v *View) StatusText() string {
 		return ""
 	}
 	if v.mode == modeCommand {
-		return ":" + v.commandBuf
+		return ":" + v.commandField.String()
 	}
 	if v.mode == modeSearch {
-		return "/" + v.searchBuf
+		return "/" + v.searchField.String()
 	}
 	prefix := ""
 	if v.mode == modeInsert {
@@ -2038,6 +2066,16 @@ func (v *View) HandleKey(k layout.Key) bool {
 		if v.OnShowFileDiff != nil && t.path != "" {
 			v.OnShowFileDiff(t.path)
 		}
+	// Alt+Left/Right's own action names (see DefaultKeybinds) forward to
+	// the exact same applyMovement call "b"/"w" make, so Normal mode
+	// treats them identically — this indirection (rather than binding
+	// Alt+Left/Right to word_backward/word_forward directly) is what keeps
+	// "b"/"w" themselves out of handleInsertKey's dispatch, where they must
+	// stay literal, insertable text.
+	case "insert_word_backward":
+		v.applyMovement(t, "word_backward", count)
+	case "insert_word_forward":
+		v.applyMovement(t, "word_forward", count)
 	default:
 		if !v.applyMovement(t, action, count) {
 			return false
@@ -2066,10 +2104,10 @@ func (v *View) HandlePaste(s string) bool {
 
 	switch v.mode {
 	case modeCommand:
-		v.commandBuf += strings.ReplaceAll(s, "\n", "")
+		v.commandField.InsertText(strings.ReplaceAll(s, "\n", ""))
 		return true
 	case modeSearch:
-		v.searchBuf += strings.ReplaceAll(s, "\n", "")
+		v.searchField.InsertText(strings.ReplaceAll(s, "\n", ""))
 		v.refreshSearchHighlights()
 		return true
 	case modeNormal, modeInsert:
@@ -2272,6 +2310,26 @@ func (v *View) handleInsertKey(k layout.Key) bool {
 	case "trigger_signature_help":
 		v.triggerSignatureHelp()
 		return true
+	case "insert_word_backward":
+		if t := v.activeTab(); t != nil {
+			v.applyMovement(t, "word_backward", 1)
+			v.clamp(t)
+		}
+		v.completion = nil // moving the cursor invalidates any open popup's context
+		return true
+	case "insert_word_forward":
+		if t := v.activeTab(); t != nil {
+			v.applyMovement(t, "word_forward", 1)
+			v.clamp(t)
+		}
+		v.completion = nil
+		return true
+	case "delete_word_backward":
+		v.deleteWordBackward()
+		if v.completion != nil {
+			v.refilterCompletion()
+		}
+		return true
 	}
 
 	// Arrow keys move the cursor even while inserting, like most editors.
@@ -2312,35 +2370,31 @@ func (v *View) handleInsertKey(k layout.Key) bool {
 
 // handleCommandKey handles a key while the pane is in Command mode — a
 // minimal ":<command>" prompt (not a general ex-command line): characters
-// accumulate in v.commandBuf, Enter commits (see commitCommand), Esc
-// cancels, Backspace edits what's typed so far.
+// accumulate in v.commandField, Enter commits (see commitCommand), Esc
+// cancels. Everything else — Backspace, Left/Right/Home/End (and their
+// Alt-modified word-nav/word-delete variants), and printable text — is
+// delegated to the shared TextField primitive, the same as finder/help/
+// actionpopup's own query fields.
 func (v *View) handleCommandKey(k layout.Key) bool {
 	switch v.keymap[k.String()] {
 	case "normal_mode":
 		v.mode = modeNormal
-		v.commandBuf = ""
+		v.commandField = textfield.TextField{}
 		return true
 	case "insert_newline": // Enter
 		v.commitCommand()
 		return true
-	case "insert_backspace": // Backspace
-		if n := len(v.commandBuf); n > 0 {
-			v.commandBuf = v.commandBuf[:n-1]
-		}
-		return true
 	}
 
-	if len(k.Text) == 1 && k.Mods&(layout.ModCtrl|layout.ModAlt|layout.ModSuper) == 0 {
-		v.commandBuf += k.Text
-		return true
-	}
 	// See handleInsertKey's identical fallback: an unclaimed key (an
 	// unbound Ctrl/Alt/Super combo, or a named key with no case above)
-	// bubbles to the global keymap rather than being silently swallowed.
-	return false
+	// bubbles to the global keymap rather than being silently swallowed —
+	// TextField.HandleKey's own false-return semantics for those already
+	// line up with that contract.
+	return v.commandField.HandleKey(k)
 }
 
-// commitCommand parses v.commandBuf and executes it, then always closes
+// commitCommand parses v.commandField and executes it, then always closes
 // the prompt back to Normal mode. A purely numeric command jumps the
 // active tab's cursor to that 1-based line (see goToLine); otherwise it's
 // matched against a small fixed set of vim ex-commands — "q"/"q!" close
@@ -2349,8 +2403,8 @@ func (v *View) handleCommandKey(k layout.Key) bool {
 // prompt without effect — no error UI, matching the "simple first pass"
 // precedent set by Save's error handling.
 func (v *View) commitCommand() {
-	cmd := v.commandBuf
-	v.commandBuf = ""
+	cmd := v.commandField.String()
+	v.commandField = textfield.TextField{}
 	v.mode = modeNormal
 
 	if n, err := strconv.Atoi(cmd); err == nil {
@@ -2515,7 +2569,7 @@ func (v *View) ExitEditingModes() {
 		v.exitInsertMode()
 	case modeCommand:
 		v.mode = modeNormal
-		v.commandBuf = ""
+		v.commandField = textfield.TextField{}
 	case modeSearch:
 		// Same as pressing Esc mid-search: restores the cursor to where
 		// the prompt was opened and clears the in-progress highlights, so
