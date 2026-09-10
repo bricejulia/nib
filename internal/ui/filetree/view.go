@@ -9,6 +9,7 @@ import (
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/textwidth"
 	"github.com/bricejulia/nib/internal/ui/gitstyle"
+	"github.com/bricejulia/nib/internal/ui/textfield"
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
@@ -100,8 +101,7 @@ type View struct {
 	// *Node captured when the prompt opened could be an orphan by the time
 	// Enter is pressed.
 	prompt       promptMode
-	promptBuf    []rune
-	promptCaret  int    // rune index into promptBuf
+	promptField  textfield.TextField
 	promptErr    string // refusal shown inline, cleared by the next edit
 	promptTarget string // absolute path the pending rename/delete acts on
 	promptCount  int    // entries inside promptTarget, for a recursive delete

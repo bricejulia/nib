@@ -187,6 +187,33 @@ func (v *View) changeRange(t *tab, startLn, startCol, endLn, endCol int) {
 	v.clamp(t)
 }
 
+// deleteWordBackward implements Alt+Backspace in Insert mode: deletes from
+// the cursor back to the previous word-motion boundary, using
+// wordBackwardOnce directly — the same funnel "b" uses to find ITS
+// destination — rather than wordObjectRange/aWordObjectRange, which classify
+// a rune already under the cursor and so don't fit a delete-what-comes-
+// before-me primitive; this also matches vim's own "db" convention, which
+// is built on the same "b" destination.
+//
+// Modeled on changeRange, not deleteRange, above: this fires mid-Insert-
+// session, the same as deleteBackward's single-rune Backspace, so it must
+// NOT push its own undo entry (enterInsertMode's snapshot plus the eventual
+// exitInsertMode commit already bundle the whole session, including
+// ordinary Backspaces, into one undo step) — changeRange already has
+// exactly that shape, so this reuses it rather than duplicating it.
+func (v *View) deleteWordBackward() {
+	t := v.activeTab()
+	if t == nil || t.buf == nil {
+		return
+	}
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
+	destLn, destRaw := wordBackwardOnce(t.buf, t.cursorLn, raw)
+	if destLn == t.cursorLn && destRaw == raw {
+		return // already at BOF: nothing to delete
+	}
+	v.changeRange(t, destLn, destRaw, t.cursorLn, raw)
+}
+
 // putAfter implements vim's "p", in whichever of its two forms the register
 // holds (see Register): linewise, inserting whole lines below the cursor's
 // line and moving the cursor to the start of the first of them; or charwise,

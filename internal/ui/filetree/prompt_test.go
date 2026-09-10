@@ -131,7 +131,7 @@ func TestPromptSwallowsEveryKey(t *testing.T) {
 	}
 	// The printables land verbatim; Ctrl+c, Tab, PageDown and bare Shift do
 	// not. The prefill is "" here (a.txt is a file at the top level).
-	if got := string(v.promptBuf); got != "?jadr" {
+	if got := v.promptField.String(); got != "?jadr" {
 		t.Errorf("prompt buffer = %q, want %q", got, "?jadr")
 	}
 }
@@ -237,7 +237,7 @@ func TestPromptCreateInsideACollapsedDirectoryRevealsIt(t *testing.T) {
 	}
 
 	v.HandleKey(layout.Key{Text: "a"})
-	if got := string(v.promptBuf); got != "sub/" {
+	if got := v.promptField.String(); got != "sub/" {
 		t.Fatalf("prefill = %q, want %q", got, "sub/")
 	}
 	typeKeys(v, "deep/new.go")
@@ -280,19 +280,19 @@ func TestPromptCaretEditing(t *testing.T) {
 	selectRow(t, v, "a.txt")
 
 	v.HandleKey(layout.Key{Text: "r"})
-	if got := string(v.promptBuf); got != "a.txt" {
+	if got := v.promptField.String(); got != "a.txt" {
 		t.Fatalf("rename prefill = %q, want %q", got, "a.txt")
 	}
 
 	v.HandleKey(layout.Key{Named: layout.KeyHome})
 	typeKeys(v, "sub/")
-	if got := string(v.promptBuf); got != "sub/a.txt" {
+	if got := v.promptField.String(); got != "sub/a.txt" {
 		t.Fatalf("after Home + typing: %q", got)
 	}
 
 	v.HandleKey(layout.Key{Named: layout.KeyEnd})
 	typeKeys(v, "!")
-	if got := string(v.promptBuf); got != "sub/a.txt!" {
+	if got := v.promptField.String(); got != "sub/a.txt!" {
 		t.Fatalf("after End + typing: %q", got)
 	}
 
@@ -300,11 +300,11 @@ func TestPromptCaretEditing(t *testing.T) {
 	v.HandleKey(layout.Key{Named: layout.KeyLeft})
 	v.HandleKey(layout.Key{Named: layout.KeyLeft})
 	v.HandleKey(layout.Key{Named: layout.KeyBackspace})
-	if got := string(v.promptBuf); got != "sub/a.xt" {
+	if got := v.promptField.String(); got != "sub/a.xt" {
 		t.Errorf("after Left Left Backspace: %q, want %q", got, "sub/a.xt")
 	}
-	if v.promptCaret != len("sub/a.") {
-		t.Errorf("caret = %d, want %d", v.promptCaret, len("sub/a."))
+	if v.promptField.Caret() != len("sub/a.") {
+		t.Errorf("caret = %d, want %d", v.promptField.Caret(), len("sub/a."))
 	}
 }
 
@@ -383,7 +383,7 @@ func TestPromptRefusalKeepsThePromptOpen(t *testing.T) {
 	if v.promptErr == "" {
 		t.Error("expected an inline error message")
 	}
-	if got := string(v.promptBuf); got != "b.txt" {
+	if got := v.promptField.String(); got != "b.txt" {
 		t.Errorf("typed text = %q, want it preserved", got)
 	}
 	if _, err := os.Stat(filepath.Join(root, "a.txt")); err != nil {
@@ -613,7 +613,7 @@ func TestCancelPromptIsExportedForFocusChanges(t *testing.T) {
 
 	v.CancelPrompt()
 
-	if v.prompt != promptNone || len(v.promptBuf) != 0 {
+	if v.prompt != promptNone || v.promptField.Len() != 0 {
 		t.Error("CancelPrompt should reset the prompt entirely")
 	}
 	if _, _, ok := v.CursorPosition(); ok {
@@ -657,5 +657,65 @@ func TestCreateTargetDirResolution(t *testing.T) {
 	v.cursor = -1
 	if got := v.createTargetDir(); got != root {
 		t.Errorf("with no selection: %q, want %q", got, root)
+	}
+}
+
+func TestPromptAltLeftRightWordNav(t *testing.T) {
+	v, _, _ := promptFixture(t)
+	selectRow(t, v, "a.txt")
+	v.HandleKey(layout.Key{Text: "a"}) // opens the create prompt, empty prefill
+	typeKeys(v, "sub/dir/file.txt")
+	// "sub/dir/file.txt": "/" and "." are their own punctuation runs, each
+	// its own stop, same as a word run — only a BLANK is skipped through.
+
+	v.HandleKey(layout.Key{Named: layout.KeyLeft, Mods: layout.ModAlt})
+	if want := len("sub/dir/file."); v.promptField.Caret() != want {
+		t.Fatalf("caret after one Alt+Left = %d, want %d (start of \"txt\")", v.promptField.Caret(), want)
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyLeft, Mods: layout.ModAlt})
+	if want := len("sub/dir/file"); v.promptField.Caret() != want {
+		t.Fatalf("caret after two Alt+Left = %d, want %d (the \".\")", v.promptField.Caret(), want)
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyRight, Mods: layout.ModAlt})
+	if want := len("sub/dir/file."); v.promptField.Caret() != want {
+		t.Fatalf("caret after Alt+Right = %d, want %d (back to start of \"txt\")", v.promptField.Caret(), want)
+	}
+}
+
+func TestPromptAltBackspaceDeletesWord(t *testing.T) {
+	v, _, _ := promptFixture(t)
+	selectRow(t, v, "a.txt")
+	v.HandleKey(layout.Key{Text: "a"})
+	typeKeys(v, "sub/dir/file.txt")
+
+	v.HandleKey(layout.Key{Named: layout.KeyBackspace, Mods: layout.ModAlt})
+	if got := v.promptField.String(); got != "sub/dir/file." {
+		t.Fatalf("prompt buffer = %q, want %q", got, "sub/dir/file.")
+	}
+}
+
+// An Alt-modified key while the y/N single-keypress confirmation is open
+// must still hit the "anything but y/Y cancels" branch — promptConfirm
+// never touches promptField at all, so a word-delete must not run against
+// whatever's left over in it either.
+func TestPromptConfirmIgnoresAltModifiedKeys(t *testing.T) {
+	v, root, w := promptFixture(t)
+	if err := os.Mkdir(filepath.Join(root, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	v.Refresh()
+	v.Render(w)
+	selectRow(t, v, "empty")
+
+	v.HandleKey(layout.Key{Text: "d"})
+	if v.prompt != promptConfirm {
+		t.Fatalf("prompt = %v, want promptConfirm", v.prompt)
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyBackspace, Mods: layout.ModAlt})
+	if v.prompt != promptNone {
+		t.Fatalf("prompt = %v, want the confirmation cancelled (anything but y/Y cancels)", v.prompt)
+	}
+	if _, err := os.Stat(filepath.Join(root, "empty")); err != nil {
+		t.Error("the directory should not have been deleted")
 	}
 }

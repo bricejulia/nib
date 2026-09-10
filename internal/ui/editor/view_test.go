@@ -2266,6 +2266,223 @@ func TestUndoAndRedoOnEmptyStacksAreNoops(t *testing.T) {
 	}
 }
 
+func TestInsertModeAltLeftRightWordNav(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo bar baz"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 11 // end of the line
+	v.HandleKey(layout.Key{Text: "i"})
+
+	v.HandleKey(layout.Key{Named: layout.KeyLeft, Mods: layout.ModAlt})
+	if got := v.activeTab().cursorCol; got != 8 {
+		t.Fatalf("cursorCol after one Alt+Left = %d, want 8 (start of \"baz\")", got)
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyLeft, Mods: layout.ModAlt})
+	if got := v.activeTab().cursorCol; got != 4 {
+		t.Fatalf("cursorCol after two Alt+Left = %d, want 4 (start of \"bar\")", got)
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyRight, Mods: layout.ModAlt})
+	if got := v.activeTab().cursorCol; got != 8 {
+		t.Fatalf("cursorCol after Alt+Right = %d, want 8 (back to start of \"baz\")", got)
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "foo bar baz" {
+		t.Fatalf("word-nav must not edit the buffer: Lines[0] = %q", got)
+	}
+}
+
+// TestInsertModeAltBFAliasesMatchAltLeftRight pins the Ghostty/Terminal.app
+// compatibility aliases: those terminals send Option+Left/Right as literal
+// ESC+"b"/ESC+"f" (the classic readline Meta-b/Meta-f word-motion escapes),
+// not as a modified arrow key, so Alt+b/Alt+f must behave identically to
+// Alt+Left/Alt+Right.
+func TestInsertModeAltBFAliasesMatchAltLeftRight(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo bar baz"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 11
+	v.HandleKey(layout.Key{Text: "i"})
+
+	if !v.HandleKey(layout.Key{Text: "b", Mods: layout.ModAlt}) {
+		t.Fatal("expected Alt+b to be consumed")
+	}
+	if got := v.activeTab().cursorCol; got != 8 {
+		t.Fatalf("cursorCol after Alt+b = %d, want 8 (same as Alt+Left)", got)
+	}
+	if !v.HandleKey(layout.Key{Text: "f", Mods: layout.ModAlt}) {
+		t.Fatal("expected Alt+f to be consumed")
+	}
+	if got := v.activeTab().cursorCol; got != 11 {
+		t.Fatalf("cursorCol after Alt+f = %d, want 11 (same as Alt+Right)", got)
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "foo bar baz" {
+		t.Fatalf("Alt+b/Alt+f must navigate, not type: Lines[0] = %q", got)
+	}
+}
+
+func TestInsertModeAltBackspaceDeletesWordBackward(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo bar"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 7 // end of the line
+	v.HandleKey(layout.Key{Text: "i"})
+
+	v.HandleKey(layout.Key{Named: layout.KeyBackspace, Mods: layout.ModAlt})
+
+	tb := v.activeTab()
+	if got := tb.buf.Lines[0]; got != "foo " {
+		t.Fatalf("Lines[0] = %q, want %q", got, "foo ")
+	}
+	if tb.cursorCol != 4 {
+		t.Fatalf("cursorCol = %d, want 4", tb.cursorCol)
+	}
+}
+
+// TestInsertModeAltBackspaceAtLineStartJoinsPreviousLine confirms
+// Alt+Backspace can cross a line boundary exactly like plain Backspace at
+// column 0 already does, since it lands on the nearest word boundary
+// backward — here, the start of the previous line's only word.
+func TestInsertModeAltBackspaceAtLineStartJoinsPreviousLine(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo", "bar"}}}}
+	v.active = 0
+	v.activeTab().cursorLn = 1
+	v.activeTab().cursorCol = 0
+	v.HandleKey(layout.Key{Text: "i"})
+
+	v.HandleKey(layout.Key{Named: layout.KeyBackspace, Mods: layout.ModAlt})
+
+	tb := v.activeTab()
+	if len(tb.buf.Lines) != 1 || tb.buf.Lines[0] != "bar" {
+		t.Fatalf("Lines = %+v, want [\"bar\"]", tb.buf.Lines)
+	}
+	if tb.cursorLn != 0 || tb.cursorCol != 0 {
+		t.Fatalf("cursor = (%d,%d), want (0,0)", tb.cursorLn, tb.cursorCol)
+	}
+}
+
+func TestInsertModeAltBackspaceAtBufferStartIsNoop(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo"}}}}
+	v.active = 0
+	v.HandleKey(layout.Key{Text: "i"})
+
+	v.HandleKey(layout.Key{Named: layout.KeyBackspace, Mods: layout.ModAlt})
+
+	tb := v.activeTab()
+	if tb.buf.Lines[0] != "foo" {
+		t.Fatalf("Lines[0] = %q, want unchanged %q", tb.buf.Lines[0], "foo")
+	}
+	if tb.cursorLn != 0 || tb.cursorCol != 0 {
+		t.Fatalf("cursor = (%d,%d), want unchanged (0,0)", tb.cursorLn, tb.cursorCol)
+	}
+}
+
+// TestInsertModeAltBackspaceUndoIsOneStepWithSurroundingTyping asserts
+// deleteWordBackward is modeled on changeRange, not deleteRange: it must
+// NOT push its own undo entry, so a word-delete in the middle of an Insert
+// session undoes together with the typing before and after it, as one
+// step — the same as an ordinary single-character Backspace already does.
+func TestInsertModeAltBackspaceUndoIsOneStepWithSurroundingTyping(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"abc"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 3
+
+	v.HandleKey(layout.Key{Text: "i"})
+	for _, r := range " xyz" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyBackspace, Mods: layout.ModAlt}) // removes "xyz"
+	v.HandleKey(layout.Key{Text: "q"})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	if got := v.activeTab().buf.Lines[0]; got != "abc q" {
+		t.Fatalf("setup: Lines[0] = %q, want %q", got, "abc q")
+	}
+
+	if !v.HandleKey(layout.Key{Text: "u"}) {
+		t.Fatal("expected 'u' to be consumed")
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "abc" {
+		t.Fatalf("Lines[0] = %q, want %q after ONE undo (the whole session, including the word-delete)", got, "abc")
+	}
+}
+
+// TestNormalModeAltLeftRightMatchesWB confirms Alt+Left/Right in Normal
+// mode is a genuine alternate trigger for the exact same word_backward/
+// word_forward actions "b"/"w" already run — not a separate, possibly
+// divergent implementation — by checking both land on the same position.
+func TestNormalModeAltLeftRightMatchesWB(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo bar baz"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 4 // start of "bar"
+
+	if !v.HandleKey(layout.Key{Named: layout.KeyLeft, Mods: layout.ModAlt}) {
+		t.Fatal("expected Alt+Left to be consumed in Normal mode")
+	}
+	afterAltLeft := v.activeTab().cursorCol
+
+	v.activeTab().cursorCol = 4
+	v.HandleKey(layout.Key{Text: "b"})
+	if got := v.activeTab().cursorCol; got != afterAltLeft {
+		t.Fatalf("Alt+Left landed at %d, \"b\" landed at %d — they must match", afterAltLeft, got)
+	}
+	if afterAltLeft != 0 {
+		t.Fatalf("cursorCol after Alt+Left = %d, want 0 (start of \"foo\")", afterAltLeft)
+	}
+
+	if !v.HandleKey(layout.Key{Named: layout.KeyRight, Mods: layout.ModAlt}) {
+		t.Fatal("expected Alt+Right to be consumed in Normal mode")
+	}
+	afterAltRight := v.activeTab().cursorCol
+
+	v.activeTab().cursorCol = 0
+	v.HandleKey(layout.Key{Text: "w"})
+	if got := v.activeTab().cursorCol; got != afterAltRight {
+		t.Fatalf("Alt+Right landed at %d, \"w\" landed at %d — they must match", afterAltRight, got)
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "foo bar baz" {
+		t.Fatalf("word-nav must not edit the buffer: Lines[0] = %q", got)
+	}
+}
+
+// TestNormalModeAltBFAliasesWork confirms the Ghostty/Terminal.app
+// compatibility aliases (see DefaultKeybinds) also reach Normal mode, not
+// just Insert mode.
+func TestNormalModeAltBFAliasesWork(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo bar baz"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 4 // start of "bar"
+
+	if !v.HandleKey(layout.Key{Text: "b", Mods: layout.ModAlt}) {
+		t.Fatal("expected Alt+b to be consumed in Normal mode")
+	}
+	if got := v.activeTab().cursorCol; got != 0 {
+		t.Fatalf("cursorCol after Alt+b = %d, want 0 (start of \"foo\")", got)
+	}
+	if !v.HandleKey(layout.Key{Text: "f", Mods: layout.ModAlt}) {
+		t.Fatal("expected Alt+f to be consumed in Normal mode")
+	}
+	if got := v.activeTab().cursorCol; got != 4 {
+		t.Fatalf("cursorCol after Alt+f = %d, want 4 (start of \"bar\")", got)
+	}
+}
+
+func TestNormalModeAltBackspaceIsNoop(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo bar"}}}}
+	v.active = 0
+
+	if v.HandleKey(layout.Key{Named: layout.KeyBackspace, Mods: layout.ModAlt}) {
+		t.Error("expected Alt+Backspace to be unclaimed in Normal mode")
+	}
+	if got := v.activeTab().buf.Lines[0]; got != "foo bar" {
+		t.Fatalf("Lines[0] = %q, want unchanged %q", got, "foo bar")
+	}
+}
+
 func TestColonEntersCommandModeAndJumpsToLine(t *testing.T) {
 	v := NewView()
 	v.Open(fixturePath(t, "editor_sample.txt")) // 4 lines
@@ -2337,6 +2554,42 @@ func TestColonBackspaceEditsTypedNumber(t *testing.T) {
 
 	if got := v.StatusText(); got != ":4" {
 		t.Fatalf("StatusText = %q, want %q", got, ":4")
+	}
+}
+
+// TestCommandModeLeftRightNowMoveCaret is a new-capability test: before
+// commandField was upgraded from a plain string to a textfield.TextField,
+// Left/Right were complete no-ops in Command mode (Backspace only ever
+// trimmed the last character). This confirms the caret now actually moves,
+// and that editing at a non-end caret position works.
+func TestCommandModeLeftRightNowMoveCaret(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+
+	v.HandleKey(layout.Key{Text: ":"})
+	for _, r := range "42" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyLeft})
+	v.HandleKey(layout.Key{Text: "9"})
+
+	if got := v.StatusText(); got != ":492" {
+		t.Fatalf("StatusText = %q, want %q (typed at the caret, not appended at the end)", got, ":492")
+	}
+}
+
+func TestCommandModeAltBackspaceDeletesWord(t *testing.T) {
+	v := NewView()
+	v.Open(fixturePath(t, "editor_sample.txt"))
+
+	v.HandleKey(layout.Key{Text: ":"})
+	for _, r := range "foo bar" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyBackspace, Mods: layout.ModAlt})
+
+	if got := v.StatusText(); got != ":foo " {
+		t.Fatalf("StatusText = %q, want %q", got, ":foo ")
 	}
 }
 
@@ -3100,8 +3353,8 @@ func TestExitEditingModesCommitsInsertSessionAndClearsCommandPrompt(t *testing.T
 	v.HandleKey(layout.Key{Text: ":"})
 	v.HandleKey(layout.Key{Text: "4"})
 	v.ExitEditingModes()
-	if v.mode != modeNormal || v.commandBuf != "" {
-		t.Fatalf("expected ExitEditingModes to clear the Command prompt, got mode=%v commandBuf=%q", v.mode, v.commandBuf)
+	if v.mode != modeNormal || v.commandField.String() != "" {
+		t.Fatalf("expected ExitEditingModes to clear the Command prompt, got mode=%v commandField=%q", v.mode, v.commandField.String())
 	}
 }
 
@@ -3122,8 +3375,8 @@ func TestExitEditingModesCancelsSearchPrompt(t *testing.T) {
 	if v.mode != modeNormal {
 		t.Fatalf("expected Normal mode after ExitEditingModes, got %v", v.mode)
 	}
-	if v.searchBuf != "" {
-		t.Fatalf("expected the Search prompt to be cleared, got searchBuf=%q", v.searchBuf)
+	if v.searchField.String() != "" {
+		t.Fatalf("expected the Search prompt to be cleared, got searchField=%q", v.searchField.String())
 	}
 	if v.searchMatches != nil {
 		t.Fatalf("expected the in-progress match highlights to be cleared, got %+v", v.searchMatches)
@@ -3245,8 +3498,8 @@ func TestHandlePasteInCommandModeStripsNewlines(t *testing.T) {
 	if v.mode != modeCommand {
 		t.Fatalf("expected to stay in Command mode, got mode=%v", v.mode)
 	}
-	if v.commandBuf != "10" {
-		t.Fatalf("commandBuf = %q, want %q (newlines stripped, not committed)", v.commandBuf, "10")
+	if v.commandField.String() != "10" {
+		t.Fatalf("commandField = %q, want %q (newlines stripped, not committed)", v.commandField.String(), "10")
 	}
 }
 
@@ -3263,7 +3516,7 @@ func TestHandlePasteInSearchModeStripsNewlines(t *testing.T) {
 	if v.mode != modeSearch {
 		t.Fatalf("expected to stay in Search mode, got mode=%v", v.mode)
 	}
-	if v.searchBuf != "needle" {
-		t.Fatalf("searchBuf = %q, want %q (newlines stripped)", v.searchBuf, "needle")
+	if v.searchField.String() != "needle" {
+		t.Fatalf("searchField = %q, want %q (newlines stripped)", v.searchField.String(), "needle")
 	}
 }

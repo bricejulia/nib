@@ -5,6 +5,7 @@ import (
 
 	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/ui/textfield"
 )
 
 // searchHighlightStyle marks every match of the active pattern. Reverse
@@ -179,19 +180,21 @@ func (v *View) enterSearchMode() {
 		return
 	}
 	v.mode = modeSearch
-	v.searchBuf = ""
+	v.searchField = textfield.TextField{}
 	v.searchOriginLn, v.searchOriginCol = t.cursorLn, t.cursorCol
 }
 
 // handleSearchKey handles a key while the "/" prompt is open: Esc cancels
 // (restoring the cursor and clearing highlights), Enter commits and jumps to
-// the first match after the origin, Backspace edits, and printable
-// characters extend the pattern.
+// the first match after the origin, and everything else — Backspace, Left/
+// Right/Home/End (and their Alt-modified word-nav/word-delete variants), and
+// printable text — is delegated to the shared TextField primitive, the same
+// as finder/help/actionpopup's own query fields.
 //
-// Matches are re-highlighted on every keystroke so you can see what you're
-// converging on, but the cursor doesn't move until Enter — vim's
-// jump-as-you-type "incsearch" is a deferred nicety, and not moving means
-// cancelling is genuinely lossless.
+// Matches are re-highlighted whenever the typed pattern actually changes so
+// you can see what you're converging on, but the cursor doesn't move until
+// Enter — vim's jump-as-you-type "incsearch" is a deferred nicety, and not
+// moving means cancelling is genuinely lossless.
 func (v *View) handleSearchKey(k layout.Key) bool {
 	switch v.keymap[k.String()] {
 	case "normal_mode": // Esc
@@ -200,23 +203,14 @@ func (v *View) handleSearchKey(k layout.Key) bool {
 	case "insert_newline": // Enter
 		v.commitSearch()
 		return true
-	case "insert_backspace": // Backspace
-		if n := len(v.searchBuf); n > 0 {
-			v.searchBuf = v.searchBuf[:n-1]
-			v.refreshSearchHighlights()
-		}
-		return true
 	}
 
-	if k.Text != "" && k.Mods&(layout.ModCtrl|layout.ModAlt|layout.ModSuper) == 0 {
-		v.searchBuf += k.Text
+	before := v.searchField.String()
+	consumed := v.searchField.HandleKey(k)
+	if consumed && v.searchField.String() != before {
 		v.refreshSearchHighlights()
-		return true
 	}
-	// See handleInsertKey's identical fallback: an unclaimed key (an
-	// unbound Ctrl/Alt/Super combo, or a named key with no case above)
-	// bubbles to the global keymap rather than being silently swallowed.
-	return false
+	return consumed
 }
 
 // refreshSearchHighlights recomputes the highlighted matches for the
@@ -226,14 +220,14 @@ func (v *View) refreshSearchHighlights() {
 	if t == nil {
 		return
 	}
-	v.searchMatches = findMatches(t.buf, v.searchBuf)
+	v.searchMatches = findMatches(t.buf, v.searchField.String())
 }
 
 // cancelSearch abandons the prompt, restoring the cursor and clearing the
 // highlights — so an abandoned search leaves no trace.
 func (v *View) cancelSearch() {
 	v.mode = modeNormal
-	v.searchBuf = ""
+	v.searchField = textfield.TextField{}
 	v.searchMatches = nil
 	if t := v.activeTab(); t != nil {
 		t.cursorLn, t.cursorCol = v.searchOriginLn, v.searchOriginCol
@@ -246,8 +240,8 @@ func (v *View) cancelSearch() {
 // was opened. The pattern is remembered for n/N.
 func (v *View) commitSearch() {
 	v.mode = modeNormal
-	pattern := v.searchBuf
-	v.searchBuf = ""
+	pattern := v.searchField.String()
+	v.searchField = textfield.TextField{}
 	if pattern == "" {
 		v.searchMatches = nil
 		return

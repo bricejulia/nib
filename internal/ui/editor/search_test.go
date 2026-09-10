@@ -500,6 +500,41 @@ func TestSearchHighlightsUpdateWhileEditingAMatch(t *testing.T) {
 	}
 }
 
+func TestSearchAltBackspaceDeletesWholeWord(t *testing.T) {
+	v, _ := searchView()
+	v.HandleKey(layout.Key{Text: "/"})
+	for _, r := range "alpha one" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyBackspace, Mods: layout.ModAlt})
+
+	if got := v.StatusText(); got != "/alpha " {
+		t.Errorf("StatusText = %q, want %q", got, "/alpha ")
+	}
+}
+
+// TestSearchCaretMovementDoesNotRefreshMatches confirms handleSearchKey
+// only recomputes matches when the typed pattern actually changes — pure
+// caret movement (Alt+Left/Right, or plain Left/Right, now that the field
+// has a real caret) must not re-run findMatches, since nothing it looks at
+// changed.
+func TestSearchCaretMovementDoesNotRefreshMatches(t *testing.T) {
+	v, _ := searchView()
+	v.HandleKey(layout.Key{Text: "/"})
+	for _, r := range "alpha" {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+	before := v.searchMatches
+
+	v.HandleKey(layout.Key{Named: layout.KeyLeft, Mods: layout.ModAlt})
+	v.HandleKey(layout.Key{Named: layout.KeyRight, Mods: layout.ModAlt})
+	v.HandleKey(layout.Key{Named: layout.KeyLeft})
+
+	if &v.searchMatches[0] != &before[0] || len(v.searchMatches) != len(before) {
+		t.Error("expected the same matches slice: pure caret movement must not re-run findMatches")
+	}
+}
+
 func TestSearchModeIsNotAffectedByNormalModeLetters(t *testing.T) {
 	// Letters bound to Normal-mode actions ("n", "j", "x"...) must be typed
 	// into the pattern while the prompt is open, not re-trigger their action.
