@@ -211,8 +211,12 @@ func (v *View) handleSearchKey(k layout.Key) bool {
 	if k.Text != "" && k.Mods&(layout.ModCtrl|layout.ModAlt|layout.ModSuper) == 0 {
 		v.searchBuf += k.Text
 		v.refreshSearchHighlights()
+		return true
 	}
-	return true
+	// See handleInsertKey's identical fallback: an unclaimed key (an
+	// unbound Ctrl/Alt/Super combo, or a named key with no case above)
+	// bubbles to the global keymap rather than being silently swallowed.
+	return false
 }
 
 // refreshSearchHighlights recomputes the highlighted matches for the
