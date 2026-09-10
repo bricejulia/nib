@@ -494,8 +494,18 @@ func run() error {
 	// time on a large project) and delivers its result back through Post
 	// rather than blocking the UI thread — see finder.View.Post.
 	finderView.Post = app.Post
+	// openFinder scopes to the selected folder when the file tree is
+	// focused (the fix for "search scoped to a folder" — see
+	// filetree.View.SelectedDir/finder.View.OpenScoped), and searches the
+	// whole project otherwise, exactly as before. The scope field it
+	// pre-fills stays editable once the popup is open (Ctrl+K), so this is
+	// only a starting value, not the only way to change it.
 	openFinder := func() {
-		finderView.Open() // re-index the project's files fresh on every open
+		if id, ok := app.FocusedLeaf(); ok && id == fileTreeLeaf.ID {
+			finderView.OpenScoped(treeView.SelectedDir())
+		} else {
+			finderView.Open() // re-index the project's files fresh on every open
+		}
 		app.ShowOverlay(finderView)
 	}
 	app.SetDoubleShiftHandler(openFinder)
@@ -875,9 +885,14 @@ func run() error {
 		finderView.Replace().ShowResult(res)
 	}
 	// openReplace jumps straight into replace mode, the same direct-to-mode
-	// shortcut openFindReferences gives content-search mode.
+	// shortcut openFindReferences gives content-search mode — scoped to the
+	// selected folder when the file tree is focused, mirroring openFinder.
 	openReplace := func() {
-		finderView.OpenReplace()
+		if id, ok := app.FocusedLeaf(); ok && id == fileTreeLeaf.ID {
+			finderView.OpenReplaceScoped(treeView.SelectedDir())
+		} else {
+			finderView.OpenReplace()
+		}
 		app.ShowOverlay(finderView)
 	}
 
@@ -1246,6 +1261,8 @@ func run() error {
 			finderView.ApplyContentResult(e)
 		case finder.ReplaceSearchResult:
 			finderView.Replace().ApplyReplaceSearchResult(e)
+		case finder.FileListResult:
+			finderView.ApplyFileListResult(e)
 		case lsp.DiagnosticsEvent:
 			// Fanned out to every pane, exactly like refreshLineStatusFor
 			// does for git line status: ApplyDiagnostics is a no-op in panes

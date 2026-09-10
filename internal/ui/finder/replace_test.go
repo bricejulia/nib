@@ -89,8 +89,8 @@ func TestReplaceViewTooShortQueryShowsNoRows(t *testing.T) {
 	}
 	w := newFakeWindow(80, 20)
 	v.Render(w)
-	if !strings.Contains(w.lines[2], "at least") {
-		t.Errorf("expected the status line to prompt for more characters, got %q", w.lines[2])
+	if !strings.Contains(w.lines[3], "at least") {
+		t.Errorf("expected the status line to prompt for more characters, got %q", w.lines[3])
 	}
 }
 

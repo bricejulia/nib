@@ -84,6 +84,13 @@ func (v *View) beginCreate() {
 	v.openPrompt(promptCreate, prefill)
 }
 
+// SelectedDir returns the directory a folder-scoped action (e.g. the
+// finder's "search in folder") should operate on — the same target
+// createTargetDir already picks for where a new file/folder prompt lands.
+func (v *View) SelectedDir() string {
+	return v.createTargetDir()
+}
+
 // createTargetDir picks which directory a new entry lands in: the selected
 // directory (whether or not it's expanded — you shouldn't have to open a
 // folder to put something in it), the selected file's own directory, or the

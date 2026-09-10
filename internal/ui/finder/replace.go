@@ -15,31 +15,44 @@ import (
 // ReplaceDefaultKeybinds are the replace-in-path overlay's built-in
 // keybindings, overridable via the user config's "replace" scope (see
 // internal/config). Deliberately narrow, like finder's own DefaultKeybinds:
-// these only ever apply once focus is on the results list (see
-// ReplaceView.HandleKey) — while typing into the Find/Replace fields,
-// every character stays typeable the same way filetree's in-pane prompt
-// keeps every character typeable, and Esc/Tab are structural to the
+// most of these only ever apply once focus is on the results list (see
+// ReplaceView.HandleKey) — while typing into the Find/Replace/Scope
+// fields, every character stays typeable the same way filetree's in-pane
+// prompt keeps every character typeable, and Esc/Tab are structural to the
 // pane (close / switch field) rather than remappable actions, so neither
-// is listed here.
+// is listed here. "focus_scope" is the one exception: like Esc/Tab it
+// applies regardless of which field currently has focus (see HandleKey),
+// but unlike them it's a genuine, remappable action.
 var ReplaceDefaultKeybinds = config.Defaults{
 	{Trigger: "Down", Action: "move_down"},
 	{Trigger: "Up", Action: "move_up"},
 	{Trigger: "Space", Action: "toggle"},
 	{Trigger: "Enter", Action: "replace_current"},
 	{Trigger: "a", Action: "replace_all"},
+	// See finder.DefaultKeybinds' own "focus_scope" binding for why Ctrl+k
+	// rather than Ctrl+g or Ctrl+l.
+	{Trigger: "Ctrl+k", Action: "focus_scope"},
 }
 
 // replaceHeaderRows is how many rows sit above the scrollable results
-// list: the Find field, the Replace field, and a status/hint line.
-const replaceHeaderRows = 3
+// list: the Find field, the Replace field, the folder-scope field, and a
+// status/hint line.
+const replaceHeaderRows = 4
 
 // inputFocus is which part of the pane a keystroke currently goes to.
+// focusReplaceScope is deliberately NOT part of cycleFocus's
+// Find/Replace/Results rotation (Tab/Enter never land on it) — it's
+// reached only via the "focus_scope" action, the same way finder.View's
+// own scope field (a distinct type, viewFocus, hence the different name)
+// is reached via a dedicated toggle rather than folded into its
+// Tab-driven mode switching.
 type inputFocus int
 
 const (
 	focusFind inputFocus = iota
 	focusReplace
 	focusResults
+	focusReplaceScope
 )
 
 // replaceRow is one row of ReplaceView's flattened, occurrence-level
@@ -73,9 +86,10 @@ type ReplaceSearchResult struct {
 type ReplaceView struct {
 	root string
 
-	find    textfield.TextField
-	replace textfield.TextField
-	focus   inputFocus
+	find       textfield.TextField
+	replace    textfield.TextField
+	scopeField textfield.TextField // "" = whole project; see SetScope, currentScope
+	focus      inputFocus
 
 	matches []contentMatch // raw searchContent results, one per matched line
 	rows    []replaceRow   // flattened: file headers + occurrence rows
@@ -121,7 +135,29 @@ func (v *ReplaceView) SetKeymap(overrides map[string]string) {
 	v.keymap = ReplaceDefaultKeybinds.Resolve(overrides)
 }
 
-func (v *ReplaceView) Title() string { return "Find & Replace in Path" }
+func (v *ReplaceView) Title() string {
+	if scope := v.currentScope(); scope != "" {
+		return "Find & Replace in Path — " + scope
+	}
+	return "Find & Replace in Path"
+}
+
+// SetScope sets the folder-scope field's starting text — called from
+// finder.View (toggleMode, openReplace) right before Open, so a scope set
+// in file/content mode, or pre-filled via OpenScoped/OpenReplaceScoped,
+// carries forward into replace mode as this view's own, independently
+// editable, starting value. A no-op call with "" (the default) leaves
+// replace mode unscoped, exactly like today.
+func (v *ReplaceView) SetScope(scope string) {
+	v.scopeField = textfield.New(scope)
+}
+
+// currentScope is the scope field's text, normalized — "" means "whole
+// project". Read fresh on every search rather than cached, since the
+// field is editable for the life of the popup.
+func (v *ReplaceView) currentScope() string {
+	return normalizeScope(v.scopeField.String())
+}
 
 // Open resets the view to a blank query, ready to be shown.
 func (v *ReplaceView) Open() {
@@ -173,8 +209,9 @@ func (v *ReplaceView) refilter() {
 
 	gen := v.searchGen
 	root := v.root
+	scope := v.currentScope()
 	if v.Post == nil {
-		matches, _ := searchContent(root, query)
+		matches, _ := searchContent(root, scope, query)
 		v.matches = matches
 		v.rebuildRows()
 		return
@@ -182,7 +219,7 @@ func (v *ReplaceView) refilter() {
 
 	v.searching = true
 	v.debounceTimer = time.AfterFunc(contentSearchDebounce, func() {
-		matches, _ := searchContent(root, query)
+		matches, _ := searchContent(root, scope, query)
 		v.Post(ReplaceSearchResult{gen: gen, matches: matches})
 	})
 }
@@ -344,9 +381,12 @@ func (v *ReplaceView) fireReplace(occs []editor.Occurrence) {
 // for Esc — so they're intercepted before v.keymap is ever consulted, and
 // aren't listed in ReplaceDefaultKeybinds. Enter is likewise structural
 // while focus is off the results list (advance to the next field, same as
-// Tab). Everything else routes to whichever field has focus (typing, never
-// through the keymap — see textfield.TextField.HandleKey) or, once focus is on the
-// results list, through v.keymap.
+// Tab). "focus_scope" is checked next, before the focus-specific branches,
+// since — like Esc/Tab — it needs to apply regardless of which field
+// currently has focus. Everything else routes to whichever field has
+// focus (typing, never through the keymap — see
+// textfield.TextField.HandleKey) or, once focus is on the results list,
+// through v.keymap.
 func (v *ReplaceView) HandleKey(k layout.Key) bool {
 	if k.EventType == layout.EventRelease {
 		return true
@@ -367,6 +407,26 @@ func (v *ReplaceView) HandleKey(k layout.Key) bool {
 		return true
 	case layout.KeyTab:
 		v.cycleFocus()
+		return true
+	}
+
+	if v.keymap[k.String()] == "focus_scope" {
+		if v.focus == focusReplaceScope {
+			v.focus = focusFind
+		} else {
+			v.focus = focusReplaceScope
+		}
+		return true
+	}
+
+	if v.focus == focusReplaceScope {
+		if k.Named == layout.KeyEnter {
+			v.focus = focusFind
+			return true
+		}
+		if v.scopeField.HandleKey(k) {
+			v.refilter()
+		}
 		return true
 	}
 
@@ -431,6 +491,8 @@ func (v *ReplaceView) CursorPosition() (int, int, bool) {
 		return textwidth.DisplayWidth(findLabel + v.find.TextBeforeCaret()), 0, true
 	case focusReplace:
 		return textwidth.DisplayWidth(replaceLabel + v.replace.TextBeforeCaret()), 1, true
+	case focusReplaceScope:
+		return textwidth.DisplayWidth(scopeLabel + v.scopeField.TextBeforeCaret()), 2, true
 	default:
 		return 0, 0, false
 	}
@@ -441,18 +503,38 @@ const (
 	replaceLabel = "Replace: "
 )
 
+// scopeRowSegments mirrors finder.View's own scopeRowSegments (see
+// view.go) — duplicated rather than shared since the two panes' focus
+// enums differ, but kept in lockstep with it.
+func (v *ReplaceView) scopeRowSegments() []layout.Segment {
+	text := v.scopeField.String()
+	focused := v.focus == focusReplaceScope
+	if text == "" && !focused {
+		return []layout.Segment{{
+			Text:  "(scope: whole project — Ctrl+K to set)",
+			Style: layout.Style{Attr: layout.AttrDim},
+		}}
+	}
+	style := layout.Style{}
+	if focused {
+		style.Attr = layout.AttrBold
+	}
+	return []layout.Segment{{Text: scopeLabel + text, Style: style}}
+}
+
 func (v *ReplaceView) Render(w layout.Window) {
 	cols, rows := w.Size()
 	w.Clear()
 
 	w.Println(0, layout.Segment{Text: findLabel + v.find.String(), Style: fieldStyle(v.focus == focusFind)})
 	w.Println(1, layout.Segment{Text: replaceLabel + v.replace.String(), Style: fieldStyle(v.focus == focusReplace)})
+	w.Println(2, v.scopeRowSegments()...)
 
 	if v.resultShown {
-		v.renderResult(w, 2)
+		v.renderResult(w, replaceHeaderRows-1)
 		return
 	}
-	w.Println(2, layout.Segment{Text: v.statusLine(), Style: layout.Style{Attr: layout.AttrDim}})
+	w.Println(replaceHeaderRows-1, layout.Segment{Text: v.statusLine(), Style: layout.Style{Attr: layout.AttrDim}})
 
 	listRows := rows - replaceHeaderRows
 	if listRows < 0 {

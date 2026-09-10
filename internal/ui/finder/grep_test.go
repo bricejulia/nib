@@ -38,7 +38,7 @@ func newContentSearchRepo(t *testing.T) string {
 
 func TestSearchContentFindsMatchWithLineNumber(t *testing.T) {
 	dir := newContentSearchRepo(t)
-	matches, err := searchContent(dir, "needle")
+	matches, err := searchContent(dir, "", "needle")
 	if err != nil {
 		t.Fatalf("searchContent: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestSearchContentFindsMatchWithLineNumber(t *testing.T) {
 
 func TestSearchContentIsCaseInsensitive(t *testing.T) {
 	dir := newContentSearchRepo(t)
-	matches, err := searchContent(dir, "NEEDLE")
+	matches, err := searchContent(dir, "", "NEEDLE")
 	if err != nil {
 		t.Fatalf("searchContent: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestSearchContentIsCaseInsensitive(t *testing.T) {
 
 func TestSearchContentNoMatchesReturnsEmptyNotError(t *testing.T) {
 	dir := newContentSearchRepo(t)
-	matches, err := searchContent(dir, "definitely-not-present-anywhere")
+	matches, err := searchContent(dir, "", "definitely-not-present-anywhere")
 	if err != nil {
 		t.Fatalf("expected no error for zero matches (git grep's exit code 1), got %v", err)
 	}
@@ -82,7 +82,7 @@ func TestSearchContentTreatsQueryAsLiteralNotRegex(t *testing.T) {
 	dir := newContentSearchRepo(t)
 	// "main(" contains a regex metacharacter; as a fixed string it should
 	// still match "main()" in the fixture.
-	matches, err := searchContent(dir, "main(")
+	matches, err := searchContent(dir, "", "main(")
 	if err != nil {
 		t.Fatalf("searchContent: %v", err)
 	}
@@ -93,7 +93,30 @@ func TestSearchContentTreatsQueryAsLiteralNotRegex(t *testing.T) {
 
 func TestSearchContentNonRepoErrors(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := searchContent(dir, "anything"); err == nil {
+	if _, err := searchContent(dir, "", "anything"); err == nil {
 		t.Fatal("expected an error searching outside a git repo")
+	}
+}
+
+func TestSearchContentScopeExcludesMatchesOutsideIt(t *testing.T) {
+	dir := newContentSearchRepo(t)
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sub", "inner.go"), []byte("needle here too\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "add", "sub/inner.go")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+
+	matches, err := searchContent(dir, "sub", "needle")
+	if err != nil {
+		t.Fatalf("searchContent: %v", err)
+	}
+	if len(matches) != 1 || matches[0].path != "sub/inner.go" {
+		t.Fatalf("got %+v, want only sub/inner.go's match", matches)
 	}
 }
