@@ -389,6 +389,15 @@ type App struct {
 	// arrive from vaxis identically decoded as Ctrl+j (see appendPasteKey).
 	// Without this, pasted CRLF text would show up double-spaced.
 	pasteCRPending bool
+
+	// pasting is true between a vaxis.PasteStartEvent and its matching
+	// PasteEndEvent — see Run. It suppresses the per-event render() call
+	// while a bracketed paste is still being accumulated: vaxis delivers
+	// each decoded character of a paste as its own vaxis.Key event, so
+	// without this a large paste would trigger a full terminal
+	// render/diff/write cycle per character before a single byte ever
+	// reaches the buffer.
+	pasting bool
 }
 
 // doubleShiftWindow is the maximum gap between two bare Shift presses for
@@ -587,7 +596,9 @@ func (a *App) Run() error {
 		case vaxis.PasteStartEvent:
 			a.pasteBuf.Reset()
 			a.pasteCRPending = false
+			a.pasting = true
 		case vaxis.PasteEndEvent:
+			a.pasting = false
 			if s := a.pasteBuf.String(); s != "" {
 				a.handlePaste(s)
 			}
@@ -614,7 +625,9 @@ func (a *App) Run() error {
 		}
 
 		a.notifyFocusChange(prevFocus, hadPrev)
-		a.render()
+		if !a.pasting {
+			a.render()
+		}
 
 		if a.quit {
 			return nil

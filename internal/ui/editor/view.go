@@ -2130,20 +2130,54 @@ func (v *View) HandlePaste(s string) bool {
 	}
 	v.completion = nil // a pasted block isn't a continuation of any open completion
 
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		if line != "" {
-			v.insertText(line)
-		}
-		if i < len(lines)-1 {
-			v.insertNewline()
-		}
-	}
+	v.insertBlock(t, s)
 
 	if !wasInsert {
 		v.exitInsertMode()
 	}
 	return true
+}
+
+// insertBlock inserts s — which may contain embedded newlines — at the
+// cursor in a handful of Buffer calls regardless of how many lines s
+// contains, mirroring the splice putCharwise (register.go) already does for
+// a charwise "p": split the current line once, bulk-insert any whole lines
+// in the middle via Buffer.InsertLines, and stitch the head/tail back onto
+// the first/last pasted fragments. Unlike putCharwise, which lands after
+// the cursor (vim's "p"), this lands AT the cursor — paste-while-typing
+// semantics.
+//
+// This replaces what used to be a per-line v.insertText/v.insertNewline
+// loop. That mattered because every one of those calls ends in
+// Buffer.resync(), which rejoins the ENTIRE document — fine once, but
+// paying it once per pasted line made a multi-thousand-line paste
+// effectively quadratic in document size and froze the single UI
+// goroutine. It also made onBufferEdited's synchronous LSP didChange
+// notify fire once per pasted line instead of once for the whole paste.
+func (v *View) insertBlock(t *tab, s string) {
+	lines := strings.Split(s, "\n")
+	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
+
+	if len(lines) == 1 {
+		end := t.buf.InsertText(t.cursorLn, raw, lines[0])
+		t.cursorCol = expandedColForRawIndex(t.buf.Lines[t.cursorLn], end, tabWidthOf(t))
+	} else {
+		t.buf.SplitLine(t.cursorLn, raw)
+		headLen := len([]rune(t.buf.Lines[t.cursorLn]))
+		t.buf.InsertText(t.cursorLn, headLen, lines[0])
+
+		if mid := lines[1 : len(lines)-1]; len(mid) > 0 {
+			t.buf.InsertLines(t.cursorLn+1, mid)
+		}
+
+		lastLn := t.cursorLn + len(lines) - 1
+		end := t.buf.InsertText(lastLn, 0, lines[len(lines)-1])
+		t.cursorLn = lastLn
+		t.cursorCol = expandedColForRawIndex(t.buf.Lines[lastLn], end, tabWidthOf(t))
+	}
+
+	v.onBufferEdited(t)
+	v.clamp(t)
 }
 
 // applyMovement mutates t's cursor for a Normal-mode movement action,

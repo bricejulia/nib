@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -3518,5 +3519,48 @@ func TestHandlePasteInSearchModeStripsNewlines(t *testing.T) {
 	}
 	if v.searchField.String() != "needle" {
 		t.Fatalf("searchField = %q, want %q (newlines stripped)", v.searchField.String(), "needle")
+	}
+}
+
+// TestHandlePasteLargeBlockIsFastAndCorrect is a regression test for the
+// reported freeze on pasting large content: HandlePaste used to insert one
+// line at a time, and every insertion resynced the WHOLE document, making a
+// multi-thousand-line paste effectively quadratic in document size. It now
+// splices the whole block in a handful of Buffer calls (see insertBlock),
+// so this should both produce the right content AND finish quickly.
+func TestHandlePasteLargeBlockIsFastAndCorrect(t *testing.T) {
+	const n = 5000
+	pasted := make([]string, n)
+	for i := range pasted {
+		pasted[i] = fmt.Sprintf("line %d", i)
+	}
+	block := strings.Join(pasted, "\n")
+
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"beforeafter"}}}}
+	v.active = 0
+	v.activeTab().cursorLn = 0
+	v.activeTab().cursorCol = len("before") // paste splits "beforeafter" into a real head/tail
+
+	start := time.Now()
+	if !v.HandlePaste(block) {
+		t.Fatal("expected HandlePaste to report the paste as handled")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("HandlePaste of %d lines took %v, want well under 2s — looks like the per-line resync regression is back", n, elapsed)
+	}
+
+	got := v.activeTab().buf.Lines
+	// The first pasted line is glued onto the "before" head and the last is
+	// glued onto the "after" tail; everything in between is untouched.
+	want := append([]string{"before" + pasted[0]}, pasted[1:n-1]...)
+	want = append(want, pasted[n-1]+"after")
+
+	if !linesEqual(got, want) {
+		t.Fatalf("got %d lines, want %d lines (first: got %q want %q; last: got %q want %q)",
+			len(got), len(want), got[0], want[0], got[len(got)-1], want[len(want)-1])
+	}
+	if wantCursorLn := n - 1; v.activeTab().cursorLn != wantCursorLn {
+		t.Fatalf("cursorLn = %d, want %d", v.activeTab().cursorLn, wantCursorLn)
 	}
 }
