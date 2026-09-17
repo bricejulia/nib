@@ -19,6 +19,7 @@ import (
 	"github.com/bricejulia/nib/internal/theme"
 	"github.com/bricejulia/nib/internal/ui"
 	"github.com/bricejulia/nib/internal/ui/actionpopup"
+	"github.com/bricejulia/nib/internal/ui/closetabconfirm"
 	"github.com/bricejulia/nib/internal/ui/debug"
 	"github.com/bricejulia/nib/internal/ui/diffview"
 	"github.com/bricejulia/nib/internal/ui/editor"
@@ -655,6 +656,18 @@ func run() error {
 		showNextConflict()
 	}
 
+	// closetabconfirmView offers to save or discard a tab with unsaved
+	// changes before closing it — shown when a mouse-driven close
+	// (middle-click on a tab) targets a dirty tab, via wireEditorPane's
+	// OnRequestCloseDirtyTab below. Unlike ":q" on a dirty buffer, which
+	// just refuses silently in the debug log, a mouse click that visibly
+	// does nothing reads as broken rather than refused, so this offers a
+	// real choice instead. OnSave/OnDiscard are re-pointed at the specific
+	// tab being closed on each request, the same pattern memPromptView's
+	// targetPath uses further down.
+	closetabconfirmView := closetabconfirm.New()
+	closetabconfirmView.OnCancel = app.CloseOverlay
+
 	// wireEditorPane attaches every callback an editor pane needs to reach
 	// the rest of the application. Called for the initial pane below and for
 	// each pane trySplit creates, so a new split is never quietly missing a
@@ -695,6 +708,28 @@ func run() error {
 				return
 			}
 			queueConflicts([]editor.SaveConflict{c}, onResolved)
+		}
+		// A middle-click on a dirty tab hands off here instead of refusing —
+		// see closetabconfirmView above and editor.View.OnRequestCloseDirtyTab.
+		// Same "don't clobber whatever's already up" guard OnSaveConflict uses.
+		v.OnRequestCloseDirtyTab = func(path string, onSave, onDiscard func()) {
+			if app.OverlayActive() {
+				return
+			}
+			rel := path
+			if r, err := filepath.Rel(absRoot, path); err == nil {
+				rel = r
+			}
+			closetabconfirmView.Show(rel)
+			closetabconfirmView.OnSave = func() {
+				app.CloseOverlay()
+				onSave()
+			}
+			closetabconfirmView.OnDiscard = func() {
+				app.CloseOverlay()
+				onDiscard()
+			}
+			app.ShowOverlay(closetabconfirmView)
 		}
 		// Copying a mouse selection reaches the system clipboard through
 		// here — the editor pane speaks no OSC 52 itself, same arrangement
