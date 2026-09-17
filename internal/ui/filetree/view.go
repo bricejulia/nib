@@ -8,6 +8,7 @@ import (
 	"github.com/bricejulia/nib/internal/config"
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/textwidth"
+	"github.com/bricejulia/nib/internal/theme"
 	"github.com/bricejulia/nib/internal/ui/gitstyle"
 	"github.com/bricejulia/nib/internal/ui/textfield"
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
@@ -100,12 +101,13 @@ type View struct {
 	// EnsureLoaded rebuilds child Nodes from scratch on a reload, so a
 	// *Node captured when the prompt opened could be an orphan by the time
 	// Enter is pressed.
-	prompt       promptMode
-	promptField  textfield.TextField
-	promptErr    string // refusal shown inline, cleared by the next edit
-	promptTarget string // absolute path the pending rename/delete acts on
-	promptCount  int    // entries inside promptTarget, for a recursive delete
-	promptScroll int    // display columns the prompt row is scrolled by
+	prompt          promptMode
+	promptField     textfield.TextField
+	promptErr       string // refusal shown inline, cleared by the next edit
+	promptTarget    string // absolute path the pending rename/delete acts on
+	promptIsSymlink bool   // promptTarget is a symlink — see beginDelete/promptLabel
+	promptCount     int    // entries inside promptTarget, for a recursive delete
+	promptScroll    int    // display columns the prompt row is scrolled by
 
 	// lastHeight is the pane height at the last Render, so CursorPosition
 	// knows which row the prompt was drawn on. Safe to rely on: ui.App
@@ -135,6 +137,24 @@ type View struct {
 	// refresh (git status, per-line diffs) it would otherwise only do when
 	// the debounced fsnotify signal arrives a fifth of a second later.
 	OnMutated func()
+
+	// OnDirExpanded is called the first time a directory node is loaded
+	// from disk (never again on a later collapse/re-expand, which just
+	// reuses what's already loaded), with its real path — n.Path for an
+	// ordinary directory, or the resolved target for a followed symlink
+	// (see Node.realPath). It exists for a host that seeds its filesystem
+	// watcher from a startup walk: that walk doesn't follow symlinks, so a
+	// directory reachable only through one is otherwise never watched.
+	// Firing it for every directory, not only symlinked ones, keeps this
+	// one general "make sure this is watched" hook rather than two.
+	OnDirExpanded func(realPath string)
+
+	// blockedNotice is a one-shot status-bar message set when activate()
+	// refuses to expand/open a broken or not-followed symlink — see
+	// BlockedNotice. Cleared at the top of the next HandleKey call, the
+	// same one-render lifetime editor.View's "-- RELOADED --" notice uses,
+	// so the reason for the refusal is visible without lingering forever.
+	blockedNotice string
 
 	keymap map[string]string
 }
@@ -336,7 +356,7 @@ func (v *View) Render(w layout.Window) {
 	// each frame against the SELECTED row's actual width — so it never
 	// scrolls past the end of the very entry you're looking at.
 	if v.cursor >= 0 && v.cursor < len(v.rows) {
-		selected := formatRow(v.rows[v.cursor])
+		selected := formatRow(v.rows[v.cursor], true)
 		v.hScroll = textwidth.ClampScroll(v.hScroll, textwidth.DisplayWidth(selected), cols)
 	}
 
@@ -346,8 +366,9 @@ func (v *View) Render(w layout.Window) {
 			break
 		}
 		row := v.rows[idx]
-		style := styleForRow(row, idx == v.cursor)
-		text := textwidth.SliceByDisplayColumn(formatRow(row), v.hScroll, cols)
+		isCursor := idx == v.cursor
+		style := styleForRow(row, isCursor)
+		text := textwidth.SliceByDisplayColumn(formatRow(row, isCursor), v.hScroll, cols)
 		w.Println(i, layout.Segment{Text: text, Style: style})
 	}
 
@@ -357,11 +378,22 @@ func (v *View) Render(w layout.Window) {
 }
 
 // styleForRow colors a row by its git status (see gitstyle), bolds
-// directories, and reverses the currently selected row on top of that.
+// directories, marks a broken symlink with FiletreeSymlinkBroken, dims a
+// symlink that isn't followed (outside root, or would loop — see
+// LinkBlocked), and reverses the currently selected row on top of all of
+// that.
 func styleForRow(r Row, isCursor bool) layout.Style {
 	style := gitstyle.Style(r.Node.Status)
 	if r.Node.IsDir {
 		style.Attr |= layout.AttrBold
+	}
+	if r.Node.IsSymlink {
+		switch r.Node.LinkState {
+		case LinkBroken:
+			style.Foreground = theme.Get(theme.FiletreeSymlinkBroken)
+		case LinkBlocked:
+			style.Attr |= layout.AttrDim
+		}
 	}
 	if isCursor {
 		style.Attr |= layout.AttrReverse
@@ -369,7 +401,12 @@ func styleForRow(r Row, isCursor bool) layout.Style {
 	return style
 }
 
-func formatRow(r Row) string {
+// formatRow renders one tree row: the git marker, indent, an expand arrow
+// for a directory, a "->" glyph for a symlink, the name, and — only for
+// the focused row, to avoid cluttering a deep tree — the symlink's own
+// immediate target, so "what does this point at" is available without a
+// separate lookup.
+func formatRow(r Row, isCursor bool) string {
 	indent := ""
 	for i := 0; i < r.Depth; i++ {
 		indent += "  "
@@ -377,12 +414,25 @@ func formatRow(r Row) string {
 	icon := " "
 	if r.Node.IsDir {
 		if r.Node.Expanded {
-			icon = " ▼ "
+			icon = " ▼"
 		} else {
-			icon = " ▶ "
+			icon = " ▶"
 		}
+		if r.Node.IsSymlink {
+			icon += "→"
+		} else {
+			icon += " "
+		}
+	} else if r.Node.IsSymlink {
+		icon = " →"
 	}
-	return fmt.Sprintf("%s %s%s%s", gitstyle.Marker(r.Node.Status), indent, icon, r.Node.Name)
+
+	suffix := ""
+	if r.Node.IsSymlink && isCursor && r.Node.LinkTarget != "" {
+		suffix = " -> " + r.Node.LinkTarget
+	}
+
+	return fmt.Sprintf("%s %s%s%s%s", gitstyle.Marker(r.Node.Status), indent, icon, r.Node.Name, suffix)
 }
 
 // treeRows is how many rows the tree itself gets to render into — the
@@ -451,6 +501,10 @@ func (v *View) HandleKey(k layout.Key) bool {
 	if v.prompt != promptNone {
 		return v.handlePromptKey(k)
 	}
+	// One-shot, like editor.View's "-- RELOADED --" notice: shown for
+	// exactly the render(s) between the keypress that set it and the next
+	// keypress, then cleared here before this key is even dispatched.
+	v.blockedNotice = ""
 	v.ensureFresh()
 	if v.keymap == nil {
 		// A View built via a bare struct literal (as some tests do, to
@@ -515,8 +569,20 @@ func (v *View) activate() {
 		return
 	}
 	n := v.rows[v.cursor].Node
+	// A symlink that isn't LinkOK is never expandable or openable — IsDir
+	// is already false for it (see EnsureLoaded) — but it would otherwise
+	// fall through to OnOpen below and try to open a missing or
+	// out-of-project file. Refuse explicitly, with a reason, instead.
+	if n.IsSymlink && n.LinkState != LinkOK {
+		v.reportBlocked(n)
+		return
+	}
 	if n.IsDir {
+		wasLoaded := n.Loaded
 		_ = n.EnsureLoaded()
+		if !wasLoaded && v.OnDirExpanded != nil {
+			v.OnDirExpanded(n.realPath())
+		}
 		n.Expanded = !n.Expanded
 		v.dirty = true
 		return
@@ -524,6 +590,24 @@ func (v *View) activate() {
 	if v.OnOpen != nil {
 		v.OnOpen(n.Path)
 	}
+}
+
+// reportBlocked sets the one-shot status-bar message shown after activate
+// refuses a broken or not-followed symlink — see blockedNotice.
+func (v *View) reportBlocked(n *Node) {
+	switch n.LinkState {
+	case LinkBroken:
+		v.blockedNotice = fmt.Sprintf("%s: symlink target is missing", n.Name)
+	case LinkBlocked:
+		v.blockedNotice = fmt.Sprintf("%s: symlink not followed (outside the project, or a loop)", n.Name)
+	}
+}
+
+// BlockedNotice is the current one-shot "why didn't that symlink open"
+// message, for a host to surface in its status bar — see blockedNotice.
+// Empty outside the single render right after activate refused a link.
+func (v *View) BlockedNotice() string {
+	return v.blockedNotice
 }
 
 // collapse handles Left/h. On an expanded directory it just closes that

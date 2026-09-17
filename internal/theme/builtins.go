@@ -27,7 +27,8 @@ var Default = Theme{
 	DebugWarn:  layout.ColorYellow,
 	DebugError: layout.ColorBrightRed,
 
-	FiletreePromptError: layout.ColorRed,
+	FiletreePromptError:   layout.ColorRed,
+	FiletreeSymlinkBroken: layout.ColorRed,
 
 	EditorSelection:  layout.ColorBrightBlack,
 	EditorWhitespace: layout.ColorBrightBlack,
@@ -59,7 +60,8 @@ var Ocean = Theme{
 	DebugWarn:  layout.ColorBrightYellow,
 	DebugError: layout.ColorBrightRed,
 
-	FiletreePromptError: layout.ColorBrightRed,
+	FiletreePromptError:   layout.ColorBrightRed,
+	FiletreeSymlinkBroken: layout.ColorBrightRed,
 
 	EditorSelection:  layout.ColorBlue,
 	EditorWhitespace: layout.ColorBrightBlack,
@@ -93,7 +95,8 @@ var Mono = Theme{
 	DebugWarn:  layout.ColorYellow,
 	DebugError: layout.ColorBrightRed,
 
-	FiletreePromptError: layout.ColorRed,
+	FiletreePromptError:   layout.ColorRed,
+	FiletreeSymlinkBroken: layout.ColorRed,
 
 	EditorSelection:  layout.ColorBrightBlack,
 	EditorWhitespace: layout.ColorBrightBlack,
@@ -124,7 +127,8 @@ var Amber = Theme{
 	DebugWarn:  layout.ColorYellow,
 	DebugError: layout.ColorBrightRed,
 
-	FiletreePromptError: layout.ColorBrightRed,
+	FiletreePromptError:   layout.ColorBrightRed,
+	FiletreeSymlinkBroken: layout.ColorBrightRed,
 
 	EditorSelection:  layout.ColorBrightBlack,
 	EditorWhitespace: layout.ColorBrightBlack,

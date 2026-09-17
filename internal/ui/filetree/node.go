@@ -24,6 +24,21 @@ type Node struct {
 	Children []*Node
 	Parent   *Node
 	Status   gitstatus.Status
+
+	// IsSymlink, LinkTarget, LinkReal, and LinkState describe a symlink
+	// entry — see EnsureLoaded and resolveSymlinkChain. IsDir already
+	// reflects LinkState for a symlink node: true only for LinkOK
+	// pointing at a directory, so the rest of the tree (Flatten, activate,
+	// collapse, ...) needs no symlink-awareness of its own to get expand
+	// behavior right.
+	IsSymlink bool
+	// LinkTarget is the immediate, single-hop os.Readlink result — as
+	// written, not resolved — shown to the user as "name -> LinkTarget".
+	LinkTarget string
+	// LinkReal is the fully resolved real path from resolveSymlinkChain,
+	// used to follow the link and to detect a directory symlink cycle.
+	LinkReal  string
+	LinkState LinkState
 }
 
 // NewRoot builds the (unloaded) root node for absPath. Call EnsureLoaded to
@@ -69,13 +84,29 @@ func (n *Node) EnsureLoaded() error {
 		existing[c.Name] = c
 	}
 
+	root := n.treeRoot().Path
 	children := make([]*Node, 0, len(entries))
 	for _, e := range entries {
 		child := &Node{
 			Name:   e.Name(),
 			Path:   filepath.Join(n.Path, e.Name()),
-			IsDir:  e.IsDir(),
 			Parent: n,
+		}
+		if e.Type()&os.ModeSymlink != 0 {
+			child.IsSymlink = true
+			if target, err := os.Readlink(child.Path); err == nil {
+				child.LinkTarget = target
+			}
+			real, isDir, state := resolveSymlinkChain(root, child.Path)
+			child.LinkReal = real
+			child.LinkState = state
+			if state == LinkOK && isDir && isAncestorCycle(n, real) {
+				state = LinkBlocked
+				child.LinkState = state
+			}
+			child.IsDir = state == LinkOK && isDir
+		} else {
+			child.IsDir = e.IsDir()
 		}
 		if old, ok := existing[e.Name()]; ok && old.IsDir == child.IsDir {
 			child.Expanded = old.Expanded
@@ -103,6 +134,19 @@ func sortChildren(children []*Node) {
 		}
 		return children[i].Name < children[j].Name
 	})
+}
+
+// treeRoot walks up to n's topmost ancestor — the project root NewRoot
+// built this tree from — by following Parent, which EnsureLoaded sets on
+// every child it creates. Used to containment-check a symlink's resolved
+// target against the project root without every call site having to
+// thread the root path through.
+func (n *Node) treeRoot() *Node {
+	r := n
+	for r.Parent != nil {
+		r = r.Parent
+	}
+	return r
 }
 
 // child returns n's already-loaded child named name, or nil. It never reads

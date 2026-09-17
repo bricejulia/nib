@@ -57,6 +57,9 @@ func (v *View) promptLabel() string {
 	case promptRename:
 		return "rename: "
 	case promptConfirm:
+		if v.promptIsSymlink {
+			return fmt.Sprintf("delete symlink %s? target will not be affected (y/N) ", filepath.Base(v.promptTarget))
+		}
 		return fmt.Sprintf("delete %s? (y/N) ", filepath.Base(v.promptTarget))
 	case promptConfirmYes:
 		return fmt.Sprintf("delete %s (%d entries)? type \"yes\": ",
@@ -139,7 +142,12 @@ func (v *View) beginDelete() {
 	}
 	n := v.rows[v.cursor].Node
 	v.promptTarget = n.Path
-	if n.IsDir {
+	v.promptIsSymlink = n.IsSymlink
+	// A symlink is never removed recursively — os.Remove unlinks it
+	// without touching whatever it points at — even when it's a followed
+	// directory symlink (IsDir true) whose target isn't empty. Only a
+	// REAL directory needs the stronger, type-"yes" confirmation.
+	if n.IsDir && !n.IsSymlink {
 		if count := dirEntryCount(n.Path); count > 0 {
 			v.promptCount = count
 			v.openPrompt(promptConfirmYes, "")
@@ -169,6 +177,7 @@ func (v *View) cancelPrompt() {
 	v.promptField = textfield.TextField{}
 	v.promptErr = ""
 	v.promptTarget = ""
+	v.promptIsSymlink = false
 	v.promptCount = 0
 	v.promptScroll = 0
 }

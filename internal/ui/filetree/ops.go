@@ -126,9 +126,11 @@ func movePath(src, dst string) error {
 // a stronger confirmation first (see beginDelete), since this is
 // permanent: nib has no trash and no undo for it.
 //
-// Symlinks need no special case. os.ReadDir reports a symlink to a
-// directory as a plain file, so the tree already treats it as one, and
-// os.Remove unlinks the symlink without touching whatever it points at.
+// Symlinks need no special case: os.Remove unlinks a symlink without
+// touching whatever it points at, even a followed directory symlink whose
+// target isn't empty — see beginDelete, which routes every symlink through
+// the single-keypress confirm rather than the recursive one for exactly
+// this reason.
 func deletePath(abs string, recursive bool) error {
 	err := os.Remove(abs)
 	if err == nil {
