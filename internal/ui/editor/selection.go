@@ -229,8 +229,9 @@ func (v *View) HandleMouse(m layout.Mouse) bool {
 			case layout.MouseWheelDown:
 				v.scrollTabBarByOneTab(1)
 				return true
+			default: // horizontal wheel: no meaning here, leave unclaimed
+				return false
 			}
-			return false // horizontal wheel: no meaning here, leave unclaimed
 		}
 		if m.EventType == layout.EventPress {
 			return v.handleTabBarPress(m)
