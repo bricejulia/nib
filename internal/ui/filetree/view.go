@@ -393,6 +393,10 @@ func styleForRow(r Row, isCursor bool) layout.Style {
 			style.Foreground = theme.Get(theme.FiletreeSymlinkBroken)
 		case LinkBlocked:
 			style.Attr |= layout.AttrDim
+		default:
+			// LinkOK: a followed symlink needs no extra styling beyond
+			// its glyph. LinkNone is unreachable here — the IsSymlink
+			// guard already excludes it.
 		}
 	}
 	if isCursor {
@@ -600,6 +604,9 @@ func (v *View) reportBlocked(n *Node) {
 		v.blockedNotice = fmt.Sprintf("%s: symlink target is missing", n.Name)
 	case LinkBlocked:
 		v.blockedNotice = fmt.Sprintf("%s: symlink not followed (outside the project, or a loop)", n.Name)
+	default:
+		// LinkOK/LinkNone: activate's caller only reaches reportBlocked
+		// when LinkState is already known to be Broken or Blocked.
 	}
 }
 
