@@ -114,6 +114,8 @@ func Template(scopes []Scope) string {
 #     — the debug log (Ctrl+D)
 #   filetree_prompt_error
 #     — inline error text in the file tree's create/rename/delete prompt
+#   filetree_symlink_broken
+#     — a symlink in the file tree whose target is missing
 #   editor_selection
 #     — the mouse-selection highlight
 #   editor_whitespace

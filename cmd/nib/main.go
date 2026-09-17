@@ -386,8 +386,38 @@ func run() error {
 		}
 	}
 
+	panes := &layout.SplitNode{
+		Dir: layout.Horizontal,
+		Children: []layout.Child{
+			{Node: fileTreeLeaf, Hint: layout.Fixed(50)},
+			{Node: editorLeaf, Hint: layout.Ratio(1)},
+		},
+	}
+	tree := &layout.SplitNode{
+		Dir: layout.Vertical,
+		Children: []layout.Child{
+			{Node: panes, Hint: layout.Ratio(1)},
+			{Node: statusBarLeaf, Hint: layout.Fixed(1)},
+		},
+	}
+
+	app, err := ui.NewApp(tree, nil)
+	if err != nil {
+		return err
+	}
+	defer app.Close()
+
 	statusBarView.TextFunc = func() string {
-		parts := make([]string, 0, 5)
+		parts := make([]string, 0, 6)
+		// A symlink activate() just refused to expand/open — see
+		// filetree.View.BlockedNotice — only shown while the tree pane
+		// itself is focused, the same scoping openFinder below uses for
+		// "which pane's selection does this apply to".
+		if id, ok := app.FocusedLeaf(); ok && id == fileTreeLeaf.ID {
+			if notice := treeView.BlockedNotice(); notice != "" {
+				parts = append(parts, notice)
+			}
+		}
 		if cursor := activeEditorPane.view.StatusText(); cursor != "" {
 			parts = append(parts, cursor)
 		}
@@ -410,27 +440,6 @@ func run() error {
 		parts = append(parts, "nib "+version.Version)
 		return strings.Join(parts, "   ")
 	}
-
-	panes := &layout.SplitNode{
-		Dir: layout.Horizontal,
-		Children: []layout.Child{
-			{Node: fileTreeLeaf, Hint: layout.Fixed(50)},
-			{Node: editorLeaf, Hint: layout.Ratio(1)},
-		},
-	}
-	tree := &layout.SplitNode{
-		Dir: layout.Vertical,
-		Children: []layout.Child{
-			{Node: panes, Hint: layout.Ratio(1)},
-			{Node: statusBarLeaf, Hint: layout.Fixed(1)},
-		},
-	}
-
-	app, err := ui.NewApp(tree, nil)
-	if err != nil {
-		return err
-	}
-	defer app.Close()
 
 	// Language servers answer on their own goroutines, so everything they
 	// produce (diagnostics, definition responses) has to be marshaled onto
@@ -1302,6 +1311,13 @@ func run() error {
 
 	if watcher, err := watch.New(absRoot, watchDebounce); err == nil {
 		defer func() { _ = watcher.Close() }()
+
+		// A directory reachable only through a symlink was never walked by
+		// the watcher's startup scan (see watch.Watcher.AddDir) — ask it to
+		// watch one the first time the tree actually expands into it, so an
+		// external change inside it after that point still triggers a
+		// refresh.
+		treeView.OnDirExpanded = func(real string) { _ = watcher.AddDir(real) }
 
 		go func() {
 			for re := range watcher.Events() {

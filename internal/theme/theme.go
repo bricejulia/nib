@@ -58,6 +58,13 @@ const (
 	// The file tree's create/rename/delete prompt.
 	FiletreePromptError Role = "filetree_prompt_error"
 
+	// A broken symlink row in the file tree (target missing). A symlink
+	// that isn't followed for some other reason — its target is outside
+	// the project root, or following it would loop — uses AttrDim
+	// instead, the same unthemed treatment gitstyle gives an untracked
+	// file, since that's not an error condition.
+	FiletreeSymlinkBroken Role = "filetree_symlink_broken"
+
 	// The editor's mouse-selection highlight (a Background color).
 	EditorSelection Role = "editor_selection"
 
@@ -76,6 +83,7 @@ var AllRoles = []Role{
 	DiagnosticError, DiagnosticWarning, DiagnosticInfo,
 	DebugWarn, DebugError,
 	FiletreePromptError,
+	FiletreeSymlinkBroken,
 	EditorSelection,
 	EditorWhitespace,
 	UIFocusBorder,

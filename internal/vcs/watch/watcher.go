@@ -97,6 +97,19 @@ func (w *Watcher) addProjectTree(dir string) error {
 	})
 }
 
+// AddDir registers an extra fsnotify watch on dir, the same as
+// addProjectTree would have at startup — for a directory that only
+// becomes reachable afterward, because it sits behind a symlink
+// addProjectTree's filepath.WalkDir never follows. A no-op if dir is
+// ignored, already watched (fsnotify.Add on an existing watch just
+// resets it), or unreadable.
+func (w *Watcher) AddDir(dir string) error {
+	if rel, ok := relPath(w.root, dir); ok && w.ignored[rel] {
+		return nil
+	}
+	return w.fsw.Add(dir)
+}
+
 func relPath(root, path string) (string, bool) {
 	rel, err := filepath.Rel(root, path)
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
