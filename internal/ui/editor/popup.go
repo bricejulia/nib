@@ -40,8 +40,16 @@ type popupLine struct {
 	Style layout.Style
 }
 
-// renderStyledPopup is renderPopup with a per-row style. It carries all the
-// actual logic; renderPopup is the unstyled convenience wrapper over it.
+// popupBounds computes where renderStyledPopup will actually draw for the
+// given anchor and content: the first row, how many of lines fit (after
+// the same above/below flip and downward-clip fallback described below),
+// and the column width used. n or width being 0 means nothing is drawn at
+// all (see renderStyledPopup).
+//
+// Extracted from renderStyledPopup so a caller that needs to hit-test
+// clicks against an already-drawn popup (see the tab bar's right-click
+// menu, tabMenuState.rect) can reconstruct exactly where it landed, without
+// duplicating — and risking drifting from — this arithmetic.
 //
 // Prefers drawing below the anchor row (today's original behavior,
 // unchanged when there's room), but flips to draw ABOVE the anchor row
@@ -51,16 +59,15 @@ type popupLine struct {
 // direction has enough room for everything. Row 0 is always the tab bar
 // (see View.CursorPosition), never available for popup content, so
 // "above" tops out at row 1.
-func renderStyledPopup(w layout.Window, cols, rows, anchorCol, anchorRow int, lines []popupLine, selected int) {
+func popupBounds(cols, rows, anchorCol, anchorRow int, lines []popupLine) (startRow, n, width int) {
 	total := len(lines)
 	if total == 0 {
-		return
+		return 0, 0, 0
 	}
 
 	below := rows - anchorRow - 1
 	above := anchorRow - 1
 
-	var startRow, n int
 	switch {
 	case below >= total:
 		// Fits below already: today's normal, unclipped case.
@@ -80,13 +87,13 @@ func renderStyledPopup(w layout.Window, cols, rows, anchorCol, anchorRow int, li
 		startRow = anchorRow + 1
 	}
 	if n <= 0 {
-		return
+		return startRow, 0, 0
 	}
 	lines = lines[:n]
 
 	// Width is measured in display columns, not bytes: a message can contain
 	// anything, including non-ASCII.
-	width := 0
+	width = 0
 	for _, l := range lines {
 		if dw := textwidth.DisplayWidth(l.Text); dw > width {
 			width = dw
@@ -96,8 +103,20 @@ func renderStyledPopup(w layout.Window, cols, rows, anchorCol, anchorRow int, li
 		width = avail
 	}
 	if width <= 0 {
+		return startRow, n, 0
+	}
+	return startRow, n, width
+}
+
+// renderStyledPopup is renderPopup with a per-row style. It carries all the
+// actual drawing; renderPopup is the unstyled convenience wrapper over it,
+// and popupBounds is the layout arithmetic factored out of it.
+func renderStyledPopup(w layout.Window, cols, rows, anchorCol, anchorRow int, lines []popupLine, selected int) {
+	startRow, n, width := popupBounds(cols, rows, anchorCol, anchorRow, lines)
+	if n <= 0 || width <= 0 {
 		return
 	}
+	lines = lines[:n]
 
 	for i := 0; i < n; i++ {
 		text := clampToWidth(lines[i].Text, width)

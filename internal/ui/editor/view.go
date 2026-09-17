@@ -485,16 +485,40 @@ type View struct {
 	// rather than where the drag started.
 	tabDragCurrent int
 
-	// OnRequestCloseDirtyTab, if set, is called instead of silently
-	// refusing (the way ":q" does — see closeActiveTab) when a mouse-driven
-	// close (middle-click on a tab — see requestCloseTab) targets a tab
-	// with unsaved changes. path is the tab's file; onSave/onDiscard are
-	// callbacks to invoke once the user has chosen — save-then-close or
-	// discard-and-close respectively — and nothing further happens if the
-	// user cancels instead. This package owns no overlay UI of its own (see
-	// OnSaveConflict for the same reasoning); cmd/nib/main.go wires this to
-	// show internal/ui/closetabconfirm.
-	OnRequestCloseDirtyTab func(path string, onSave, onDiscard func())
+	// tabScrollLeft is the tab bar's own horizontal scroll offset, in
+	// display columns into the FULL (unclipped) tab bar content — the tab
+	// bar's counterpart to tab.leftCol, except pane-wide rather than
+	// per-tab (there is one tab bar, however many tabs are open) and never
+	// derived from a cursor position, since the tab bar has none. Adjusted
+	// automatically so the active tab stays in view (see
+	// ensureActiveTabVisible, called once per Render) and by wheel/drag
+	// (see scrollTabBarByOneTab).
+	tabScrollLeft int
+
+	// tabMenu holds the right-click context menu open for one tab, nil
+	// when none is showing — see tabMenuState and handleTabBarPress.
+	tabMenu *tabMenuState
+
+	// OnMoveTabToNextPane, if set, is called with a tab index when "Move to
+	// next pane" is chosen from the tab bar's context menu — this package
+	// has no notion of sibling panes, so cmd/nib/main.go supplies the
+	// actual cross-pane move (see TransferTabTo), the same "reach out via a
+	// callback" shape as OnShowFileDiff/OnRequestCloseDirtyTabs.
+	OnMoveTabToNextPane func(index int)
+
+	// OnRequestCloseDirtyTabs, if set, is called instead of silently
+	// refusing (the way ":q"/":qa" do — see closeActiveTab/closeAllTabsCmd)
+	// when a mouse-driven close (middle-click on a tab, or "Close
+	// Others"/"Close All" from its context menu — see requestCloseTabs)
+	// would otherwise discard unsaved changes. paths lists every affected
+	// dirty tab's file (length 1 for a single middle-click); onSaveAll/
+	// onDiscardAll are callbacks to invoke once the user has chosen —
+	// save-then-close or discard-and-close respectively, for every one of
+	// them — and nothing further happens if the user cancels instead. This
+	// package owns no overlay UI of its own (see OnSaveConflict for the
+	// same reasoning); cmd/nib/main.go wires this to show
+	// internal/ui/closetabconfirm.
+	OnRequestCloseDirtyTabs func(paths []string, onSaveAll, onDiscardAll func())
 
 	// highlights, when non-nil, computes tree-sitter highlighting off the
 	// UI goroutine — see Highlighter and submitHighlight. Every pane should
@@ -693,6 +717,17 @@ func (v *View) SetWelcomeInfo(nibVersion, folder string, branchFunc func() strin
 }
 
 func (v *View) Title() string { return "Editor" }
+
+// ActiveIndex returns the index of the active tab, or -1 if no tabs are
+// open — used by cmd/nib/main.go's "move to next/previous pane" keybinding
+// (TransferTabTo takes an index, and a keybinding, unlike the tab bar's own
+// context menu, has no clicked tab to act on instead).
+func (v *View) ActiveIndex() int {
+	if v.active < 0 || v.active >= len(v.tabs) {
+		return -1
+	}
+	return v.active
+}
 
 // ActivePath returns the active tab's file path, or "" if no tabs are
 // open. Used when splitting a pane, so the new pane starts on the same
@@ -922,6 +957,52 @@ func (v *View) CloseTab() {
 	v.closeTabAt(v.active)
 }
 
+// TransferTabTo moves the tab at index i out of this pane and into dest —
+// the pane-to-pane counterpart of Open, which only ever creates a fresh
+// tab (used by cmd/nib/main.go's "move to next/previous pane" action).
+// Ownership of the tab's Buffer/language-server registration moves with it
+// rather than being released and reacquired the way CloseTab does: the file
+// is still open, just from a different pane, and both panes already share
+// one BufferStore/lsp.Manager (see SetBufferStore/SetLSPManager), so the
+// reference count is correct exactly as it was, just attributed to a tab
+// that now lives in dest.tabs instead of v.tabs.
+//
+// If dest already has this path open, the move instead closes the tab here
+// and activates the existing one there, matching Open's own "already
+// open → activate, don't duplicate" rule — here, THAT tab (not this one)
+// really is being released, so it goes through closeTabAt like any other
+// close. A no-op for an out-of-range index, a nil dest, or dest == v.
+func (v *View) TransferTabTo(i int, dest *View) {
+	if i < 0 || i >= len(v.tabs) || dest == nil || dest == v {
+		return
+	}
+	tb := v.tabs[i]
+	if existing := dest.tabForPath(tb.path); existing != nil {
+		v.closeTabAt(i)
+		for j, t := range dest.tabs {
+			if t == existing {
+				dest.active = j
+				return
+			}
+		}
+		return
+	}
+
+	v.tabs = append(v.tabs[:i], v.tabs[i+1:]...)
+	switch {
+	case i < v.active:
+		v.active--
+	case i == v.active:
+		if v.active >= len(v.tabs) {
+			v.active = len(v.tabs) - 1
+		}
+	}
+	v.notifyIfEmpty()
+
+	dest.tabs = append(dest.tabs, tb)
+	dest.active = len(dest.tabs) - 1
+}
+
 // CloseTabByPath closes the tab showing path in this pane, if one is
 // open — refusing (returns false, a no-op) if it has unsaved changes, the
 // same safety net closeActiveTab's vim ":q" already applies for the
@@ -948,45 +1029,106 @@ func (v *View) CloseTabByPath(path string) bool {
 	return false
 }
 
-// closeTabPtr closes tb by identity rather than index — used by
-// requestCloseTab's save/discard callbacks, which can run after an
-// arbitrary delay (however long the confirm dialog stays up), during which
-// a drag-reorder could have moved tb to a different index.
-func (v *View) closeTabPtr(tb *tab) {
-	for i, t := range v.tabs {
-		if t == tb {
-			v.closeTabAt(i)
-			return
-		}
-	}
-}
-
 // requestCloseTab closes tabs[i] if it's clean, or — if it has unsaved
-// changes — asks OnRequestCloseDirtyTab to confirm first, rather than
+// changes — asks OnRequestCloseDirtyTabs to confirm first, rather than
 // refusing outright the way ":q" does. The mouse-driven counterpart to
 // closeActiveTab, but for any tab (not just the active one) and with a real
 // prompt instead of a silent debug-log refusal, since a middle-click that
-// visibly does nothing reads as broken rather than as "refused".
+// visibly does nothing reads as broken rather than as "refused". A thin,
+// single-tab wrapper over requestCloseTabs — see it for the shared batch
+// logic "Close Others"/"Close All" also go through.
 func (v *View) requestCloseTab(i int) {
 	if i < 0 || i >= len(v.tabs) {
 		return
 	}
-	tb := v.tabs[i]
-	if tb.buf == nil || !tb.buf.Dirty {
-		v.closeTabAt(i)
+	v.requestCloseTabs([]*tab{v.tabs[i]})
+}
+
+// doomedSet builds the map removeTabs takes from a plain slice — a tiny
+// adapter so batch-close callers (requestCloseTabs, CloseOtherTabs) can work
+// in the more natural []*tab form.
+func doomedSet(targets []*tab) map[*tab]bool {
+	doomed := make(map[*tab]bool, len(targets))
+	for _, tb := range targets {
+		doomed[tb] = true
+	}
+	return doomed
+}
+
+// requestCloseTabs closes every tab in targets that's clean, and — if any
+// of them has unsaved changes — asks OnRequestCloseDirtyTabs to confirm the
+// WHOLE set at once (one dialog listing every dirty file among them, not
+// one per tab), before closing all of them together. Identity-based (a
+// []*tab, not indices) because the confirm dialog's callbacks run after an
+// arbitrary delay — however long it stays up — during which a drag-reorder
+// could move any of these tabs to a different index.
+func (v *View) requestCloseTabs(targets []*tab) {
+	var dirty []*tab
+	for _, tb := range targets {
+		if tb.buf != nil && tb.buf.Dirty {
+			dirty = append(dirty, tb)
+		}
+	}
+	if len(dirty) == 0 {
+		v.removeTabs(doomedSet(targets))
 		return
 	}
-	if v.OnRequestCloseDirtyTab == nil {
-		return // no overlay wiring (e.g. a bare NewView() in tests) — refuse silently, like ":q"
+	if v.OnRequestCloseDirtyTabs == nil {
+		return // no overlay wiring (e.g. a bare NewView() in tests) — refuse silently, like ":q"/":qa"
 	}
-	v.OnRequestCloseDirtyTab(tb.path,
-		func() {
-			if ok, _, _ := v.saveTab(tb); ok {
-				v.closeTabPtr(tb)
+	paths := make([]string, len(dirty))
+	for i, tb := range dirty {
+		paths[i] = tb.path
+	}
+	v.OnRequestCloseDirtyTabs(paths,
+		func() { // save every dirty tab, then close the whole set
+			for _, tb := range dirty {
+				v.saveTab(tb) // best-effort: a tab that fails/conflicts just stays open, like SaveDirtyTabs
 			}
+			v.removeTabs(doomedSet(targets))
 		},
-		func() { v.closeTabPtr(tb) },
+		func() { v.removeTabs(doomedSet(targets)) }, // discard: close the whole set unconditionally
 	)
+}
+
+// CloseOtherTabs closes every tab except the one at index keep, mirroring
+// CloseAllTabs' unconditional closing — callers that need to ask about
+// unsaved changes first go through requestCloseTabs instead (see the tab
+// bar's "Close Others"). A no-op for an out-of-range keep.
+func (v *View) CloseOtherTabs(keep int) {
+	if keep < 0 || keep >= len(v.tabs) {
+		return
+	}
+	doomed := map[*tab]bool{}
+	for i, t := range v.tabs {
+		if i != keep {
+			doomed[t] = true
+		}
+	}
+	v.removeTabs(doomed) // only tabs[keep] survives, so it's trivially left active
+}
+
+// requestCloseOtherTabs is CloseOtherTabs' dirty-aware counterpart, for the
+// tab bar's "Close Others" — confirms first if any of the other tabs has
+// unsaved changes (see requestCloseTabs). A no-op for an out-of-range keep.
+func (v *View) requestCloseOtherTabs(keep int) {
+	if keep < 0 || keep >= len(v.tabs) {
+		return
+	}
+	targets := make([]*tab, 0, len(v.tabs)-1)
+	for i, t := range v.tabs {
+		if i != keep {
+			targets = append(targets, t)
+		}
+	}
+	v.requestCloseTabs(targets)
+}
+
+// requestCloseAllTabs is CloseAllTabs' dirty-aware counterpart, for the tab
+// bar's "Close All" — confirms first if any tab has unsaved changes (see
+// requestCloseTabs).
+func (v *View) requestCloseAllTabs() {
+	v.requestCloseTabs(append([]*tab(nil), v.tabs...))
 }
 
 // LargestBuffer returns the path and Source byte size of the largest
@@ -1355,7 +1497,8 @@ func (v *View) Render(w layout.Window) {
 		return
 	}
 
-	w.Println(0, tabBarSegments(v.tabs, v.active, cols)...)
+	v.ensureActiveTabVisible(cols)
+	w.Println(0, tabBarSegments(v.tabs, v.active, v.tabScrollLeft, cols)...)
 
 	t := v.activeTab()
 	// Defensive: a sibling pane sharing this tab's Buffer (see
@@ -1378,9 +1521,13 @@ func (v *View) Render(w layout.Window) {
 	renderBody(w, t, tabWidthOf(t), cols, bodyRows, 1, v.searchMatches, v.showWhitespace)
 
 	// Popups draw last so they sit on top of the file content. Only one can
-	// be up at a time: completion belongs to Insert mode, the rest
-	// (diagnostic, hover, signature-help, and git tooltips) to Normal mode.
-	if v.completion != nil {
+	// be up at a time: the tab menu takes priority over everything (it's
+	// modal to mouse input while open — see HandleMouse), completion
+	// belongs to Insert mode, the rest (diagnostic, hover, signature-help,
+	// and git tooltips) to Normal mode.
+	if v.tabMenu != nil {
+		v.renderTabMenu(w, cols, rows)
+	} else if v.completion != nil {
 		if col, row, ok := v.CursorPosition(); ok {
 			v.renderCompletionPopup(w, cols, rows, col, row)
 		}
@@ -1488,10 +1635,20 @@ func renderCenteredLines(w layout.Window, cols, rows int, lines [][]layout.Segme
 
 // tabBarSegments builds the tab bar as styled segments — the active tab is
 // reverse-video highlighted (the same "selected" convention the file tree
-// and finder use), not just bracket-punctuated — then truncated to cols
+// and finder use), not just bracket-punctuated — then windowed to the
+// currently scrolled-into-view portion of the FULL (unclipped) content,
 // via the same wide-rune-safe helper used for the editor body, rather than
 // raw byte slicing.
-func tabBarSegments(tabs []*tab, active, cols int) []layout.Segment {
+//
+// scrollLeft is the display-column offset into that full content currently
+// scrolled into view (see View.tabScrollLeft and ensureActiveTabVisible) —
+// 0 shows the first tab from its very start, exactly as before horizontal
+// scrolling existed. When content is hidden on either side, the edge
+// column of the row is replaced with a "‹"/"›" indicator instead of being
+// squeezed in on top of tab content, so it's never mistaken for part of a
+// label (see tabBarScrollFlags, shared with tabBarContentColumn so the two
+// can never disagree about which column is an indicator).
+func tabBarSegments(tabs []*tab, active, scrollLeft, cols int) []layout.Segment {
 	names := tabDisplayNames(tabs)
 	var segs []layout.Segment
 	for i := range tabs {
@@ -1507,15 +1664,150 @@ func tabBarSegments(tabs []*tab, active, cols int) []layout.Segment {
 			segs = append(segs, layout.Segment{Text: "|"})
 		}
 	}
-	return textwidth.SliceSegmentsByDisplayColumn(segs, 0, cols)
+
+	hasLeft, hasRight, _ := tabBarScrollFlags(tabs, scrollLeft, cols)
+	visible := cols
+	if hasLeft {
+		visible--
+	}
+	if hasRight {
+		visible--
+	}
+	if visible < 0 {
+		visible = 0
+	}
+
+	out := make([]layout.Segment, 0, 3)
+	if hasLeft {
+		out = append(out, layout.Segment{Text: "‹"})
+	}
+	out = append(out, textwidth.SliceSegmentsByDisplayColumn(segs, scrollLeft, visible)...)
+	if hasRight {
+		out = append(out, layout.Segment{Text: "›"})
+	}
+	return out
 }
 
 // tabSpan is one tab's clickable column range in the tab bar, [start, end)
-// in the same display-column space Render draws row 0 in (see
-// tabBarSegments) — there is no horizontal scroll offset to account for,
-// since unlike the body the tab bar is never scrolled.
+// in the tab bar's FULL, unscrolled content space — the same space
+// tabBarSegments builds before windowing it to what's currently scrolled
+// into view. Callers hit-testing an actual click (in RENDERED, on-screen
+// column space) go through tabBarContentColumn first to translate into
+// this space.
 type tabSpan struct {
 	start, end int
+}
+
+// tabBarScrollFlags reports whether the tab bar's full content extends
+// beyond the window currently scrolled into view on either side (so a
+// "‹"/"›" indicator is needed there), plus the full content's total
+// display width. Shared by tabBarSegments (to decide whether to draw an
+// indicator) and tabBarContentColumn (to reverse that same reservation
+// when mapping a click back to content space) so the two can never
+// disagree about which column is an indicator and which is a tab.
+func tabBarScrollFlags(tabs []*tab, scrollLeft, cols int) (hasLeft, hasRight bool, total int) {
+	if spans := tabBarSpans(tabs); len(spans) > 0 {
+		total = spans[len(spans)-1].end
+	}
+	return scrollLeft > 0, total > scrollLeft+cols, total
+}
+
+// tabBarContentColumn translates a CLICK column (in the tab bar's rendered
+// [0, cols) space) into a column in its full, unscrolled content space —
+// tabBarSegments' windowing, in reverse. ok is false when the click landed
+// on a "‹"/"›" scroll indicator rather than actual tab content (those are
+// deliberately not clickable — see the design notes on Q10), or outside
+// [0, cols) entirely.
+func tabBarContentColumn(tabs []*tab, scrollLeft, cols, renderedCol int) (contentCol int, ok bool) {
+	if renderedCol < 0 || renderedCol >= cols {
+		return 0, false
+	}
+	hasLeft, hasRight, _ := tabBarScrollFlags(tabs, scrollLeft, cols)
+	if hasLeft && renderedCol == 0 {
+		return 0, false
+	}
+	if hasRight && renderedCol == cols-1 {
+		return 0, false
+	}
+	col := renderedCol
+	if hasLeft {
+		col--
+	}
+	return scrollLeft + col, true
+}
+
+// scrollTabBarByOneTab moves the visible window one whole tab to the left
+// (dir < 0) or right (dir > 0) — the tab bar's wheel-scroll granularity
+// (see the design notes on Q15): a discrete tab-chip step, never landing
+// mid-label the way the file body's continuous line-scroll can. A no-op
+// with no tabs open.
+func (v *View) scrollTabBarByOneTab(dir int) {
+	spans := tabBarSpans(v.tabs)
+	if len(spans) == 0 {
+		return
+	}
+	if dir < 0 {
+		for i := len(spans) - 1; i >= 0; i-- {
+			if spans[i].start < v.tabScrollLeft {
+				v.tabScrollLeft = spans[i].start
+				v.clampTabScrollLeft(spans)
+				return
+			}
+		}
+		v.tabScrollLeft = 0
+		return
+	}
+	for _, sp := range spans {
+		if sp.start > v.tabScrollLeft {
+			v.tabScrollLeft = sp.start
+			break
+		}
+	}
+	v.clampTabScrollLeft(spans)
+}
+
+// clampTabScrollLeft keeps tabScrollLeft within [0, total] — never
+// negative, and never past the point where there's nothing further right
+// to scroll to.
+func (v *View) clampTabScrollLeft(spans []tabSpan) {
+	if v.tabScrollLeft < 0 {
+		v.tabScrollLeft = 0
+	}
+	if len(spans) == 0 {
+		return
+	}
+	if total := spans[len(spans)-1].end; v.tabScrollLeft > total {
+		v.tabScrollLeft = total
+	}
+}
+
+// ensureActiveTabVisible adjusts tabScrollLeft, if needed, so the active
+// tab's whole span is inside the currently visible window — called once
+// per Render rather than at every call site that can change v.active
+// (Open, NextTab/PrevTab, a tab-bar click, TransferTabTo's activation in
+// the destination pane, ...), the same "fix it up defensively at render
+// time" pattern v.clamp already uses for cursor position.
+func (v *View) ensureActiveTabVisible(cols int) {
+	spans := tabBarSpans(v.tabs)
+	if v.active < 0 || v.active >= len(spans) {
+		return
+	}
+	active := spans[v.active]
+	// Conservatively reserves room for a scroll indicator on both sides,
+	// even though at most one may end up needed once tabScrollLeft
+	// settles — costs at most one extra column of slack, never leaves the
+	// active tab clipped.
+	avail := cols - 2
+	if avail < 1 {
+		avail = 1
+	}
+	if active.end-v.tabScrollLeft > avail {
+		v.tabScrollLeft = active.end - avail
+	}
+	if active.start < v.tabScrollLeft {
+		v.tabScrollLeft = active.start
+	}
+	v.clampTabScrollLeft(spans)
 }
 
 // tabBarSpans returns each tab's clickable column span, mirroring
@@ -1526,10 +1818,8 @@ type tabSpan struct {
 // character wraps each side — so this doesn't need to know which tab is
 // active the way tabBarSegments does.
 //
-// Truncation past the pane's width is left to the caller: a span partly or
-// wholly beyond cols simply isn't visible, and is therefore naturally
-// unreachable by a click whose Col can't exceed what's on screen — the tab
-// bar doesn't scroll to keep a tab in view, so neither does hit-testing.
+// Spans are in the tab bar's full, unscrolled content space — see
+// tabBarContentColumn for translating an actual click into that space.
 func tabBarSpans(tabs []*tab) []tabSpan {
 	names := tabDisplayNames(tabs)
 	spans := make([]tabSpan, len(tabs))
@@ -2030,6 +2320,17 @@ func rawIndexForExpandedCol(line string, col, tabWidth int) int {
 func (v *View) HandleKey(k layout.Key) bool {
 	if k.EventType == layout.EventRelease {
 		return false
+	}
+
+	// The tab bar's right-click menu takes priority over even mode
+	// dispatch below — the same "modal input owner" position handleCompletionKey
+	// occupies for the autocomplete popup, except not mode-scoped, since
+	// the menu can be open regardless of Normal/Insert/Command mode.
+	if v.tabMenu != nil {
+		if v.handleTabMenuKey(k) {
+			return true
+		}
+		v.tabMenu = nil // not recognized: dismiss, then fall through and handle this key normally
 	}
 
 	// The diagnostic, hover, signature-help, and git popups are tooltips,

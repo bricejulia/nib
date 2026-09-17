@@ -67,16 +67,22 @@ func TestClickOnSeparatorIsNotConsumed(t *testing.T) {
 	}
 }
 
-func TestRightClickOnTabIsNotConsumed(t *testing.T) {
-	// No context menu yet — right-click is left unclaimed.
+func TestRightClickOnTabOpensMenuWithoutSwitching(t *testing.T) {
+	// See tabmenu_test.go for the menu's own behavior once open.
 	v := multiTabView("a.go", "b.go")
 	spans := tabBarSpans(v.tabs)
-	m := layout.Mouse{Col: spans[0].start + 1, Row: 0, Button: layout.MouseRight, EventType: layout.EventPress, Clicks: 1}
-	if v.HandleMouse(m) {
-		t.Error("a right-click on a tab should not be consumed yet")
+	m := layout.Mouse{Col: spans[1].start + 1, Row: 0, Button: layout.MouseRight, EventType: layout.EventPress, Clicks: 1}
+	if !v.HandleMouse(m) {
+		t.Error("a right-click on a tab should be consumed (it opens the context menu)")
 	}
 	if v.active != 0 {
-		t.Errorf("active = %d, want 0 (unaffected)", v.active)
+		t.Errorf("active = %d, want 0 (right-click must not switch tabs)", v.active)
+	}
+	if v.tabMenu == nil {
+		t.Fatal("expected the context menu to be open")
+	}
+	if v.tabMenu.target != 1 {
+		t.Errorf("menu target = %d, want 1 (the tab actually clicked)", v.tabMenu.target)
 	}
 }
 
@@ -131,19 +137,19 @@ func TestMiddleClickOnDirtyTabAsksForConfirmationInsteadOfClosing(t *testing.T) 
 	v := multiTabView("a.go", "b.go")
 	v.tabs[1].buf.Dirty = true
 
-	var gotPath string
+	var gotPaths []string
 	var onDiscard func()
-	v.OnRequestCloseDirtyTab = func(path string, onSave, discard func()) {
-		gotPath = path
-		onDiscard = discard
+	v.OnRequestCloseDirtyTabs = func(paths []string, onSaveAll, discardAll func()) {
+		gotPaths = paths
+		onDiscard = discardAll
 	}
 
 	spans := tabBarSpans(v.tabs)
 	if !v.HandleMouse(middleClick(spans[1].start+1, 0)) {
 		t.Fatal("a middle-click on a dirty tab should still be consumed")
 	}
-	if gotPath != "b.go" {
-		t.Fatalf("OnRequestCloseDirtyTab path = %q, want b.go", gotPath)
+	if len(gotPaths) != 1 || gotPaths[0] != "b.go" {
+		t.Fatalf("OnRequestCloseDirtyTabs paths = %v, want [b.go]", gotPaths)
 	}
 	if len(v.tabs) != 2 {
 		t.Fatal("the tab must not close until the caller confirms")
@@ -168,14 +174,14 @@ func TestMiddleClickOnDirtyTabSaveCallbackSavesThenCloses(t *testing.T) {
 	v.tabs[1].buf.Dirty = true
 
 	var onSave func()
-	v.OnRequestCloseDirtyTab = func(_ string, save, _ func()) {
-		onSave = save
+	v.OnRequestCloseDirtyTabs = func(_ []string, saveAll, _ func()) {
+		onSave = saveAll
 	}
 
 	spans := tabBarSpans(v.tabs)
 	v.HandleMouse(middleClick(spans[1].start+1, 0))
 	if onSave == nil {
-		t.Fatal("OnRequestCloseDirtyTab was not called")
+		t.Fatal("OnRequestCloseDirtyTabs was not called")
 	}
 
 	onSave()
@@ -192,7 +198,7 @@ func TestMiddleClickOnDirtyTabSaveCallbackSavesThenCloses(t *testing.T) {
 }
 
 func TestMiddleClickOnDirtyTabWithNoHandlerRefusesSilently(t *testing.T) {
-	// No OnRequestCloseDirtyTab wired — e.g. a bare NewView(), same as every
+	// No OnRequestCloseDirtyTabs wired — e.g. a bare NewView(), same as every
 	// other test in this package. Matches ":q" on a dirty buffer: refuse,
 	// don't discard silently.
 	v := multiTabView("a.go")
