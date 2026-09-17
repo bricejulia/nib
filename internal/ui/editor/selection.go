@@ -195,6 +195,50 @@ func (v *View) selectionString(t *tab) string {
 // drag the pointer can leave the pane, and a row outside it is exactly the
 // signal to auto-scroll.
 func (v *View) HandleMouse(m layout.Mouse) bool {
+	// The right-click menu, while open, is modal to this pane's mouse
+	// input: every event goes to it until it's dismissed or acted on (see
+	// handleTabMenuMouse), so this has to come before anything else below,
+	// including the "no active tab" bail a couple of lines down (the menu
+	// itself never depends on there being a loaded buffer).
+	if v.tabMenu != nil {
+		return v.handleTabMenuMouse(m)
+	}
+	// A tab-bar reorder drag in progress claims every subsequent event for
+	// itself, regardless of which row the pointer has since wandered to —
+	// the same "a drag belongs to whoever the button went down on" rule
+	// App's own scrollbar-drag capture follows. Also ahead of the "no
+	// active tab" bail: a drag that's already armed must be able to finish
+	// (e.g. via release) even if the tab it lands on fails to load.
+	if v.tabDragging {
+		return v.continueTabDrag(m)
+	}
+	// Row 0 is the tab bar, not text, and is handled independently of
+	// whether the ACTIVE tab has a loaded buffer — the whole point of a
+	// tab-bar click/scroll is often to get away from a tab that's in
+	// trouble. A left click switches tabs (and arms a reorder drag), a
+	// middle click closes one, a right click opens the context menu, and
+	// the wheel scrolls the bar sideways one tab at a time rather than
+	// falling through to App's generic wheel-as-Up/Down-keys handling
+	// (which is for the file body, not the tab strip).
+	if m.Row == 0 {
+		if isWheelButton(m.Button) {
+			switch m.Button {
+			case layout.MouseWheelUp:
+				v.scrollTabBarByOneTab(-1)
+				return true
+			case layout.MouseWheelDown:
+				v.scrollTabBarByOneTab(1)
+				return true
+			}
+			return false // horizontal wheel: no meaning here, leave unclaimed
+		}
+		if m.EventType == layout.EventPress {
+			return v.handleTabBarPress(m)
+		}
+		// Any other row-0 event (bare hover motion, a release with no drag
+		// armed, ...) falls through unclaimed, same as before.
+	}
+
 	if isWheelButton(m.Button) {
 		return false
 	}
@@ -203,23 +247,9 @@ func (v *View) HandleMouse(m layout.Mouse) bool {
 		return false
 	}
 
-	// A tab-bar reorder drag in progress claims every subsequent event for
-	// itself, regardless of which row the pointer has since wandered to —
-	// the same "a drag belongs to whoever the button went down on" rule
-	// App's own scrollbar-drag capture follows.
-	if v.tabDragging {
-		return v.continueTabDrag(m)
-	}
-	// Row 0 is the tab bar, not text: a left click switches tabs (and arms
-	// the drag above), a middle click closes one. Right and an off-tab
-	// click are left unclaimed for App's generic handling, matching how a
-	// click in the body outside a recognized gesture already falls through.
-	if m.Row == 0 && m.EventType == layout.EventPress {
-		return v.handleTabBarPress(m)
-	}
-
-	// Only the left button selects. Right/middle are unclaimed so a future
-	// context menu can have them.
+	// Only the left button selects text. Right/middle in the BODY (as
+	// opposed to the tab bar above) are unclaimed — no body-level gesture
+	// uses them today.
 	if m.Button != layout.MouseLeft && m.Button != layout.MouseNone {
 		return false
 	}
@@ -227,8 +257,9 @@ func (v *View) HandleMouse(m layout.Mouse) bool {
 	switch m.EventType {
 	case layout.EventPress:
 		// Row 0 was already handled above; reaching here at row 0 means
-		// handleTabBarPress declined it (e.g. right-click), so it stays
-		// unclaimed rather than falling through to text placement.
+		// nothing there claimed it (e.g. a click that missed every tab),
+		// so it stays unclaimed rather than falling through to text
+		// placement.
 		if m.Row == 0 {
 			return false
 		}
@@ -268,13 +299,20 @@ func (v *View) HandleMouse(m layout.Mouse) bool {
 
 // handleTabBarPress handles a button-down in the tab bar (row 0): a left
 // click switches to the tab under the pointer and arms a reorder drag (see
-// continueTabDrag); a middle click asks to close it (see requestCloseTab).
-// Every click count is treated identically — there is no double/triple-click
-// behavior for a tab, unlike the body. Reports false (unclaimed) for a click
-// that missed every tab, or for any button other than left/middle — e.g.
-// right, left unclaimed for a future context menu.
+// continueTabDrag); a middle click asks to close it (see requestCloseTab);
+// a right click opens the context menu for it WITHOUT switching to it
+// (see Q3 — right-click acts on the clicked tab, active or not). Every
+// click count is treated identically — there is no double/triple-click
+// behavior for a tab, unlike the body. Reports false (unclaimed) for a
+// click that missed every tab (including one that landed on a scroll
+// indicator rather than a tab — see tabBarContentColumn) or for any other
+// button.
 func (v *View) handleTabBarPress(m layout.Mouse) bool {
-	i := tabAtColumn(v.tabs, m.Col)
+	contentCol, ok := tabBarContentColumn(v.tabs, v.tabScrollLeft, v.lastWidth, m.Col)
+	if !ok {
+		return false
+	}
+	i := tabAtColumn(v.tabs, contentCol)
 	if i < 0 {
 		return false
 	}
@@ -287,6 +325,9 @@ func (v *View) handleTabBarPress(m layout.Mouse) bool {
 	case layout.MouseMiddle:
 		v.requestCloseTab(i)
 		return true
+	case layout.MouseRight:
+		v.openTabMenu(i, m.Col)
+		return true
 	default:
 		return false
 	}
@@ -294,17 +335,30 @@ func (v *View) handleTabBarPress(m layout.Mouse) bool {
 
 // continueTabDrag handles every event from the motion right after
 // handleTabBarPress arms a drag through its release: on motion, it
-// live-reorders v.tabs to keep the dragged tab under the pointer; on
-// release (or anything else — e.g. a stray key-driven mode change
-// shouldn't be able to leave this stuck on), it just ends the drag. Always
-// returns true: once armed, this gesture owns every event until release,
-// the same capture rule App's scrollbar drag uses.
+// live-reorders v.tabs to keep the dragged tab under the pointer, nudging
+// the tab bar's scroll one tab at a time (see scrollTabBarByOneTab) if the
+// pointer has reached either visible edge — the tab-bar counterpart of how
+// a text-selection drag auto-scrolls the body past its edge (see
+// positionAt) — on release (or anything else — e.g. a stray key-driven mode
+// change shouldn't be able to leave this stuck on), it just ends the drag.
+// Always returns true: once armed, this gesture owns every event until
+// release, the same capture rule App's scrollbar drag uses.
 func (v *View) continueTabDrag(m layout.Mouse) bool {
 	if m.EventType != layout.EventMotion || m.Button != layout.MouseLeft {
 		v.tabDragging = false
 		return true
 	}
-	if dest := nearestTabIndex(v.tabs, m.Col); dest >= 0 && dest != v.tabDragCurrent {
+	switch {
+	case m.Col <= 0:
+		v.scrollTabBarByOneTab(-1)
+	case m.Col >= v.lastWidth-1:
+		v.scrollTabBarByOneTab(1)
+	}
+	contentCol, ok := tabBarContentColumn(v.tabs, v.tabScrollLeft, v.lastWidth, m.Col)
+	if !ok {
+		return true // landed on a scroll indicator this frame; the nudge above still applies next time
+	}
+	if dest := nearestTabIndex(v.tabs, contentCol); dest >= 0 && dest != v.tabDragCurrent {
 		v.moveTab(v.tabDragCurrent, dest)
 		v.tabDragCurrent = dest
 		v.active = dest

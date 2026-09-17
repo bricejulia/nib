@@ -123,6 +123,20 @@ var globalDefaultKeybinds = config.Defaults{
 	{Trigger: "Ctrl+w", Action: "split_right"},
 	{Trigger: "Ctrl+e", Action: "split_down"},
 	{Trigger: "Ctrl+x", Action: "close_pane"},
+	// Moves the active tab into the next/previous editor pane (see
+	// moveTabToPane). NOT Alt+]/Alt+[ (the obvious pairing with
+	// next_tab/prev_tab's own "]"/"["): outside the kitty keyboard
+	// protocol, Alt+<printable> degrades to the classic "ESC then the
+	// literal character" meta encoding (the same one Alt+b/Alt+f already
+	// rely on below) — fine for a letter, but "]"/"[" specifically collide
+	// with OSC/CSI, the terminal's own escape-sequence introducers (the
+	// same class of problem "Ctrl+g", not "Ctrl+[", avoids — see its own
+	// comment). Confirmed by hand: raw ESC+"]" never reached the app at
+	// all. Ctrl+Alt+Right/Left (named keys, not bare printables) don't
+	// have that ambiguity, and pair with the existing Ctrl+Alt+t
+	// (toggle_tab_mode) precedent for a dual-modifier structural action.
+	{Trigger: "Ctrl+Alt+Right", Action: "move_tab_next_pane"},
+	{Trigger: "Ctrl+Alt+Left", Action: "move_tab_prev_pane"},
 	// Re-reads the config file and re-applies everything it drives —
 	// every pane's keybindings, the global keymap, the LSP server
 	// registry, and the theme — live, no restart needed. Also fires
@@ -656,17 +670,71 @@ func run() error {
 		showNextConflict()
 	}
 
-	// closetabconfirmView offers to save or discard a tab with unsaved
-	// changes before closing it — shown when a mouse-driven close
-	// (middle-click on a tab) targets a dirty tab, via wireEditorPane's
-	// OnRequestCloseDirtyTab below. Unlike ":q" on a dirty buffer, which
-	// just refuses silently in the debug log, a mouse click that visibly
-	// does nothing reads as broken rather than refused, so this offers a
-	// real choice instead. OnSave/OnDiscard are re-pointed at the specific
-	// tab being closed on each request, the same pattern memPromptView's
-	// targetPath uses further down.
+	// closetabconfirmView offers to save or discard one or more dirty tabs
+	// before closing them — shown when a mouse-driven close (middle-click
+	// on a tab, or "Close Others"/"Close All" from its context menu)
+	// targets at least one dirty tab, via wireEditorPane's
+	// OnRequestCloseDirtyTabs below. Unlike ":q"/":qa" on a dirty buffer,
+	// which just refuse silently in the debug log, a mouse action that
+	// visibly does nothing reads as broken rather than refused, so this
+	// offers a real choice instead. OnSaveAll/OnDiscardAll are re-pointed
+	// at the specific tabs being closed on each request, the same pattern
+	// memPromptView's targetPath uses further down.
 	closetabconfirmView := closetabconfirm.New()
 	closetabconfirmView.OnCancel = app.CloseOverlay
+
+	// orderedEditorPaneIDs returns every editor pane's leaf ID in the same
+	// left-to-right/top-to-bottom order FocusManager cycles through (see
+	// layout.Leaves), filtered down to editor panes — the canonical
+	// "next/previous pane" order the move-tab action below uses, kept in
+	// exactly the order Tab/Shift+Tab already use so the two stay
+	// consistent.
+	orderedEditorPaneIDs := func() []layout.LeafID {
+		var ids []layout.LeafID
+		for _, leaf := range layout.Leaves(tree) {
+			if _, ok := editorPanes[leaf.ID]; ok {
+				ids = append(ids, leaf.ID)
+			}
+		}
+		return ids
+	}
+	// findPaneForView reverse-looks-up which editorPane owns v — needed by
+	// OnMoveTabToNextPane below, which only gets handed the *editor.View*
+	// that raised the callback, not the pane/leaf wrapping it.
+	findPaneForView := func(v *editor.View) (*editorPane, bool) {
+		for _, p := range editorPanes {
+			if p.view == v {
+				return p, true
+			}
+		}
+		return nil, false
+	}
+	// moveTabToPane moves tabs[index] out of source and into the next
+	// (dir=+1) or previous (dir=-1) editor pane in orderedEditorPaneIDs'
+	// order, wrapping around, then focuses wherever it landed — the shared
+	// implementation behind both Alt+]/Alt+[ (acting on the active tab)
+	// and the tab bar's own "Move to next pane" context-menu item (acting
+	// on whichever tab was right-clicked). A no-op if source is the only
+	// editor pane open.
+	moveTabToPane := func(source *editorPane, index, dir int) {
+		ids := orderedEditorPaneIDs()
+		if len(ids) < 2 {
+			return
+		}
+		pos := -1
+		for i, id := range ids {
+			if id == source.leaf.ID {
+				pos = i
+				break
+			}
+		}
+		if pos < 0 {
+			return
+		}
+		dest := editorPanes[ids[(pos+dir+len(ids))%len(ids)]]
+		source.view.TransferTabTo(index, dest.view)
+		app.FocusLeaf(dest.leaf.ID)
+	}
 
 	// wireEditorPane attaches every callback an editor pane needs to reach
 	// the rest of the application. Called for the initial pane below and for
@@ -709,27 +777,40 @@ func run() error {
 			}
 			queueConflicts([]editor.SaveConflict{c}, onResolved)
 		}
-		// A middle-click on a dirty tab hands off here instead of refusing —
-		// see closetabconfirmView above and editor.View.OnRequestCloseDirtyTab.
-		// Same "don't clobber whatever's already up" guard OnSaveConflict uses.
-		v.OnRequestCloseDirtyTab = func(path string, onSave, onDiscard func()) {
+		// A mouse-driven close (middle-click, or "Close Others"/"Close All")
+		// that would discard unsaved changes hands off here instead of
+		// refusing — see closetabconfirmView above and
+		// editor.View.OnRequestCloseDirtyTabs. Same "don't clobber
+		// whatever's already up" guard OnSaveConflict uses.
+		v.OnRequestCloseDirtyTabs = func(paths []string, onSaveAll, onDiscardAll func()) {
 			if app.OverlayActive() {
 				return
 			}
-			rel := path
-			if r, err := filepath.Rel(absRoot, path); err == nil {
-				rel = r
+			rel := make([]string, len(paths))
+			for i, p := range paths {
+				rel[i] = p
+				if r, err := filepath.Rel(absRoot, p); err == nil {
+					rel[i] = r
+				}
 			}
 			closetabconfirmView.Show(rel)
-			closetabconfirmView.OnSave = func() {
+			closetabconfirmView.OnSaveAll = func() {
 				app.CloseOverlay()
-				onSave()
+				onSaveAll()
 			}
-			closetabconfirmView.OnDiscard = func() {
+			closetabconfirmView.OnDiscardAll = func() {
 				app.CloseOverlay()
-				onDiscard()
+				onDiscardAll()
 			}
 			app.ShowOverlay(closetabconfirmView)
+		}
+		// "Move to next pane" from the tab bar's context menu: this package
+		// has no notion of sibling panes, so it hands off the index and
+		// lets moveTabToPane (above) do the actual cross-pane move.
+		v.OnMoveTabToNextPane = func(index int) {
+			if p, ok := findPaneForView(v); ok {
+				moveTabToPane(p, index, 1)
+			}
 		}
 		// Copying a mouse selection reaches the system clipboard through
 		// here — the editor pane speaks no OSC 52 itself, same arrangement
@@ -869,6 +950,17 @@ func run() error {
 		}
 		delete(editorPanes, target.leaf.ID)
 		rebuildAndFocus(app, layout.Leaves(survivor)[0].ID)
+	}
+	// moveActiveTabToPane is Alt+]/Alt+['s handler: moves targetPane()'s
+	// active tab (see moveTabToPane) rather than a specific index, since a
+	// keybinding — unlike the context menu's "Move to next pane" — has no
+	// clicked tab to act on.
+	moveActiveTabToPane := func(dir int) {
+		p, ok := targetPane()
+		if !ok {
+			return
+		}
+		moveTabToPane(p, p.view.ActiveIndex(), dir)
 	}
 
 	refreshGitStatus := func() {
@@ -1110,6 +1202,8 @@ func run() error {
 		"split_down":           func() { trySplit(layout.Vertical) },
 		"close_pane":           closeFocusedPane,
 		"reveal_in_tree":       revealInTree,
+		"move_tab_next_pane":   func() { moveActiveTabToPane(1) },
+		"move_tab_prev_pane":   func() { moveActiveTabToPane(-1) },
 	}
 
 	// actionPopupView.OnExecute closes the popup first — restoring

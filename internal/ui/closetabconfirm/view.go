@@ -1,27 +1,35 @@
 // Package closetabconfirm is a small modal shown when a mouse-driven close
-// (middle-click on a tab — see editor.View.OnRequestCloseDirtyTab) targets a
-// tab with unsaved changes. It is quitconfirm's single-file shape: unlike
-// ":q" on a dirty buffer, which just refuses silently (a debug-log line, no
-// visible feedback — fine for a command-line typo, not for a mouse gesture),
-// this gives the user a real choice. See cmd/nib/main.go's wireEditorPane.
+// (middle-click on a tab, or "Close Others"/"Close All" from its context
+// menu — see editor.View.OnRequestCloseDirtyTabs) would otherwise silently
+// discard unsaved changes. Unlike ":q"/":qa" on a dirty buffer, which just
+// refuse silently (a debug-log line, no visible feedback — fine for a
+// command-line typo, not for a mouse gesture), this gives a real choice.
+// See cmd/nib/main.go's wireEditorPane.
 package closetabconfirm
 
 import (
+	"fmt"
+
 	"github.com/bricejulia/nib/internal/layout"
 )
 
-// View asks whether to save or discard one dirty tab before closing it. Its
-// keys are fixed rather than user-configurable, matching quitconfirm and
-// reloadconfirm: a safety dialog's "cancel" must never be remappable onto
-// "discard".
+// View asks whether to save or discard one or more dirty tabs before
+// closing them — quitconfirm's own single-vs-many shape, reused here for a
+// single dirty tab (middle-click) and for a batch of them (Close
+// Others/Close All). Its keys are fixed rather than user-configurable,
+// matching quitconfirm and reloadconfirm: a safety dialog's "cancel" must
+// never be remappable onto "discard".
 type View struct {
-	path string
+	paths []string
 
-	// OnSave is called on "s": save this file, then close its tab.
-	OnSave func()
-	// OnDiscard is called on "d": close the tab, discarding the change.
-	OnDiscard func()
-	// OnCancel is called on Esc, dismissing the modal without closing.
+	// OnSaveAll is called on "s": save every listed file, then close their
+	// tabs.
+	OnSaveAll func()
+	// OnDiscardAll is called on "d": close the tabs, discarding every
+	// listed change.
+	OnDiscardAll func()
+	// OnCancel is called on Esc, dismissing the modal without closing
+	// anything.
 	OnCancel func()
 }
 
@@ -29,10 +37,11 @@ type View struct {
 // overlay.
 func New() *View { return &View{} }
 
-// Show primes the dialog with the tab's path, to be shown as given — the
-// caller decides absolute vs. project-relative.
-func (v *View) Show(path string) {
-	v.path = path
+// Show primes the dialog with the paths of every dirty tab that would be
+// closed, to be listed as given — the caller decides absolute vs.
+// project-relative.
+func (v *View) Show(paths []string) {
+	v.paths = paths
 }
 
 func (v *View) Title() string { return "Unsaved changes" }
@@ -45,7 +54,15 @@ func (v *View) Render(w layout.Window) {
 		row++
 	}
 
-	line(v.path+" has unsaved changes", layout.Style{Attr: layout.AttrBold})
+	if len(v.paths) == 1 {
+		line(v.paths[0]+" has unsaved changes", layout.Style{Attr: layout.AttrBold})
+	} else {
+		noun := "files"
+		line(fmt.Sprintf("%d unsaved %s:", len(v.paths), noun), layout.Style{Attr: layout.AttrBold})
+		for _, p := range v.paths {
+			line("  "+p, layout.Style{})
+		}
+	}
 	row++
 	line("[s] Save and close", layout.Style{})
 	line("[d] Discard and close", layout.Style{})
@@ -65,12 +82,12 @@ func (v *View) HandleKey(k layout.Key) bool {
 			v.OnCancel()
 		}
 	case k.Named == "" && (k.Text == "s" || k.Text == "S"):
-		if v.OnSave != nil {
-			v.OnSave()
+		if v.OnSaveAll != nil {
+			v.OnSaveAll()
 		}
 	case k.Named == "" && (k.Text == "d" || k.Text == "D"):
-		if v.OnDiscard != nil {
-			v.OnDiscard()
+		if v.OnDiscardAll != nil {
+			v.OnDiscardAll()
 		}
 	}
 	return true
