@@ -1081,11 +1081,17 @@ func (v *View) requestCloseTabs(targets []*tab) {
 		paths[i] = tb.path
 	}
 	v.OnRequestCloseDirtyTabs(paths,
-		func() { // save every dirty tab, then close the whole set
-			for _, tb := range dirty {
-				v.saveTab(tb) // best-effort: a tab that fails/conflicts just stays open, like SaveDirtyTabs
+		func() { // save every dirty tab, then close whichever of them succeeded
+			toClose := make([]*tab, 0, len(targets))
+			for _, tb := range targets {
+				if tb.buf != nil && tb.buf.Dirty {
+					if ok, _, _ := v.saveTab(tb); !ok {
+						continue // failed/conflicted: leave it open, same as SaveDirtyTabs would
+					}
+				}
+				toClose = append(toClose, tb)
 			}
-			v.removeTabs(doomedSet(targets))
+			v.removeTabs(doomedSet(toClose))
 		},
 		func() { v.removeTabs(doomedSet(targets)) }, // discard: close the whole set unconditionally
 	)

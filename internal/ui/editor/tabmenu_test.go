@@ -1,6 +1,8 @@
 package editor
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/bricejulia/nib/internal/layout"
@@ -186,5 +188,43 @@ func TestTabMenuCloseAllWithDirtyTabAsksForConfirmation(t *testing.T) {
 	}
 	if len(v.tabs) != 2 {
 		t.Error("nothing should close until the batch confirm resolves")
+	}
+}
+
+func TestRequestCloseTabsSaveAllLeavesAFailedSaveOpen(t *testing.T) {
+	// Regression guard: the "save all, then close" callback must only
+	// close the tabs that actually saved — not the whole batch
+	// unconditionally, which would silently discard a tab whose save
+	// failed or conflicted.
+	dir := t.TempDir()
+	okPath := filepath.Join(dir, "ok.go")
+	if err := os.WriteFile(okPath, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Under a directory that doesn't exist, so Buffer.Save's os.WriteFile
+	// has nowhere to write and saveTab reports failure.
+	badPath := filepath.Join(dir, "missing", "bad.go")
+
+	v := NewView()
+	v.Open(okPath) // properly stats the file, so HasDiskConflict won't false-positive
+	v.tabs[0].buf.Lines = []string{"v2"}
+	v.tabs[0].buf.Dirty = true
+	v.tabs = append(v.tabs, &tab{path: badPath, buf: &Buffer{Path: badPath, Lines: []string{"x"}, Dirty: true}})
+	v.active = 0
+
+	var onSaveAll func()
+	v.OnRequestCloseDirtyTabs = func(_ []string, saveAll, _ func()) { onSaveAll = saveAll }
+
+	v.requestCloseTabs(append([]*tab(nil), v.tabs...))
+	if onSaveAll == nil {
+		t.Fatal("OnRequestCloseDirtyTabs was not called")
+	}
+	onSaveAll()
+
+	if len(v.tabs) != 1 || v.tabs[0].path != badPath {
+		t.Fatalf("tabs = %v, want only the failed save (%s) left open", tabPaths(v.tabs), badPath)
+	}
+	if !v.tabs[0].buf.Dirty {
+		t.Error("the failed tab's unsaved change must not be discarded")
 	}
 }
