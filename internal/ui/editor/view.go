@@ -470,6 +470,32 @@ type View struct {
 	// helper processes for one gesture. See HandleMouse.
 	dragMoved bool
 
+	// tabDragging is true between a left-button press on a tab (row 0) and
+	// its release — the window during which pointer motion reorders tabs
+	// live (see continueTabDrag). A separate flag from dragging/dragMoved
+	// above: those describe a text-selection drag in the body, this one a
+	// tab-bar drag, and the two can never overlap (row 0 is claimed before
+	// mousePress ever runs — see HandleMouse) but are otherwise unrelated
+	// gestures with unrelated state.
+	tabDragging bool
+
+	// tabDragCurrent is the dragged tab's CURRENT index while tabDragging is
+	// true — updated every time continueTabDrag moves it, so each further
+	// motion event reorders relative to where the tab actually is now
+	// rather than where the drag started.
+	tabDragCurrent int
+
+	// OnRequestCloseDirtyTab, if set, is called instead of silently
+	// refusing (the way ":q" does — see closeActiveTab) when a mouse-driven
+	// close (middle-click on a tab — see requestCloseTab) targets a tab
+	// with unsaved changes. path is the tab's file; onSave/onDiscard are
+	// callbacks to invoke once the user has chosen — save-then-close or
+	// discard-and-close respectively — and nothing further happens if the
+	// user cancels instead. This package owns no overlay UI of its own (see
+	// OnSaveConflict for the same reasoning); cmd/nib/main.go wires this to
+	// show internal/ui/closetabconfirm.
+	OnRequestCloseDirtyTab func(path string, onSave, onDiscard func())
+
 	// highlights, when non-nil, computes tree-sitter highlighting off the
 	// UI goroutine — see Highlighter and submitHighlight. Every pane should
 	// share ONE (like store and register), since results land on the shared
@@ -869,6 +895,23 @@ func (v *View) closeTabAt(i int) {
 	v.notifyIfEmpty()
 }
 
+// moveTab relocates v.tabs[from] to index to, shifting the tabs between them
+// by one — the live-reorder step a tab-bar drag performs on every motion
+// event that crosses into a new slot (see continueTabDrag). A no-op for an
+// out-of-range or already-there index.
+func (v *View) moveTab(from, to int) {
+	if from == to || from < 0 || to < 0 || from >= len(v.tabs) || to >= len(v.tabs) {
+		return
+	}
+	t := v.tabs[from]
+	rest := append(v.tabs[:from:from], v.tabs[from+1:]...)
+	moved := make([]*tab, 0, len(rest)+1)
+	moved = append(moved, rest[:to]...)
+	moved = append(moved, t)
+	moved = append(moved, rest[to:]...)
+	v.tabs = moved
+}
+
 // CloseTab closes the active tab, activating the tab to its left (or the
 // new last tab, if the closed tab was leftmost). Fires OnAllTabsClosed if
 // this was the last one.
@@ -903,6 +946,47 @@ func (v *View) CloseTabByPath(path string) bool {
 		return true
 	}
 	return false
+}
+
+// closeTabPtr closes tb by identity rather than index — used by
+// requestCloseTab's save/discard callbacks, which can run after an
+// arbitrary delay (however long the confirm dialog stays up), during which
+// a drag-reorder could have moved tb to a different index.
+func (v *View) closeTabPtr(tb *tab) {
+	for i, t := range v.tabs {
+		if t == tb {
+			v.closeTabAt(i)
+			return
+		}
+	}
+}
+
+// requestCloseTab closes tabs[i] if it's clean, or — if it has unsaved
+// changes — asks OnRequestCloseDirtyTab to confirm first, rather than
+// refusing outright the way ":q" does. The mouse-driven counterpart to
+// closeActiveTab, but for any tab (not just the active one) and with a real
+// prompt instead of a silent debug-log refusal, since a middle-click that
+// visibly does nothing reads as broken rather than as "refused".
+func (v *View) requestCloseTab(i int) {
+	if i < 0 || i >= len(v.tabs) {
+		return
+	}
+	tb := v.tabs[i]
+	if tb.buf == nil || !tb.buf.Dirty {
+		v.closeTabAt(i)
+		return
+	}
+	if v.OnRequestCloseDirtyTab == nil {
+		return // no overlay wiring (e.g. a bare NewView() in tests) — refuse silently, like ":q"
+	}
+	v.OnRequestCloseDirtyTab(tb.path,
+		func() {
+			if ok, _, _ := v.saveTab(tb); ok {
+				v.closeTabPtr(tb)
+			}
+		},
+		func() { v.closeTabPtr(tb) },
+	)
 }
 
 // LargestBuffer returns the path and Source byte size of the largest
@@ -1424,6 +1508,74 @@ func tabBarSegments(tabs []*tab, active, cols int) []layout.Segment {
 		}
 	}
 	return textwidth.SliceSegmentsByDisplayColumn(segs, 0, cols)
+}
+
+// tabSpan is one tab's clickable column range in the tab bar, [start, end)
+// in the same display-column space Render draws row 0 in (see
+// tabBarSegments) — there is no horizontal scroll offset to account for,
+// since unlike the body the tab bar is never scrolled.
+type tabSpan struct {
+	start, end int
+}
+
+// tabBarSpans returns each tab's clickable column span, mirroring
+// tabBarSegments' own text construction (padding included, so the whole
+// visible chunk is clickable, not just the name) so a click maps back to
+// exactly the tab drawn there. A span's width is the same whether or not
+// its tab is active — "[name]" and " name " differ only in which one-column
+// character wraps each side — so this doesn't need to know which tab is
+// active the way tabBarSegments does.
+//
+// Truncation past the pane's width is left to the caller: a span partly or
+// wholly beyond cols simply isn't visible, and is therefore naturally
+// unreachable by a click whose Col can't exceed what's on screen — the tab
+// bar doesn't scroll to keep a tab in view, so neither does hit-testing.
+func tabBarSpans(tabs []*tab) []tabSpan {
+	names := tabDisplayNames(tabs)
+	spans := make([]tabSpan, len(tabs))
+	col := 0
+	for i := range tabs {
+		w := textwidth.DisplayWidth(" " + names[i] + " ")
+		spans[i] = tabSpan{start: col, end: col + w}
+		col += w
+		if i < len(tabs)-1 {
+			col++ // the "|" separator between tabs, not part of either span
+		}
+	}
+	return spans
+}
+
+// tabAtColumn returns the index of the tab whose span exactly contains col,
+// or -1 if col falls on a separator, in the blank tab-bar space past the
+// last tab, or there are no tabs — used for a click/middle-click press,
+// which should only ever act on a tab it actually landed on.
+func tabAtColumn(tabs []*tab, col int) int {
+	for i, sp := range tabBarSpans(tabs) {
+		if col >= sp.start && col < sp.end {
+			return i
+		}
+	}
+	return -1
+}
+
+// nearestTabIndex returns the index of the tab closest to col: the first
+// tab if col is left of it, the last if col is right of it, and otherwise
+// whichever tab's span col falls in or (on a separator) the one just past
+// it. Used while dragging a tab to reorder it (see continueTabDrag), where
+// the drop target should always be well-defined even when the pointer
+// drifts off a tab's exact span or off the pane entirely — unlike
+// tabAtColumn, this never returns "no tab" for a non-empty tab list.
+func nearestTabIndex(tabs []*tab, col int) int {
+	spans := tabBarSpans(tabs)
+	if len(spans) == 0 {
+		return -1
+	}
+	for i, sp := range spans {
+		if col < sp.end {
+			return i
+		}
+	}
+	return len(spans) - 1
 }
 
 // tabDisplayNames returns, per tab, the name shown in the tab bar: just

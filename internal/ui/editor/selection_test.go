@@ -64,12 +64,12 @@ func TestClickOnSecondRowSelectsSecondLine(t *testing.T) {
 	}
 }
 
-func TestClickOnTabBarIsNotConsumed(t *testing.T) {
-	// Row 0 is the tab bar. Left unclaimed so click-to-switch-tabs can be
-	// added later without having to undo anything.
+func TestClickOnTabBarPastLastTabIsNotConsumed(t *testing.T) {
+	// Row 0 is the tab bar, but a click past the last tab's span hits
+	// nothing — left unclaimed rather than swallowed.
 	v, _ := selectionView("hello")
-	if v.HandleMouse(press(5, 0, 1)) {
-		t.Error("a click on the tab bar should not be consumed by the text area")
+	if v.HandleMouse(press(30, 0, 1)) {
+		t.Error("a click past the last tab should not be consumed")
 	}
 }
 
