@@ -313,14 +313,17 @@ terminals bypass this while a modifier is held (`Option` on macOS).
 | `Shift+←` / `Shift+→` | Peek at a truncated name |
 | `a` | New file or directory |
 | `r` | Rename / move |
+| `c` | Copy |
 | `d` | Delete |
 
-`a` and `r` open a prompt on the pane's bottom row. What you type is a path
-relative to the project root — `a` prefills the selected folder, `r` prefills
-the selected entry — so editing the last segment renames and editing an
-earlier one moves. End a name with `/` to create a directory; missing parent
-directories are created for you. Nothing is ever overwritten: a name that
-already exists is refused, with the reason shown on the prompt row.
+`a`, `r`, and `c` open a prompt on the pane's bottom row. What you type is a
+path relative to the project root — `a` prefills the selected folder, `r`
+prefills the selected entry, `c` prefills a sibling name (`foo.go` → `foo
+copy.go`) — so editing the last segment renames or duplicates and editing an
+earlier one moves or copies elsewhere. End a name with `/` to create a
+directory; missing parent directories are created for you. Nothing is ever
+overwritten: a name that already exists is refused, with the reason shown on
+the prompt row.
 
 `d` asks `(y/N)` for a file or an empty directory. A directory that still has
 entries in it reports how many and requires typing `yes` — the removal is

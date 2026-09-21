@@ -119,6 +119,7 @@ var sections = []section{
 			{"Shift+Left Shift+Right", "Peek a long name"},
 			{"a", "New file (end with \"/\" for a directory)"},
 			{"r", "Rename / move: edit the path, Enter"},
+			{"c", "Copy: prefilled with a sibling name, edit the path, Enter"},
 			{"d", "Delete (confirm y/N)"},
 			{"] [", "Cycle view: files / changed files"},
 			{"Esc", "Cancel the prompt"},

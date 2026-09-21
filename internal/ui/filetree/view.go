@@ -36,6 +36,7 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "Shift+Left", Action: "peek_left"},
 	{Trigger: "a", Action: "create"},
 	{Trigger: "r", Action: "rename"},
+	{Trigger: "c", Action: "copy"},
 	{Trigger: "d", Action: "delete"},
 	{Trigger: "]", Action: "next_view"},
 	{Trigger: "[", Action: "prev_view"},
@@ -104,8 +105,9 @@ type View struct {
 	prompt          promptMode
 	promptField     textfield.TextField
 	promptErr       string // refusal shown inline, cleared by the next edit
-	promptTarget    string // absolute path the pending rename/delete acts on
-	promptIsSymlink bool   // promptTarget is a symlink — see beginDelete/promptLabel
+	promptTarget    string // absolute path the pending rename/copy/delete acts on
+	promptIsSymlink bool   // promptTarget is a symlink — see beginDelete/beginCopy/promptLabel
+	promptSrcIsDir  bool   // promptTarget is a directory — see beginCopy/commitCopy
 	promptCount     int    // entries inside promptTarget, for a recursive delete
 	promptScroll    int    // display columns the prompt row is scrolled by
 
@@ -534,6 +536,8 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.beginCreate()
 	case "rename":
 		v.beginRename()
+	case "copy":
+		v.beginCopy()
 	case "delete":
 		v.beginDelete()
 	case "next_view":

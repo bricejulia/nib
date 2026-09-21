@@ -248,6 +248,139 @@ func TestMovePathRefusesMovingADirectoryIntoItself(t *testing.T) {
 	}
 }
 
+func TestCopyPathCopiesAFileAndLeavesTheSourceInPlace(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(src, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(dir, "b.txt")
+	if err := copyPath(src, dst); err != nil {
+		t.Fatalf("copyPath: %v", err)
+	}
+	if got, err := os.ReadFile(src); err != nil || string(got) != "hi" {
+		t.Errorf("source content = %q, %v, want %q unchanged", got, err, "hi")
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read copy: %v", err)
+	}
+	if string(got) != "hi" {
+		t.Errorf("copy content = %q, want %q", got, "hi")
+	}
+}
+
+func TestCopyPathCopiesADirectoryRecursively(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(filepath.Join(src, "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "deep", "b.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(dir, "sub copy")
+	if err := copyPath(src, dst); err != nil {
+		t.Fatalf("copyPath: %v", err)
+	}
+	for rel, want := range map[string]string{"a.txt": "a", filepath.Join("deep", "b.txt"): "b"} {
+		got, err := os.ReadFile(filepath.Join(dst, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		if string(got) != want {
+			t.Errorf("%s content = %q, want %q", rel, got, want)
+		}
+	}
+	// The source must still be there, untouched.
+	if _, err := os.Stat(filepath.Join(src, "deep", "b.txt")); err != nil {
+		t.Error("source should be untouched")
+	}
+}
+
+// A symlink is recreated pointing at the same target, never followed and
+// copied as if it were the target's own content — resolving it could reach
+// outside the project entirely.
+func TestCopyPathRecreatesASymlinkRatherThanFollowingIt(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(dir, "link")
+	if err := os.Symlink(target, src); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(dir, "link copy")
+	if err := copyPath(src, dst); err != nil {
+		t.Fatalf("copyPath: %v", err)
+	}
+	got, err := os.Readlink(dst)
+	if err != nil {
+		t.Fatalf("expected a symlink at the destination: %v", err)
+	}
+	if got != target {
+		t.Errorf("link target = %q, want %q", got, target)
+	}
+}
+
+func TestCopyPathRefusesAnExistingDestination(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "a.txt")
+	dst := filepath.Join(dir, "b.txt")
+	if err := os.WriteFile(src, []byte("src"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("dst"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyPath(src, dst); !errors.Is(err, errExists) {
+		t.Fatalf("error = %v, want errExists", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "dst" {
+		t.Errorf("destination content = %q, want it untouched", got)
+	}
+}
+
+func TestCopyPathRefusesCopyingADirectoryIntoItself(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "sub")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyPath(src, filepath.Join(src, "inner")); !errors.Is(err, errIntoSelf) {
+		t.Errorf("error = %v, want errIntoSelf", err)
+	}
+}
+
+func TestCopyPathCreatesMissingParentDirectories(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(src, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(dir, "new", "nested", "a.txt")
+	if err := copyPath(src, dst); err != nil {
+		t.Fatalf("copyPath: %v", err)
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+}
+
 func TestDeletePathRemovesFilesAndEmptyDirectories(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "a.txt")

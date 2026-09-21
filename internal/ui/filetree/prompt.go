@@ -3,6 +3,7 @@ package filetree
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
@@ -25,6 +26,11 @@ const (
 	// the selected entry's own — editing the last segment renames it,
 	// editing an earlier one moves it. Both are one os.Rename.
 	promptRename
+	// promptCopy takes a project-root-relative path, prefilled with a
+	// sibling name (see copySuggestion) so Enter alone makes a sensible
+	// duplicate; editing it same as promptCreate/promptRename retargets
+	// where the copy lands.
+	promptCopy
 	// promptConfirm is a single-keypress y/N guard, used for deleting a
 	// file or an empty directory.
 	promptConfirm
@@ -56,6 +62,8 @@ func (v *View) promptLabel() string {
 		return "new: "
 	case promptRename:
 		return "rename: "
+	case promptCopy:
+		return "copy: "
 	case promptConfirm:
 		if v.promptIsSymlink {
 			return fmt.Sprintf("delete symlink %s? target will not be affected (y/N) ", filepath.Base(v.promptTarget))
@@ -130,6 +138,47 @@ func (v *View) beginRename() {
 	v.openPrompt(promptRename, rel)
 }
 
+// beginCopy opens the copy prompt on the selected entry, prefilled with a
+// sibling path suggested by copySuggestion so Enter alone makes a sensible
+// duplicate; editing the path — same as promptCreate/promptRename — can
+// retarget it anywhere in the project.
+func (v *View) beginCopy() {
+	if v.mode != ModeFiles {
+		return // ModeChanges is navigate-and-open only, not a file-op target
+	}
+	if v.cursor < 0 || v.cursor >= len(v.rows) {
+		return
+	}
+	n := v.rows[v.cursor].Node
+	rel, ok := relPath(v.root.Path, n.Path)
+	if !ok {
+		return // the project root itself has no row, so this is unreachable
+	}
+	v.promptTarget = n.Path
+	v.promptSrcIsDir = n.IsDir
+	v.promptIsSymlink = n.IsSymlink
+	v.openPrompt(promptCopy, copySuggestion(rel))
+}
+
+// copySuggestion turns rel — a project-root-relative path in the tree's
+// forward-slash form — into a sibling name for beginCopy's prefill: the
+// same directory, with " copy" appended to the base name ahead of the
+// extension ("foo.go" -> "foo copy.go"), the way macOS Finder and GNOME
+// Files name a duplicate. A leading dot (a dotfile's own name, e.g.
+// ".gitignore") is never treated as the extension to strip.
+func copySuggestion(rel string) string {
+	dir, base := "", rel
+	if i := strings.LastIndex(rel, "/"); i >= 0 {
+		dir, base = rel[:i+1], rel[i+1:]
+	}
+	ext := ""
+	if i := strings.LastIndex(base, "."); i > 0 {
+		ext = base[i:]
+		base = base[:i]
+	}
+	return dir + base + " copy" + ext
+}
+
 // beginDelete opens the delete confirmation for the selected entry: a
 // single y/N for a file or an empty directory, and the stricter type-"yes"
 // form for a directory that would be removed recursively.
@@ -178,6 +227,7 @@ func (v *View) cancelPrompt() {
 	v.promptErr = ""
 	v.promptTarget = ""
 	v.promptIsSymlink = false
+	v.promptSrcIsDir = false
 	v.promptCount = 0
 	v.promptScroll = 0
 }
@@ -246,6 +296,8 @@ func (v *View) commitPrompt() {
 		v.commitCreate()
 	case promptRename:
 		v.commitRename()
+	case promptCopy:
+		v.commitCopy()
 	case promptConfirmYes:
 		// Anything other than the full word cancels: this is the guard
 		// against a recursive delete, so a near-miss must not go through.
@@ -305,6 +357,30 @@ func (v *View) commitRename() {
 		v.syncAfter(dst, filepath.Dir(src), filepath.Dir(dst))
 	}
 	v.notifyMutated()
+}
+
+func (v *View) commitCopy() {
+	src := v.promptTarget
+	srcWasDir := v.promptSrcIsDir
+	srcWasSymlink := v.promptIsSymlink
+	dst, _, err := resolveInRoot(v.root.Path, v.promptField.String())
+	if err == nil {
+		err = copyPath(src, dst)
+	}
+	if err != nil {
+		v.failPrompt("copy", err)
+		return
+	}
+	v.cancelPrompt()
+	v.syncAfter(dst, filepath.Dir(dst))
+	v.notifyMutated()
+	// A copied file is opened immediately, the same as a newly created one
+	// (see commitCreate) — a copied directory or symlink has nothing worth
+	// opening as a buffer, and syncAfter above already left the cursor on
+	// it.
+	if !srcWasDir && !srcWasSymlink && v.OnOpen != nil {
+		v.OnOpen(dst)
+	}
 }
 
 func (v *View) commitDelete(recursive bool) {
