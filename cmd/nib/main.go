@@ -48,6 +48,7 @@ const watchDebounce = 200 * time.Millisecond
 const (
 	memWatchThreshold uint64        = 500 << 20 // 500MiB
 	memWatchInterval  time.Duration = 2 * time.Second
+	memPromptSnooze   time.Duration = 5 * time.Minute
 )
 
 // memoryThresholdEvent is posted (via app.Post, from memWatcher's own
@@ -1162,9 +1163,18 @@ func run() error {
 	// the file being offered up isn't necessarily the one the user is
 	// currently looking at.
 	memPromptView := memprompt.New()
-	memPromptView.OnCancel = app.CloseOverlay
 	var targetPath string
+	// snoozeUntil is set whenever the user dismisses the prompt (either
+	// button), so a noisy heap sample bouncing back above memWatchThreshold
+	// a few seconds later doesn't immediately reopen it — see
+	// promptToFreeMemory below.
+	var snoozeUntil time.Time
+	memPromptView.OnCancel = func() {
+		snoozeUntil = time.Now().Add(memPromptSnooze)
+		app.CloseOverlay()
+	}
 	memPromptView.OnConfirmClose = func() {
+		snoozeUntil = time.Now().Add(memPromptSnooze)
 		app.CloseOverlay()
 		for _, p := range editorPanes {
 			if p.view.CloseTabByPath(targetPath) {
@@ -1175,6 +1185,9 @@ func run() error {
 	promptToFreeMemory := func(heapBytes uint64) {
 		if app.OverlayActive() {
 			return // don't clobber whatever the user's already looking at
+		}
+		if time.Now().Before(snoozeUntil) {
+			return // user already saw and handled this recently
 		}
 		path, size := largestOpenBuffer()
 		if path == "" {
