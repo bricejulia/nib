@@ -2,6 +2,7 @@ package filetree
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,6 +120,101 @@ func movePath(src, dst string) error {
 		return err
 	}
 	return os.Rename(src, dst)
+}
+
+// copyPath duplicates src at dst — a file byte-for-byte with its original
+// mode, a directory recursively — creating any missing parent directories
+// on the way, same as movePath. Unlike movePath there's no case-only-rename
+// exception to make: a copy onto its own case-insensitive alias is refused
+// like any other existing target, since nothing about it is a rename.
+//
+// A directory copied into its own subtree is refused the same way a move
+// into itself is (see movePath) — copying "sub" to "sub/inner/sub" would
+// otherwise recurse into the very tree it's still writing.
+func copyPath(src, dst string) error {
+	if src == dst {
+		return errExists
+	}
+	if _, inside := relPath(src, dst); inside {
+		return errIntoSelf
+	}
+	if _, err := os.Lstat(dst); err == nil {
+		return errExists
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), newDirMode); err != nil {
+		return err
+	}
+	if err := copyAny(src, dst); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return errExists
+		}
+		return err
+	}
+	return nil
+}
+
+// copyAny copies one filesystem entry at src to dst, dispatching on what
+// src actually is. A symlink is recreated pointing at the same target
+// rather than followed — resolving it and copying whatever it points to
+// could reach outside the project entirely, and deletePath already treats
+// a symlink as the link itself rather than its target for the same reason.
+func copyAny(src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		target, err := os.Readlink(src)
+		if err != nil {
+			return err
+		}
+		return os.Symlink(target, dst)
+	case info.IsDir():
+		return copyDir(src, dst, info.Mode().Perm())
+	default:
+		return copyFile(src, dst, info.Mode().Perm())
+	}
+}
+
+// copyDir creates dst and copies every entry of src into it, recursively.
+func copyDir(src, dst string, mode os.FileMode) error {
+	if err := os.Mkdir(dst, mode); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := copyAny(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// copyFile copies src's bytes to a newly created dst with mode, refusing
+// (via O_EXCL) to clobber anything already there.
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	// The deferred close is only a backstop for an early return via
+	// io.Copy's error; the real close below is the one whose error is
+	// checked, since a buffered write failing at Close time is exactly
+	// the kind of error this function exists to surface.
+	defer func() { _ = out.Close() }()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 // deletePath removes abs. A directory that still has entries in it is only

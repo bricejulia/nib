@@ -495,7 +495,7 @@ func run() error {
 		if p, ok := editorPanes[lastFocusedLeaf]; ok && lastFocusedLeaf != id {
 			p.view.ExitEditingModes()
 		}
-		// Same reason, for the file tree's own create/rename/delete prompt:
+		// Same reason, for the file tree's own create/rename/copy/delete prompt:
 		// a half-typed filename left behind by a click elsewhere would sit
 		// swallowing every key the next time the tree got focus back. See
 		// filetree.View.CancelPrompt.

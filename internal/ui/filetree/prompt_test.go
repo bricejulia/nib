@@ -455,6 +455,148 @@ func TestPromptRenameKeepsAnExpandedDirectoryExpanded(t *testing.T) {
 	}
 }
 
+func TestCopySuggestion(t *testing.T) {
+	cases := map[string]string{
+		"a.txt":          "a copy.txt",
+		"sub/a.txt":      "sub/a copy.txt",
+		"sub":            "sub copy",
+		"deep/sub":       "deep/sub copy",
+		".gitignore":     ".gitignore copy",
+		"sub/.gitignore": "sub/.gitignore copy",
+	}
+	for rel, want := range cases {
+		if got := copySuggestion(rel); got != want {
+			t.Errorf("copySuggestion(%q) = %q, want %q", rel, got, want)
+		}
+	}
+}
+
+func TestPromptCopyPrefillsASiblingName(t *testing.T) {
+	v, _, _ := promptFixture(t)
+	selectRow(t, v, "a.txt")
+
+	v.HandleKey(layout.Key{Text: "c"})
+	if got := v.promptField.String(); got != "a copy.txt" {
+		t.Errorf("prefill = %q, want %q", got, "a copy.txt")
+	}
+}
+
+func TestPromptCopyCommitsAndSelectsTheDuplicate(t *testing.T) {
+	v, root, w := promptFixture(t)
+	selectRow(t, v, "a.txt")
+	mutated := 0
+	v.OnMutated = func() { mutated++ }
+
+	v.HandleKey(layout.Key{Text: "c"})
+	v.HandleKey(enterKey())
+
+	if _, err := os.Stat(filepath.Join(root, "a.txt")); err != nil {
+		t.Error("the source should still exist")
+	}
+	if _, err := os.Stat(filepath.Join(root, "a copy.txt")); err != nil {
+		t.Fatalf("expected %q on disk: %v", "a copy.txt", err)
+	}
+	if v.prompt != promptNone {
+		t.Error("the prompt should have closed on a successful commit")
+	}
+	if mutated != 1 {
+		t.Errorf("OnMutated called %d times, want 1", mutated)
+	}
+	v.Render(w)
+	if got := v.rows[v.cursor].Node.Name; got != "a copy.txt" {
+		t.Errorf("cursor on %q, want the duplicate", got)
+	}
+}
+
+func TestPromptCopyOpensTheNewFile(t *testing.T) {
+	v, root, _ := promptFixture(t)
+	selectRow(t, v, "a.txt")
+
+	var opened string
+	v.OnOpen = func(path string) { opened = path }
+
+	v.HandleKey(layout.Key{Text: "c"})
+	v.HandleKey(enterKey())
+
+	if want := filepath.Join(root, "a copy.txt"); opened != want {
+		t.Errorf("OnOpen called with %q, want %q", opened, want)
+	}
+}
+
+func TestPromptCopyDirectoryCopiesContentsAndDoesNotOpenIt(t *testing.T) {
+	v, root, _ := promptFixture(t)
+	selectRow(t, v, "sub")
+
+	var opened string
+	v.OnOpen = func(path string) { opened = path }
+
+	v.HandleKey(layout.Key{Text: "c"})
+	if got := v.promptField.String(); got != "sub copy" {
+		t.Fatalf("prefill = %q, want %q", got, "sub copy")
+	}
+	v.HandleKey(enterKey())
+
+	if _, err := os.Stat(filepath.Join(root, "sub", "c.txt")); err != nil {
+		t.Error("the source directory should be untouched")
+	}
+	if _, err := os.Stat(filepath.Join(root, "sub copy", "c.txt")); err != nil {
+		t.Fatalf("expected %q on disk: %v", "sub copy/c.txt", err)
+	}
+	if opened != "" {
+		t.Errorf("OnOpen called with %q, want no call for a directory", opened)
+	}
+}
+
+func TestPromptCopyRefusalKeepsThePromptOpen(t *testing.T) {
+	v, root, w := promptFixture(t)
+	selectRow(t, v, "a.txt")
+	mutated := 0
+	v.OnMutated = func() { mutated++ }
+
+	v.HandleKey(layout.Key{Text: "c"})
+	for range v.promptField.String() {
+		v.HandleKey(layout.Key{Named: layout.KeyBackspace})
+	}
+	typeKeys(v, "b.txt") // already exists
+	v.HandleKey(enterKey())
+
+	if v.prompt != promptCopy {
+		t.Fatal("a refused copy should leave the prompt open")
+	}
+	if v.promptErr == "" {
+		t.Error("expected an inline error message")
+	}
+	if _, err := os.Stat(filepath.Join(root, "a.txt")); err != nil {
+		t.Error("the source should be untouched")
+	}
+	if mutated != 0 {
+		t.Errorf("OnMutated called %d times, want 0", mutated)
+	}
+	v.Render(w)
+	bottom := w.lines[w.rows-1]
+	if !strings.Contains(bottom, errExists.Error()) {
+		t.Errorf("prompt row = %q, want it to show %q", bottom, errExists.Error())
+	}
+}
+
+// A copy creates a brand new path rather than retargeting the source, so —
+// unlike a rename — it must never fire OnPathMoved: nothing should repath
+// an editor tab still open on the original file.
+func TestPromptCopyDoesNotCallOnPathMoved(t *testing.T) {
+	v, _, _ := promptFixture(t)
+	selectRow(t, v, "a.txt")
+
+	called := false
+	v.OnPathMoved = func(string, string) { called = true }
+
+	v.HandleKey(layout.Key{Text: "c"})
+	v.HandleKey(enterKey())
+
+	if called {
+		t.Error("a copy is a new path, not a move — OnPathMoved should not fire")
+	}
+}
+
 func TestPromptDeleteFileConfirmation(t *testing.T) {
 	v, root, w := promptFixture(t)
 	selectRow(t, v, "a.txt")
