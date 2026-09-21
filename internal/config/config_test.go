@@ -283,3 +283,31 @@ func TestShowWhitespaceOnNilConfig(t *testing.T) {
 		t.Errorf("expected false from a nil *Config, got %v", got)
 	}
 }
+
+func TestParseMemwatchDirective(t *testing.T) {
+	if got := Parse(strings.NewReader("memwatch = 500\n")).MemWatchThresholdMiB(); got != 500 {
+		t.Errorf("MemWatchThresholdMiB() = %v, want 500", got)
+	}
+	if got := Parse(strings.NewReader("")).MemWatchThresholdMiB(); got != 0 {
+		t.Errorf("MemWatchThresholdMiB() = %v, want 0 when unset", got)
+	}
+}
+
+func TestParseMemwatchSkipsMalformedLines(t *testing.T) {
+	src := `
+memwatch =
+memwatch = abc
+memwatch = 0
+memwatch = -5
+`
+	if got := Parse(strings.NewReader(src)).MemWatchThresholdMiB(); got != 0 {
+		t.Errorf("MemWatchThresholdMiB() = %v, want 0 from malformed input", got)
+	}
+}
+
+func TestMemWatchThresholdMiBOnNilConfig(t *testing.T) {
+	var cfg *Config
+	if got := cfg.MemWatchThresholdMiB(); got != 0 {
+		t.Errorf("expected 0 from a nil *Config, got %v", got)
+	}
+}
