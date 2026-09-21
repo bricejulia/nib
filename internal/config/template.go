@@ -152,6 +152,14 @@ func Template(scopes []Scope) string {
 #
 # Any other value (or omitting the line) leaves it off. Its color is the
 # "editor_whitespace" role, overridable like any other color = line above.
+
+
+# --- memory ---
+#
+# Change the heap size (in MiB) that triggers the prompt offering to
+# close a file to free memory. Defaults to 500 when omitted.
+#
+#   memwatch = 500
 `)
 
 	for _, s := range scopes {

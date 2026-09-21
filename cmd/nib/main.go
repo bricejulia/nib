@@ -43,8 +43,13 @@ const watchDebounce = 200 * time.Millisecond
 // memWatchThreshold/memWatchInterval configure the background memory
 // watchdog (see internal/memwatch) — how much Go heap nib can use before
 // offering to close its largest open file, and how often to check.
-// Hardcoded for now, like highlightTimeoutMicros/maxTreeSitterBytes/
-// maxRenderLineRunes in internal/ui/editor — not user-configurable yet.
+// memWatchThreshold is just the fallback default: the user can override it
+// with a "memwatch = <MiB>" config line (see config.MemWatchThresholdMiB),
+// applied where memWatcher is constructed below. A change to that line
+// takes effect on next restart, like config-driven LSP server changes —
+// memWatcher isn't rebuilt by the Ctrl+l config reload. memWatchInterval
+// and memPromptSnooze stay hardcoded, like highlightTimeoutMicros/
+// maxTreeSitterBytes/maxRenderLineRunes in internal/ui/editor.
 const (
 	memWatchThreshold uint64        = 500 << 20 // 500MiB
 	memWatchInterval  time.Duration = 2 * time.Second
@@ -1445,7 +1450,11 @@ func run() error {
 	// fsnotify watcher goroutine just below: a background goroutine that
 	// only ever talks to the UI by posting, never touching editorPanes or
 	// any View directly.
-	memWatcher := memwatch.New(memWatchThreshold, memWatchInterval, func(heap uint64) {
+	memThreshold := memWatchThreshold
+	if mib := cfg.MemWatchThresholdMiB(); mib > 0 {
+		memThreshold = uint64(mib) << 20
+	}
+	memWatcher := memwatch.New(memThreshold, memWatchInterval, func(heap uint64) {
 		app.Post(memoryThresholdEvent{heapBytes: heap})
 	})
 	memWatcher.Start()

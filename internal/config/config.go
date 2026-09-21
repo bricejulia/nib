@@ -9,10 +9,11 @@
 //	color   = <role>             = <color name>
 //	tabmode = <language|default> = <spaces|tabs>[:<width>]
 //
-// plus two two-field directives:
+// plus three two-field directives:
 //
 //	theme      = <name>
 //	whitespace = true
+//	memwatch   = <MiB>
 //
 // The "lsp" directive registers a language server, e.g.
 //
@@ -40,6 +41,11 @@
 // The "whitespace" directive turns on rendering of spaces and tab-fill as
 // visible glyphs in the editor, e.g. "whitespace = true". Any other value
 // (or omitting the directive) leaves it off.
+//
+// The "memwatch" directive sets the heap size, in MiB, that triggers the
+// prompt offering to close a file to free memory, e.g. "memwatch = 500".
+// A non-numeric or non-positive value is ignored; omitting the directive
+// keeps nib's built-in default.
 //
 // scope is one of "global" (or omitted, e.g. "keybind = ctrl+p = ..."),
 // "editor", "filetree", "finder", "debug", "help", "actionpopup" — see each package's
@@ -100,12 +106,13 @@ type TabMode struct {
 // Defaults, no extra language servers are registered, theming falls back
 // to internal/theme's default theme, and whitespace display is off.
 type Config struct {
-	keybinds   map[string]map[string]string // scope -> trigger -> action
-	servers    map[string][]string          // language -> argv
-	themeName  string                       // "" means unset, falls back to theme.DefaultName
-	colors     map[string]layout.Color      // role name (as typed, lowercased) -> validated color
-	tabModes   map[string]TabMode           // language (or "default") -> indent style
-	whitespace bool                         // "whitespace = true" was set
+	keybinds    map[string]map[string]string // scope -> trigger -> action
+	servers     map[string][]string          // language -> argv
+	themeName   string                       // "" means unset, falls back to theme.DefaultName
+	colors      map[string]layout.Color      // role name (as typed, lowercased) -> validated color
+	tabModes    map[string]TabMode           // language (or "default") -> indent style
+	whitespace  bool                         // "whitespace = true" was set
+	memWatchMiB int                          // "memwatch = <MiB>" value; 0 means unset
 }
 
 // Servers returns the language->command entries parsed from "lsp" lines,
@@ -169,6 +176,16 @@ func (c *Config) ShowWhitespace() bool {
 	return c.whitespace
 }
 
+// MemWatchThresholdMiB returns the user-configured "memwatch = <MiB>"
+// value, or 0 if unset — callers fall back to their own default in that
+// case. Safe to call on a nil *Config.
+func (c *Config) MemWatchThresholdMiB() int {
+	if c == nil {
+		return 0
+	}
+	return c.memWatchMiB
+}
+
 // Parse reads nib's config format from r. It never returns an error:
 // unparseable lines are silently skipped, since a broken config line
 // shouldn't prevent nib from starting (worst case, that one override is
@@ -202,6 +219,10 @@ func Parse(r io.Reader) *Config {
 				}
 			case "whitespace":
 				cfg.whitespace = strings.TrimSpace(fields[1]) == "true"
+			case "memwatch":
+				if mib, err := strconv.Atoi(strings.TrimSpace(fields[1])); err == nil && mib > 0 {
+					cfg.memWatchMiB = mib
+				}
 			}
 			continue
 		}
