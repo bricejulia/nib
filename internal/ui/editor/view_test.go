@@ -2291,6 +2291,49 @@ func TestInsertModeAltLeftRightWordNav(t *testing.T) {
 	}
 }
 
+// TestInsertWordForwardStopsAtEndOfLine confirms Alt+Right stops at
+// end-of-line instead of continuing on to the first word of the next line,
+// unlike plain "w" (see TestWordForwardOnceCrossesLines in motion_test.go)
+// — vim's "w" is expected to cross lines, but Alt+Right is the readline/
+// IDE-style word-jump most editors bind it to, which isn't. A further
+// Alt+Right stays put rather than finally crossing.
+func TestInsertWordForwardStopsAtEndOfLine(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo bar", "baz"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 4 // start of "bar"
+	v.HandleKey(layout.Key{Text: "i"})
+
+	v.HandleKey(layout.Key{Named: layout.KeyRight, Mods: layout.ModAlt})
+	if ln, col := v.activeTab().cursorLn, v.activeTab().cursorCol; ln != 0 || col != 7 {
+		t.Fatalf("cursor after Alt+Right = (%d,%d), want (0,7) — end of \"bar\", not the next line", ln, col)
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyRight, Mods: layout.ModAlt})
+	if ln, col := v.activeTab().cursorLn, v.activeTab().cursorCol; ln != 0 || col != 7 {
+		t.Fatalf("cursor after a second Alt+Right = (%d,%d), want unchanged (0,7)", ln, col)
+	}
+}
+
+// TestInsertWordBackwardStopsAtStartOfLine mirrors
+// TestInsertWordForwardStopsAtEndOfLine for Alt+Left.
+func TestInsertWordBackwardStopsAtStartOfLine(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo", "bar baz"}}}}
+	v.active = 0
+	v.activeTab().cursorLn = 1
+	v.activeTab().cursorCol = 4 // start of "baz"
+	v.HandleKey(layout.Key{Text: "i"})
+
+	v.HandleKey(layout.Key{Named: layout.KeyLeft, Mods: layout.ModAlt})
+	if ln, col := v.activeTab().cursorLn, v.activeTab().cursorCol; ln != 1 || col != 0 {
+		t.Fatalf("cursor after Alt+Left = (%d,%d), want (1,0) — start of \"bar baz\", not the previous line", ln, col)
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyLeft, Mods: layout.ModAlt})
+	if ln, col := v.activeTab().cursorLn, v.activeTab().cursorCol; ln != 1 || col != 0 {
+		t.Fatalf("cursor after a second Alt+Left = (%d,%d), want unchanged (1,0)", ln, col)
+	}
+}
+
 // TestInsertModeAltBFAliasesMatchAltLeftRight pins the Ghostty/Terminal.app
 // compatibility aliases: those terminals send Option+Left/Right as literal
 // ESC+"b"/ESC+"f" (the classic readline Meta-b/Meta-f word-motion escapes),
@@ -2410,9 +2453,12 @@ func TestInsertModeAltBackspaceUndoIsOneStepWithSurroundingTyping(t *testing.T) 
 }
 
 // TestNormalModeAltLeftRightMatchesWB confirms Alt+Left/Right in Normal
-// mode is a genuine alternate trigger for the exact same word_backward/
-// word_forward actions "b"/"w" already run — not a separate, possibly
-// divergent implementation — by checking both land on the same position.
+// mode lands on the same position "b"/"w" do FOR A SAME-LINE JUMP — the one
+// case insert_word_backward/insert_word_forward and word_backward/
+// word_forward still agree on (see wordForwardOnceClamped/
+// wordBackwardOnceClamped, and TestInsertWordForwardStopsAtEndOfLine /
+// TestInsertWordBackwardStopsAtStartOfLine for where they diverge: crossing
+// a line boundary).
 func TestNormalModeAltLeftRightMatchesWB(t *testing.T) {
 	v := NewView()
 	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo bar baz"}}}}
@@ -2445,6 +2491,21 @@ func TestNormalModeAltLeftRightMatchesWB(t *testing.T) {
 	}
 	if got := v.activeTab().buf.Lines[0]; got != "foo bar baz" {
 		t.Fatalf("word-nav must not edit the buffer: Lines[0] = %q", got)
+	}
+}
+
+// TestNormalModeAltRightStopsAtEndOfLine mirrors
+// TestInsertWordForwardStopsAtEndOfLine, confirming the same clamped
+// behavior applies in Normal mode, not just while inserting.
+func TestNormalModeAltRightStopsAtEndOfLine(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{"foo bar", "baz"}}}}
+	v.active = 0
+	v.activeTab().cursorCol = 4 // start of "bar"
+
+	v.HandleKey(layout.Key{Named: layout.KeyRight, Mods: layout.ModAlt})
+	if ln, col := v.activeTab().cursorLn, v.activeTab().cursorCol; ln != 0 || col != 6 {
+		t.Fatalf("cursor after Alt+Right = (%d,%d), want (0,6) — last char of \"bar\", not the next line", ln, col)
 	}
 }
 
