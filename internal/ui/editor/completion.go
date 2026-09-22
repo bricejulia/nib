@@ -10,12 +10,13 @@ import (
 
 // maxCompletionCandidates caps how many autocomplete candidates are kept.
 // The popup itself scrolls to reach anything within this cap (see
-// popupBounds' offset return), so this is a safety bound against a
-// degenerate case — a huge/minified buffer contributing thousands of
-// unique identifiers, or a server returning an unbounded list — not a
-// practical ceiling on what's reachable, the same "bound it, don't let it
-// grow forever" instinct as maxUndoEntries elsewhere in this package.
-const maxCompletionCandidates = 200
+// popupBounds' offset return), so this is deliberately set high enough to
+// be invisible in normal use — a safety bound against a degenerate case
+// (a huge/minified buffer contributing thousands of unique identifiers, or
+// a server returning an unbounded list), not a practical ceiling on what's
+// reachable, the same "bound it, don't let it grow forever" instinct as
+// maxUndoEntries elsewhere in this package.
+const maxCompletionCandidates = 2000
 
 // completionState is the in-progress autocomplete popup (Ctrl+Space),
 // kept on View (not tab) since only one pane is ever mid-Insert-session at
