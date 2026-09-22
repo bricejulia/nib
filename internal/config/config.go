@@ -48,7 +48,8 @@
 // keeps nib's built-in default.
 //
 // scope is one of "global" (or omitted, e.g. "keybind = ctrl+p = ..."),
-// "editor", "filetree", "finder", "debug", "help", "actionpopup" — see each package's
+// "editor", "filetree", "finder", "debug", "help", "actionpopup",
+// "references", "codeactions" — see each package's
 // DefaultKeybinds for the actions available in that scope. trigger is a
 // key description like "ctrl+p", "shift+left", or a bare character like
 // "x"; see Normalize for exactly what's accepted. Blank lines and lines

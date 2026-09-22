@@ -221,3 +221,185 @@ func TestRealGoplsDefinitionFindsCrossFileTarget(t *testing.T) {
 		t.Errorf("definition line = %d, want 2", loc.Range.Start.Line)
 	}
 }
+
+func TestRealGoplsFindsReferences(t *testing.T) {
+	requireGopls(t)
+	dir := goplsProject(t)
+	mainPath := filepath.Join(dir, "main.go")
+	helperPath := filepath.Join(dir, "helper.go")
+
+	c, err := newClient(dir, []string{"gopls"}, nil)
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	for _, p := range []string{mainPath, helperPath} {
+		source, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.didOpen(p, "go", string(source), 1); err != nil {
+			t.Fatalf("didOpen %s: %v", p, err)
+		}
+	}
+
+	// helper.go line 2 (0-based) is "func Helper() int {"; character 5
+	// lands inside "Helper" — its declaration, referenced from main.go.
+	var locs []Location
+	for attempt := 0; attempt < 10; attempt++ {
+		locs, err = c.references(helperPath, 2, 5)
+		if err == nil && len(locs) > 0 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("references: %v", err)
+	}
+	if len(locs) == 0 {
+		t.Fatal("expected gopls to find at least one reference to Helper")
+	}
+	var foundInMain bool
+	for _, loc := range locs {
+		if loc.Path() == mainPath {
+			foundInMain = true
+		}
+	}
+	if !foundInMain {
+		t.Errorf("expected a reference in %q among %+v", mainPath, locs)
+	}
+}
+
+func TestRealGoplsRenamesSymbol(t *testing.T) {
+	requireGopls(t)
+	dir := goplsProject(t)
+	mainPath := filepath.Join(dir, "main.go")
+	helperPath := filepath.Join(dir, "helper.go")
+
+	c, err := newClient(dir, []string{"gopls"}, nil)
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	for _, p := range []string{mainPath, helperPath} {
+		source, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.didOpen(p, "go", string(source), 1); err != nil {
+			t.Fatalf("didOpen %s: %v", p, err)
+		}
+	}
+
+	// helper.go line 2, character 5: inside "Helper" in its declaration.
+	var edit WorkspaceEdit
+	var ok bool
+	for attempt := 0; attempt < 10; attempt++ {
+		edit, ok, err = c.rename(helperPath, 2, 5, "Renamed")
+		if err == nil && ok {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected gopls to return a WorkspaceEdit for renaming Helper")
+	}
+	// A rename of a symbol used across files must touch both — the thing
+	// a same-file text substitution fundamentally cannot do.
+	if len(edit.Changes) < 2 {
+		t.Fatalf("edit.Changes = %+v, want edits in both files", edit.Changes)
+	}
+	for _, path := range []string{mainPath, helperPath} {
+		found := false
+		for uri := range edit.Changes {
+			if (Location{URI: uri}).Path() == path {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected an edit for %q among %v", path, changeKeys(edit.Changes))
+		}
+	}
+}
+
+func changeKeys(m map[string][]TextEdit) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func TestRealGoplsOffersCodeAction(t *testing.T) {
+	requireGopls(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproj\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// An unused import: gopls offers a "Remove unused import" quick fix
+	// for this, a genuinely Edit-bearing CodeAction (not a bare Command).
+	source := "package main\n\nimport \"fmt\"\n\nfunc main() {\n}\n"
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	diags := make(chan PublishDiagnosticsParams, 8)
+	c, err := newClient(dir, []string{"gopls"}, func(p PublishDiagnosticsParams) {
+		select {
+		case diags <- p:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	if err := c.didOpen(path, "go", source, 1); err != nil {
+		t.Fatalf("didOpen: %v", err)
+	}
+
+	// Wait for gopls to publish the unused-import diagnostic, then pass it
+	// as codeAction's context, matching what nib's own triggerCodeAction
+	// does with a line's known diagnostics.
+	var lineDiags []Diagnostic
+	deadline := time.After(30 * time.Second)
+waitDiag:
+	for {
+		select {
+		case p := <-diags:
+			if uriToPath(p.URI) == path && len(p.Diagnostics) > 0 {
+				lineDiags = p.Diagnostics
+				break waitDiag
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the unused-import diagnostic")
+		}
+	}
+
+	var actions []CodeAction
+	for attempt := 0; attempt < 10; attempt++ {
+		actions, err = c.codeAction(path, 2, 8, lineDiags) // line 2 (0-based) is the import line
+		if err == nil && len(actions) > 0 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("codeAction: %v", err)
+	}
+	if len(actions) == 0 {
+		t.Fatal("expected gopls to offer at least one Edit-bearing code action for the unused import")
+	}
+	for _, a := range actions {
+		if a.Edit == nil {
+			t.Errorf("action %q has a nil Edit (codeActions should have filtered it out)", a.Title)
+		}
+	}
+}

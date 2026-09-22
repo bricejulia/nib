@@ -321,3 +321,170 @@ func TestTextEditsHandlesNullAndEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestLocationsDecodesArrayShape(t *testing.T) {
+	const raw = `[
+		{"uri":"file:///tmp/a.go","range":{"start":{"line":1,"character":2},"end":{"line":1,"character":3}}},
+		{"uri":"file:///tmp/b.go","range":{"start":{"line":9,"character":0},"end":{"line":9,"character":1}}}
+	]`
+	locs, err := locations(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("locations: %v", err)
+	}
+	if len(locs) != 2 || locs[1].URI != "file:///tmp/b.go" {
+		t.Errorf("got %+v", locs)
+	}
+}
+
+func TestLocationsHandlesNullAndEmpty(t *testing.T) {
+	for _, raw := range []string{`null`, ``} {
+		locs, err := locations(json.RawMessage(raw))
+		if err != nil {
+			t.Errorf("locations(%q): unexpected error %v", raw, err)
+		}
+		if len(locs) != 0 {
+			t.Errorf("locations(%q) = %+v, want none", raw, locs)
+		}
+	}
+}
+
+func TestWorkspaceEditDecodesObjectShape(t *testing.T) {
+	const raw = `{"changes": {
+		"file:///tmp/a.go": [{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"newText":"foo"}]
+	}}`
+	edit, ok, err := workspaceEdit(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("workspaceEdit: %v", err)
+	}
+	if !ok || len(edit.Changes) != 1 {
+		t.Fatalf("got ok=%v changes=%+v", ok, edit.Changes)
+	}
+	if got := edit.Changes["file:///tmp/a.go"][0].NewText; got != "foo" {
+		t.Errorf("NewText = %q, want %q", got, "foo")
+	}
+}
+
+func TestWorkspaceEditHandlesNullAndEmpty(t *testing.T) {
+	for _, raw := range []string{`null`, ``, `{}`} {
+		edit, ok, err := workspaceEdit(json.RawMessage(raw))
+		if err != nil {
+			t.Errorf("workspaceEdit(%q): unexpected error %v", raw, err)
+		}
+		if ok || len(edit.Changes) != 0 {
+			t.Errorf("workspaceEdit(%q) = (%+v, %v), want (empty, false)", raw, edit, ok)
+		}
+	}
+}
+
+// TestWorkspaceEditDecodesDocumentChangesShape uses gopls's actual rename
+// wire shape (verified against a real gopls, not assumed — see
+// TestRealGoplsRenamesSymbol): DocumentChanges, never the plain Changes
+// map, despite that being the only form a first draft of this package
+// assumed every server used.
+func TestWorkspaceEditDecodesDocumentChangesShape(t *testing.T) {
+	const raw = `{"documentChanges":[
+		{"textDocument":{"uri":"file:///tmp/a.go","version":1},
+		 "edits":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"newText":"foo"}]},
+		{"textDocument":{"uri":"file:///tmp/b.go","version":1},
+		 "edits":[{"range":{"start":{"line":5,"character":1},"end":{"line":5,"character":4}},"newText":"bar"}]}
+	]}`
+	edit, ok, err := workspaceEdit(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("workspaceEdit: %v", err)
+	}
+	if !ok || len(edit.Changes) != 2 {
+		t.Fatalf("got ok=%v changes=%+v, want 2 files' worth", ok, edit.Changes)
+	}
+	if got := edit.Changes["file:///tmp/a.go"][0].NewText; got != "foo" {
+		t.Errorf("a.go NewText = %q, want %q", got, "foo")
+	}
+	if got := edit.Changes["file:///tmp/b.go"][0].NewText; got != "bar" {
+		t.Errorf("b.go NewText = %q, want %q", got, "bar")
+	}
+}
+
+// TestWorkspaceEditDocumentChangesSkipsResourceOperations covers a
+// DocumentChanges entry with no "edits" field (a CreateFile/RenameFile/
+// DeleteFile resource operation) — nib has no plumbing to apply those, so
+// they're dropped rather than contributing an empty edit list.
+func TestWorkspaceEditDocumentChangesSkipsResourceOperations(t *testing.T) {
+	const raw = `{"documentChanges":[
+		{"kind":"rename","oldUri":"file:///tmp/old.go","newUri":"file:///tmp/new.go"},
+		{"textDocument":{"uri":"file:///tmp/a.go","version":1},
+		 "edits":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"newText":"foo"}]}
+	]}`
+	edit, ok, err := workspaceEdit(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("workspaceEdit: %v", err)
+	}
+	if !ok || len(edit.Changes) != 1 {
+		t.Fatalf("got ok=%v changes=%+v, want only the one real edit", ok, edit.Changes)
+	}
+}
+
+// TestCodeActionsDecodesDocumentChangesEdit guards the same bug the two
+// tests above cover, but for an Edit reached through CodeAction rather
+// than a direct rename response — WorkspaceEdit.UnmarshalJSON has to
+// normalize DocumentChanges wherever a WorkspaceEdit is nested, not only
+// at the top level.
+func TestCodeActionsDecodesDocumentChangesEdit(t *testing.T) {
+	const raw = `[{"title":"Remove unused import","edit":{"documentChanges":[
+		{"textDocument":{"uri":"file:///a.go","version":1},
+		 "edits":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":""}]}
+	]}}]`
+	actions, err := codeActions(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("codeActions: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("got %d actions, want 1 (DocumentChanges must not be filtered out as unusable)", len(actions))
+	}
+	if len(actions[0].Edit.Changes) != 1 {
+		t.Errorf("Edit.Changes = %+v, want the normalized entry", actions[0].Edit.Changes)
+	}
+}
+
+func TestCodeActionsDecodesArrayShape(t *testing.T) {
+	const raw = `[
+		{"title":"Remove unused import","kind":"quickfix","edit":{"changes":{"file:///a.go":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":""}]}}}
+	]`
+	actions, err := codeActions(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("codeActions: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Title != "Remove unused import" {
+		t.Fatalf("got %+v", actions)
+	}
+	if actions[0].Edit == nil || len(actions[0].Edit.Changes) != 1 {
+		t.Errorf("Edit = %+v, want one file's changes", actions[0].Edit)
+	}
+}
+
+// TestCodeActionsDropsBareCommands covers the spec-legal Command entry
+// shape (no "edit" field) — nib has no "execute an arbitrary server
+// command" plumbing, so these are filtered out as nothing it can act on.
+func TestCodeActionsDropsBareCommands(t *testing.T) {
+	const raw = `[
+		{"title":"Organize imports","command":"gopls.organize_imports","arguments":[]},
+		{"title":"Remove unused import","edit":{"changes":{"file:///a.go":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":""}]}}}
+	]`
+	actions, err := codeActions(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("codeActions: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Title != "Remove unused import" {
+		t.Fatalf("got %+v, want only the Edit-bearing action", actions)
+	}
+}
+
+func TestCodeActionsHandlesNullAndEmpty(t *testing.T) {
+	for _, raw := range []string{`null`, ``} {
+		actions, err := codeActions(json.RawMessage(raw))
+		if err != nil {
+			t.Errorf("codeActions(%q): unexpected error %v", raw, err)
+		}
+		if len(actions) != 0 {
+			t.Errorf("codeActions(%q) = %+v, want none", raw, actions)
+		}
+	}
+}

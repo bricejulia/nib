@@ -36,6 +36,19 @@ type fakeClient struct {
 	formatEdits []TextEdit
 	formatErr   error
 	formatCalls int
+
+	refLocs  []Location
+	refErr   error
+	refCalls int
+
+	renameEdit  WorkspaceEdit
+	renameFound bool
+	renameErr   error
+	renameCalls int
+
+	codeActionResults []CodeAction
+	codeActionErr     error
+	codeActionCalls   int
 }
 
 func (f *fakeClient) didOpen(path, _, _ string, version int) error {
@@ -78,6 +91,21 @@ func (f *fakeClient) signatureHelp(string, int, int) (SignatureHelp, bool, error
 func (f *fakeClient) formatting(string, int, bool) ([]TextEdit, error) {
 	f.formatCalls++
 	return f.formatEdits, f.formatErr
+}
+
+func (f *fakeClient) references(string, int, int) ([]Location, error) {
+	f.refCalls++
+	return f.refLocs, f.refErr
+}
+
+func (f *fakeClient) rename(string, int, int, string) (WorkspaceEdit, bool, error) {
+	f.renameCalls++
+	return f.renameEdit, f.renameFound, f.renameErr
+}
+
+func (f *fakeClient) codeAction(string, int, int, []Diagnostic) ([]CodeAction, error) {
+	f.codeActionCalls++
+	return f.codeActionResults, f.codeActionErr
 }
 
 func (f *fakeClient) Close() error {
@@ -528,6 +556,166 @@ func TestFormattingErrorIsReportedAsNoEdits(t *testing.T) {
 
 	if gotOK || len(gotEdits) != 0 {
 		t.Errorf("expected an errored request to surface as no edits, got (%+v, %v)", gotEdits, gotOK)
+	}
+}
+
+func TestReferencesReturnsFalseWithNoServer(t *testing.T) {
+	m := NewManager("/project")
+	called := false
+
+	if m.References("/project/a.go", "go", 1, 2, func([]Location, bool) { called = true }) {
+		t.Fatal("expected References to report it could not dispatch")
+	}
+	if called {
+		t.Fatal("callback must not run when nothing was dispatched")
+	}
+}
+
+func TestReferencesDeliversLocationsThroughPost(t *testing.T) {
+	want := []Location{
+		{URI: pathToURI("/project/a.go"), Range: Range{Start: Position{Line: 5}}},
+		{URI: pathToURI("/project/b.go"), Range: Range{Start: Position{Line: 9}}},
+	}
+	fake := &fakeClient{refLocs: want}
+	m := newTestManager("go", fake)
+	results := make(chan AsyncResult, 1)
+	m.Post = func(ev interface{}) { results <- ev.(AsyncResult) }
+
+	var got []Location
+	var gotOK bool
+	if !m.References("/project/a.go", "go", 3, 4, func(locs []Location, ok bool) { got, gotOK = locs, ok }) {
+		t.Fatal("expected References to dispatch")
+	}
+	(<-results).Apply()
+
+	if !gotOK || len(got) != 2 {
+		t.Fatalf("callback got (%+v, %v), want 2 locations and ok", got, gotOK)
+	}
+}
+
+func TestReferencesEmptyResultIsReportedAsNotOK(t *testing.T) {
+	// An empty-but-successful answer must read the same as "no server":
+	// it's the caller's signal to fall back to a text search.
+	fake := &fakeClient{}
+	m := newTestManager("go", fake)
+	results := make(chan AsyncResult, 1)
+	m.Post = func(ev interface{}) { results <- ev.(AsyncResult) }
+
+	var gotOK bool
+	m.References("/project/a.go", "go", 0, 0, func(_ []Location, ok bool) { gotOK = ok })
+	(<-results).Apply()
+
+	if gotOK {
+		t.Error("expected an empty result to surface as not-ok")
+	}
+}
+
+func TestReferencesErrorIsReportedAsNotOK(t *testing.T) {
+	fake := &fakeClient{refErr: errors.New("server exploded"), refLocs: []Location{{URI: "file:///x.go"}}}
+	m := newTestManager("go", fake)
+	results := make(chan AsyncResult, 1)
+	m.Post = func(ev interface{}) { results <- ev.(AsyncResult) }
+
+	var gotOK bool
+	m.References("/project/a.go", "go", 0, 0, func(_ []Location, ok bool) { gotOK = ok })
+	(<-results).Apply()
+
+	if gotOK {
+		t.Error("expected an errored request to surface as not-ok")
+	}
+}
+
+func TestRenameReturnsFalseWithNoServer(t *testing.T) {
+	m := NewManager("/project")
+	called := false
+
+	if m.Rename("/project/a.go", "go", 1, 2, "newName", func(WorkspaceEdit, bool) { called = true }) {
+		t.Fatal("expected Rename to report it could not dispatch")
+	}
+	if called {
+		t.Fatal("callback must not run when nothing was dispatched")
+	}
+}
+
+func TestRenameDeliversWorkspaceEditThroughPost(t *testing.T) {
+	want := WorkspaceEdit{Changes: map[string][]TextEdit{
+		pathToURI("/project/a.go"): {{NewText: "newName"}},
+	}}
+	fake := &fakeClient{renameEdit: want, renameFound: true}
+	m := newTestManager("go", fake)
+	results := make(chan AsyncResult, 1)
+	m.Post = func(ev interface{}) { results <- ev.(AsyncResult) }
+
+	var got WorkspaceEdit
+	var gotOK bool
+	if !m.Rename("/project/a.go", "go", 3, 4, "newName", func(edit WorkspaceEdit, ok bool) { got, gotOK = edit, ok }) {
+		t.Fatal("expected Rename to dispatch")
+	}
+	(<-results).Apply()
+
+	if !gotOK || len(got.Changes) != 1 {
+		t.Errorf("callback got (%+v, %v), want (%+v, true)", got, gotOK, want)
+	}
+}
+
+func TestRenameErrorIsReportedAsNotFound(t *testing.T) {
+	fake := &fakeClient{renameErr: errors.New("server exploded"), renameFound: true}
+	m := newTestManager("go", fake)
+	results := make(chan AsyncResult, 1)
+	m.Post = func(ev interface{}) { results <- ev.(AsyncResult) }
+
+	var gotOK bool
+	m.Rename("/project/a.go", "go", 0, 0, "newName", func(_ WorkspaceEdit, ok bool) { gotOK = ok })
+	(<-results).Apply()
+
+	if gotOK {
+		t.Error("expected an errored request to surface as not-found")
+	}
+}
+
+func TestCodeActionReturnsFalseWithNoServer(t *testing.T) {
+	m := NewManager("/project")
+	called := false
+
+	if m.CodeAction("/project/a.go", "go", 1, 2, nil, func([]CodeAction, bool) { called = true }) {
+		t.Fatal("expected CodeAction to report it could not dispatch")
+	}
+	if called {
+		t.Fatal("callback must not run when nothing was dispatched")
+	}
+}
+
+func TestCodeActionDeliversActionsThroughPost(t *testing.T) {
+	want := []CodeAction{{Title: "Remove unused import", Edit: &WorkspaceEdit{Changes: map[string][]TextEdit{"file:///a.go": {{}}}}}}
+	fake := &fakeClient{codeActionResults: want}
+	m := newTestManager("go", fake)
+	results := make(chan AsyncResult, 1)
+	m.Post = func(ev interface{}) { results <- ev.(AsyncResult) }
+
+	var got []CodeAction
+	var gotOK bool
+	if !m.CodeAction("/project/a.go", "go", 3, 4, nil, func(actions []CodeAction, ok bool) { got, gotOK = actions, ok }) {
+		t.Fatal("expected CodeAction to dispatch")
+	}
+	(<-results).Apply()
+
+	if !gotOK || len(got) != 1 || got[0].Title != "Remove unused import" {
+		t.Errorf("callback got (%+v, %v), want (%+v, true)", got, gotOK, want)
+	}
+}
+
+func TestCodeActionErrorIsReportedAsNotOK(t *testing.T) {
+	fake := &fakeClient{codeActionErr: errors.New("server exploded"), codeActionResults: []CodeAction{{Title: "x"}}}
+	m := newTestManager("go", fake)
+	results := make(chan AsyncResult, 1)
+	m.Post = func(ev interface{}) { results <- ev.(AsyncResult) }
+
+	var gotOK bool
+	m.CodeAction("/project/a.go", "go", 0, 0, nil, func(_ []CodeAction, ok bool) { gotOK = ok })
+	(<-results).Apply()
+
+	if gotOK {
+		t.Error("expected an errored request to surface as not-ok")
 	}
 }
 

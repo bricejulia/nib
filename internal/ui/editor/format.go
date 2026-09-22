@@ -53,7 +53,22 @@ func (v *View) triggerFormat() {
 func (v *View) applyTextEdits(t *tab, edits []lsp.TextEdit) {
 	before := snapshotTab(t)
 	lines := append([]string(nil), t.buf.Lines...)
+	for _, e := range sortEditsDescending(edits) {
+		lines = applyTextEdit(lines, e)
+	}
 
+	t.buf.Restore(lines)
+	v.pushUndoIfChanged(t, before)
+	v.onBufferEdited(t)
+	v.clampToLastChar(t)
+}
+
+// sortEditsDescending returns edits ordered bottom-of-the-file-first (see
+// applyTextEdits' doc comment for why applying in this order is required),
+// without mutating the caller's slice. Shared by applyTextEdits and
+// workspaceedit.go's rewriteFileWithTextEdits, so the two can never
+// disagree about ordering.
+func sortEditsDescending(edits []lsp.TextEdit) []lsp.TextEdit {
 	sorted := append([]lsp.TextEdit(nil), edits...)
 	sort.Slice(sorted, func(i, j int) bool {
 		a, b := sorted[i].Range.Start, sorted[j].Range.Start
@@ -62,14 +77,7 @@ func (v *View) applyTextEdits(t *tab, edits []lsp.TextEdit) {
 		}
 		return a.Character > b.Character
 	})
-	for _, e := range sorted {
-		lines = applyTextEdit(lines, e)
-	}
-
-	t.buf.Restore(lines)
-	v.pushUndoIfChanged(t, before)
-	v.onBufferEdited(t)
-	v.clampToLastChar(t)
+	return sorted
 }
 
 // applyTextEdit replaces the span from e.Range.Start to e.Range.End — RAW

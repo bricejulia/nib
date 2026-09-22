@@ -18,7 +18,7 @@ type entry struct {
 
 var entries = []entry{
 	{"open_finder", "Open file finder", "global"},
-	{"open_find_references", "Find references: search file contents", "global"},
+	{"open_find_references", "Find references (language server, falls back to a content search)", "global"},
 	{"open_replace", "Open find & replace in path", "global"},
 	{"open_debug", "Open debug log", "global"},
 	{"open_help", "Open help", "global"},
@@ -41,6 +41,8 @@ var entries = []entry{
 	{"show_hover", "Show hover info for the symbol under the cursor", "editor"},
 	{"trigger_signature_help", "Show signature help for the enclosing call", "editor"},
 	{"format_document", "Format the document via the language server", "editor"},
+	{"rename_symbol", "Rename symbol (language server)", "editor"},
+	{"trigger_code_action", "Show code actions at the cursor", "editor"},
 	{"show_blame", "Blame: who last changed this line", "editor"},
 	{"show_line_diff", "Show the diff hunk this line belongs to", "editor"},
 	{"show_file_diff", "Show this file's full diff against HEAD", "editor"},

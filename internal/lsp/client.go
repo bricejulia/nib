@@ -338,6 +338,123 @@ func textEdits(raw json.RawMessage) ([]TextEdit, error) {
 	return edits, nil
 }
 
+// references asks the server for every usage of the symbol at (line,
+// character), excluding its own declaration (see ReferenceContext).
+// Blocks until the server answers or requestTimeout elapses, so callers
+// must run it off the UI goroutine. A nil/empty slice is a normal "no
+// references found" answer, not an error.
+func (c *Client) references(path string, line, character int) ([]Location, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	params := ReferenceParams{
+		TextDocument: TextDocumentIdentifier{URI: pathToURI(path)},
+		Position:     Position{Line: line, Character: character},
+		Context:      ReferenceContext{IncludeDeclaration: false},
+	}
+	var raw json.RawMessage
+	if err := c.conn.Call(ctx, methodReferences, params, &raw); err != nil {
+		return nil, err
+	}
+	return locations(raw)
+}
+
+// locations decodes a references response: always a bare array or null
+// per spec (no object-wrapper form, unlike definition).
+func locations(raw json.RawMessage) ([]Location, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var locs []Location
+	if err := json.Unmarshal(raw, &locs); err != nil {
+		return nil, fmt.Errorf("references: unrecognized response shape: %w", err)
+	}
+	return locs, nil
+}
+
+// rename asks the server to rename the symbol at (line, character) to
+// newName, returning the WorkspaceEdit of every file it needs changed.
+// Blocks until the server answers or requestTimeout elapses, so callers
+// must run it off the UI goroutine. ok=false means the server declined
+// or found nothing to rename, which is a normal answer, not an error.
+func (c *Client) rename(path string, line, character int, newName string) (WorkspaceEdit, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	params := RenameParams{
+		TextDocument: TextDocumentIdentifier{URI: pathToURI(path)},
+		Position:     Position{Line: line, Character: character},
+		NewName:      newName,
+	}
+	var raw json.RawMessage
+	if err := c.conn.Call(ctx, methodRename, params, &raw); err != nil {
+		return WorkspaceEdit{}, false, err
+	}
+	return workspaceEdit(raw)
+}
+
+// workspaceEdit decodes a rename response: always an object or null per
+// spec (never a bare array). The Changes-vs-DocumentChanges normalization
+// happens in WorkspaceEdit's own UnmarshalJSON (protocol.go), so this
+// just needs to handle the top-level null/empty case every other decode
+// helper in this file does.
+func workspaceEdit(raw json.RawMessage) (WorkspaceEdit, bool, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return WorkspaceEdit{}, false, nil
+	}
+	var edit WorkspaceEdit
+	if err := json.Unmarshal(raw, &edit); err != nil {
+		return WorkspaceEdit{}, false, fmt.Errorf("rename: unrecognized response shape: %w", err)
+	}
+	return edit, len(edit.Changes) > 0, nil
+}
+
+// codeAction asks the server what fixes or refactors are available at
+// (line, character), with diagnostics (if any are known for that line)
+// as context to bias its suggestions. Blocks until the server answers
+// or requestTimeout elapses, so callers must run it off the UI
+// goroutine. A nil/empty slice is a normal "nothing offered" answer,
+// not an error.
+func (c *Client) codeAction(path string, line, character int, diagnostics []Diagnostic) ([]CodeAction, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	pos := Position{Line: line, Character: character}
+	params := CodeActionParams{
+		TextDocument: TextDocumentIdentifier{URI: pathToURI(path)},
+		Range:        Range{Start: pos, End: pos},
+		Context:      CodeActionContext{Diagnostics: diagnostics},
+	}
+	var raw json.RawMessage
+	if err := c.conn.Call(ctx, methodCodeAction, params, &raw); err != nil {
+		return nil, err
+	}
+	return codeActions(raw)
+}
+
+// codeActions decodes a codeAction response: a bare array (of Command or
+// CodeAction entries, per spec) or null. Entries with no usable Edit are
+// dropped — see CodeAction's doc comment for why a bare Command can't be
+// acted on. An Edit that decoded but ended up with no Changes (e.g. a
+// DocumentChanges list of resource operations only) is just as unusable
+// as a nil one, so both are filtered the same way.
+func codeActions(raw json.RawMessage) ([]CodeAction, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var actions []CodeAction
+	if err := json.Unmarshal(raw, &actions); err != nil {
+		return nil, fmt.Errorf("codeAction: unrecognized response shape: %w", err)
+	}
+	usable := actions[:0]
+	for _, a := range actions {
+		if a.Edit != nil && len(a.Edit.Changes) > 0 {
+			usable = append(usable, a)
+		}
+	}
+	return usable, nil
+}
+
 // firstLocation extracts the first usable Location from a definition
 // response, accepting either a bare Location object or an array of them
 // (both spec-legal, and different servers pick differently).

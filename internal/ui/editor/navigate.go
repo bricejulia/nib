@@ -401,6 +401,10 @@ func (v *View) ExecuteAction(action string) bool {
 		v.triggerSignatureHelp()
 	case "format_document":
 		v.triggerFormat()
+	case "rename_symbol":
+		v.startRename(t)
+	case "trigger_code_action":
+		v.triggerCodeAction(t)
 	case "show_blame":
 		v.showBlame(t)
 	case "show_line_diff":
