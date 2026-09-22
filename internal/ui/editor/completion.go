@@ -8,10 +8,14 @@ import (
 	"github.com/bricejulia/nib/internal/lsp"
 )
 
-// maxCompletionCandidates caps how many autocomplete candidates are kept
-// (and shown), the same "bound it, don't let it grow forever" instinct as
-// maxUndoEntries elsewhere in this package.
-const maxCompletionCandidates = 10
+// maxCompletionCandidates caps how many autocomplete candidates are kept.
+// The popup itself scrolls to reach anything within this cap (see
+// popupBounds' offset return), so this is a safety bound against a
+// degenerate case — a huge/minified buffer contributing thousands of
+// unique identifiers, or a server returning an unbounded list — not a
+// practical ceiling on what's reachable, the same "bound it, don't let it
+// grow forever" instinct as maxUndoEntries elsewhere in this package.
+const maxCompletionCandidates = 200
 
 // completionState is the in-progress autocomplete popup (Ctrl+Space),
 // kept on View (not tab) since only one pane is ever mid-Insert-session at
@@ -155,11 +159,17 @@ func (v *View) requestLSPCompletion(t *tab, lang string) bool {
 
 // completionLabels turns a server's items into the popup's flat candidate
 // strings: filtered by whatever partial word is already typed, ordered by
-// the server's own ranking (see lsp.CompletionItem.Order), and capped.
+// the server's own ranking (see lsp.CompletionItem.Order), de-duplicated,
+// and capped.
 //
 // Servers routinely return hundreds of items and expect the client to do
 // this filtering — asking at "myObj.fo" may still yield every member of
-// myObj, not just the ones starting "fo".
+// myObj, not just the ones starting "fo". They also routinely return
+// multiple items with the same insert text — overloads of the same
+// function, or results merged from more than one internal provider — so
+// de-duplication (the same "seen" pattern bufferWords uses) matters here
+// too, applied after sorting by rank so the best-ranked occurrence of a
+// repeated item is the one kept.
 func completionLabels(items []lsp.CompletionItem, prefixLen int, t *tab, tabWidth int) []string {
 	prefix, _ := wordBeforeCursor(t, tabWidth)
 
@@ -176,12 +186,18 @@ func completionLabels(items []lsp.CompletionItem, prefixLen int, t *tab, tabWidt
 	}
 	sort.SliceStable(matching, func(i, j int) bool { return matching[i].Order() < matching[j].Order() })
 
+	seen := map[string]bool{}
 	candidates := make([]string, 0, maxCompletionCandidates)
 	for _, it := range matching {
 		if len(candidates) >= maxCompletionCandidates {
 			break
 		}
-		candidates = append(candidates, it.Text())
+		text := it.Text()
+		if seen[text] {
+			continue
+		}
+		seen[text] = true
+		candidates = append(candidates, text)
 	}
 	return candidates
 }
