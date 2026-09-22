@@ -152,6 +152,12 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "H", Action: "show_line_diff"},
 	// "F" ("format") reformats the whole document via the language server.
 	{Trigger: "F", Action: "format_document"},
+	// "R" ("rename") opens the rename-symbol prompt via the language
+	// server — same shifted-letter convention as B/D/H/I/K above. Not "r"
+	// (already vim's replace-char) or Ctrl+r (globally "open_replace").
+	{Trigger: "R", Action: "rename_symbol"},
+	// "A" ("actions") lists code actions/fixes available at the cursor.
+	{Trigger: "A", Action: "trigger_code_action"},
 	{Trigger: "/", Action: "search_mode"},
 	{Trigger: "n", Action: "search_next"},
 	{Trigger: "N", Action: "search_prev"},
@@ -172,6 +178,11 @@ const (
 	// (type, Enter to commit, Esc to cancel) but it drives an in-file search
 	// rather than an ex-command; see search.go.
 	modeSearch
+	// modeRename is the "R" prompt — structurally the same as modeCommand
+	// (type, Enter to commit, Esc to cancel) but prefilled with the symbol
+	// under the cursor and, on commit, fires a language-server rename
+	// rather than an ex-command; see rename.go.
+	modeRename
 )
 
 // maxUndoEntries bounds each tab's undo stack, the same way
@@ -325,6 +336,11 @@ type View struct {
 	// vim's, not per-tab.
 	commandField textfield.TextField
 
+	// renameField holds the new name typed so far in Rename mode (see
+	// handleRenameKey), prefilled by startRename with the symbol under the
+	// cursor — same "single field shared by the pane" shape as commandField.
+	renameField textfield.TextField
+
 	// count is the numeric prefix accumulated digit-by-digit before an
 	// operator or a motion — e.g. the "3" of "3dd" or "3j" — with 0 meaning
 	// "none typed yet", per vim's own "no count means 1" convention (see
@@ -408,6 +424,21 @@ type View struct {
 	// in a popup this pane draws. Same plain-callback pattern as
 	// OnAllTabsClosed.
 	OnShowFileDiff func(path string)
+
+	// OnApplyWorkspaceEdit, if set, is called with a rename request's
+	// resulting lsp.WorkspaceEdit so the caller (which owns the registry of
+	// every open editor pane — this View does not) can apply it across
+	// every affected file, open or closed — see commitRename (rename.go)
+	// and cmd/nib/main.go's wiring, which calls editor.ApplyWorkspaceEdit.
+	// Same "hand it out, don't own it" reasoning as OnShowFileDiff.
+	OnApplyWorkspaceEdit func(edit lsp.WorkspaceEdit)
+
+	// OnCodeActions, if set, is called with the server's answer to a
+	// code-actions request (see triggerCodeAction, codeaction.go) so the
+	// caller can show them in its own overlay (this View owns no overlay
+	// of its own) and, on a choice, apply its Edit via the same
+	// editor.ApplyWorkspaceEdit OnApplyWorkspaceEdit uses.
+	OnCodeActions func(actions []lsp.CodeAction)
 
 	// OnSaveConflict, if set, is called instead of writing to disk when a
 	// save (see saveActive/saveTab) finds the target file changed on disk
@@ -578,6 +609,9 @@ type languageServer interface {
 	Hover(path, language string, line, character int, apply func(text string, ok bool)) bool
 	SignatureHelp(path, language string, line, character int, apply func(sh lsp.SignatureHelp, ok bool)) bool
 	Formatting(path, language string, tabWidth int, insertSpaces bool, apply func(edits []lsp.TextEdit, ok bool)) bool
+	References(path, language string, line, character int, apply func(locs []lsp.Location, ok bool)) bool
+	Rename(path, language string, line, character int, newName string, apply func(edit lsp.WorkspaceEdit, ok bool)) bool
+	CodeAction(path, language string, line, character int, diagnostics []lsp.Diagnostic, apply func(actions []lsp.CodeAction, ok bool)) bool
 }
 
 // NewView creates an empty editor pane with no tabs open; call Open to
@@ -1388,6 +1422,9 @@ func (v *View) StatusText() string {
 	}
 	if v.mode == modeSearch {
 		return "/" + v.searchField.String()
+	}
+	if v.mode == modeRename {
+		return "Rename to: " + v.renameField.String()
 	}
 	prefix := ""
 	if v.mode == modeInsert {
@@ -2361,6 +2398,8 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return v.handleCommandKey(k)
 	case modeSearch:
 		return v.handleSearchKey(k)
+	case modeRename:
+		return v.handleRenameKey(k)
 	case modeNormal:
 		// Falls through to the Normal-mode keymap below.
 	}
@@ -2517,6 +2556,10 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.triggerSignatureHelp()
 	case "format_document":
 		v.triggerFormat()
+	case "rename_symbol":
+		v.startRename(t)
+	case "trigger_code_action":
+		v.triggerCodeAction(t)
 	case "show_blame":
 		v.showBlame(t)
 	case "show_line_diff":
@@ -2568,6 +2611,9 @@ func (v *View) HandlePaste(s string) bool {
 	case modeSearch:
 		v.searchField.InsertText(strings.ReplaceAll(s, "\n", ""))
 		v.refreshSearchHighlights()
+		return true
+	case modeRename:
+		v.renameField.InsertText(strings.ReplaceAll(s, "\n", ""))
 		return true
 	case modeNormal, modeInsert:
 		// Falls through to pasting into the buffer below.
@@ -3070,6 +3116,13 @@ func (v *View) ExitEditingModes() {
 		// its stale match highlights) after focus moves away from it —
 		// the same hazard this function exists for in Insert/Command mode.
 		v.cancelSearch()
+	case modeRename:
+		// Same "don't stay stuck mid-prompt" reasoning as Command mode:
+		// losing focus mid-rename abandons it rather than leaving a
+		// half-typed name pinned to the status bar of a pane that isn't
+		// even focused anymore.
+		v.mode = modeNormal
+		v.renameField = textfield.TextField{}
 	case modeNormal:
 		// Nothing to exit.
 	}

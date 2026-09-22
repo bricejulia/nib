@@ -56,6 +56,26 @@ type fakeLSP struct {
 	formatOK           bool
 	formatTabWidth     int
 	formatInsertSpaces bool
+
+	refDispatched bool
+	refLocs       []lsp.Location
+	refOK         bool
+	refLine       int
+	refChar       int
+
+	renameDispatched bool
+	renameEdit       lsp.WorkspaceEdit
+	renameOK         bool
+	renameLine       int
+	renameChar       int
+	renameNewName    string
+
+	codeActionDispatched  bool
+	codeActionResults     []lsp.CodeAction
+	codeActionOK          bool
+	codeActionLine        int
+	codeActionChar        int
+	codeActionDiagnostics []lsp.Diagnostic
 }
 
 func (f *fakeLSP) Ready(string) bool { return f.ready }
@@ -129,6 +149,41 @@ func (f *fakeLSP) Formatting(_, _ string, tabWidth int, insertSpaces bool, apply
 	f.formatInsertSpaces = insertSpaces
 	edits, ok := f.formatEdits, f.formatOK
 	f.pendingApply = func() { apply(edits, ok) }
+	return true
+}
+
+func (f *fakeLSP) References(_, _ string, line, character int, apply func([]lsp.Location, bool)) bool {
+	if !f.ready {
+		return false
+	}
+	f.refDispatched = true
+	f.refLine, f.refChar = line, character
+	locs, ok := f.refLocs, f.refOK
+	f.pendingApply = func() { apply(locs, ok) }
+	return true
+}
+
+func (f *fakeLSP) Rename(_, _ string, line, character int, newName string, apply func(lsp.WorkspaceEdit, bool)) bool {
+	if !f.ready {
+		return false
+	}
+	f.renameDispatched = true
+	f.renameLine, f.renameChar = line, character
+	f.renameNewName = newName
+	edit, ok := f.renameEdit, f.renameOK
+	f.pendingApply = func() { apply(edit, ok) }
+	return true
+}
+
+func (f *fakeLSP) CodeAction(_, _ string, line, character int, diagnostics []lsp.Diagnostic, apply func([]lsp.CodeAction, bool)) bool {
+	if !f.ready {
+		return false
+	}
+	f.codeActionDispatched = true
+	f.codeActionLine, f.codeActionChar = line, character
+	f.codeActionDiagnostics = diagnostics
+	actions, ok := f.codeActionResults, f.codeActionOK
+	f.pendingApply = func() { apply(actions, ok) }
 	return true
 }
 

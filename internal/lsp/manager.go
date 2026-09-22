@@ -86,6 +86,9 @@ type serverClient interface {
 	hover(path string, line, character int) (string, bool, error)
 	signatureHelp(path string, line, character int) (SignatureHelp, bool, error)
 	formatting(path string, tabWidth int, insertSpaces bool) ([]TextEdit, error)
+	references(path string, line, character int) ([]Location, error)
+	rename(path string, line, character int, newName string) (WorkspaceEdit, bool, error)
+	codeAction(path string, line, character int, diagnostics []Diagnostic) ([]CodeAction, error)
 	Close() error
 }
 
@@ -428,6 +431,98 @@ func (m *Manager) Formatting(path, language string, tabWidth int, insertSpaces b
 			return
 		}
 		m.Post(AsyncResult{Apply: func() { apply(edits, err == nil && len(edits) > 0) }})
+	}()
+	return true
+}
+
+// References asks language's server for every usage of the symbol at
+// (line, character) in path, delivering the answer to apply on the UI
+// goroutine via Post. Returns false if no request could be made at all
+// (no server for that language), so callers can immediately fall back
+// to a local implementation rather than waiting for a response that
+// will never come.
+//
+// ok is len(locs) > 0, not just "no error" — an empty-but-successful
+// answer is exactly the same "fall back" signal a caller with no server
+// at all needs, so both cases collapse to one check.
+//
+// Same async shape as Definition — see there for why the request runs
+// on its own goroutine.
+func (m *Manager) References(path, language string, line, character int, apply func(locs []Location, ok bool)) bool {
+	m.mu.Lock()
+	c := m.clients[language]
+	m.mu.Unlock()
+	if c == nil {
+		return false
+	}
+
+	go func() {
+		locs, err := c.references(path, line, character)
+		if err != nil {
+			debuglog.Warn("lsp: references %s: %v", path, err)
+			locs = nil
+		}
+		if m.Post == nil {
+			return
+		}
+		m.Post(AsyncResult{Apply: func() { apply(locs, len(locs) > 0) }})
+	}()
+	return true
+}
+
+// Rename asks language's server to rename the symbol at (line,
+// character) in path to newName, delivering the resulting WorkspaceEdit
+// to apply on the UI goroutine via Post. Returns false if no request
+// could be made at all (no server for that language).
+//
+// Same async shape as Definition/References.
+func (m *Manager) Rename(path, language string, line, character int, newName string, apply func(edit WorkspaceEdit, ok bool)) bool {
+	m.mu.Lock()
+	c := m.clients[language]
+	m.mu.Unlock()
+	if c == nil {
+		return false
+	}
+
+	go func() {
+		edit, ok, err := c.rename(path, line, character, newName)
+		if err != nil {
+			debuglog.Warn("lsp: rename %s: %v", path, err)
+			ok = false
+		}
+		if m.Post == nil {
+			return
+		}
+		m.Post(AsyncResult{Apply: func() { apply(edit, ok) }})
+	}()
+	return true
+}
+
+// CodeAction asks language's server what fixes or refactors are
+// available at (line, character) in path, given diagnostics known for
+// that line, delivering the answer to apply on the UI goroutine via
+// Post. Returns false if no request could be made at all (no server for
+// that language).
+//
+// Same async shape as Definition/References.
+func (m *Manager) CodeAction(path, language string, line, character int, diagnostics []Diagnostic, apply func(actions []CodeAction, ok bool)) bool {
+	m.mu.Lock()
+	c := m.clients[language]
+	m.mu.Unlock()
+	if c == nil {
+		return false
+	}
+
+	go func() {
+		actions, err := c.codeAction(path, line, character, diagnostics)
+		if err != nil {
+			debuglog.Warn("lsp: codeAction %s: %v", path, err)
+			actions = nil
+		}
+		if m.Post == nil {
+			return
+		}
+		m.Post(AsyncResult{Apply: func() { apply(actions, len(actions) > 0) }})
 	}()
 	return true
 }

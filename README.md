@@ -158,7 +158,7 @@ protocol types, but it pulls in a logging framework and a fast-JSON library, and
 forces the module's Go version up several releases. The wire format is
 `Content-Length` framing over JSON-RPC and the spec is clear, so `internal/lsp`
 uses `sourcegraph/jsonrpc2` (zero transitive dependencies) for transport and
-hand-writes the ~10 message types actually used.
+hand-writes the ~15 message types actually used.
 
 **Syntax diagnostics are allowlisted per language.** Diagnostics need a higher
 confidence bar than highlighting: a wrong grammar guess makes highlighting
@@ -205,7 +205,7 @@ Press `?` in nib for this list at runtime. Every binding is rebindable
 | `Ctrl+C` | Quit (asks to confirm first) |
 | `Tab` / `Shift+Tab` | Focus next / previous pane |
 | `Ctrl+P` | File finder (also: double-tap `Shift`) |
-| `Ctrl+F` | Find references: search file contents, pre-filled with the word under the cursor in the focused (or last-focused) editor pane |
+| `Ctrl+F` | Find references (LSP when available; falls back to a content search of the word under the cursor, pre-filled, in the focused/last-focused editor pane) |
 | `Ctrl+R` | Find & replace in path (also: `Tab` twice from the file finder) |
 | `Ctrl+D` | Debug log |
 | `?` | Help |
@@ -283,6 +283,8 @@ terminals bypass this while a modifier is held (`Option` on macOS).
 | `Ctrl+G` | Go to parent node in the syntax tree |
 | `Ctrl+Space` | Autocomplete (LSP members, else buffer words) |
 | `K` | Show error/warning details for this line |
+| `R` | Rename symbol via the language server: type the new name, `Enter` to apply, `Esc` to cancel |
+| `A` | Show code actions (fixes/refactors) at the cursor |
 
 ### Editor — git
 

@@ -20,6 +20,7 @@ import (
 	"github.com/bricejulia/nib/internal/ui"
 	"github.com/bricejulia/nib/internal/ui/actionpopup"
 	"github.com/bricejulia/nib/internal/ui/closetabconfirm"
+	"github.com/bricejulia/nib/internal/ui/codeactionpopup"
 	"github.com/bricejulia/nib/internal/ui/debug"
 	"github.com/bricejulia/nib/internal/ui/diffview"
 	"github.com/bricejulia/nib/internal/ui/editor"
@@ -28,6 +29,7 @@ import (
 	"github.com/bricejulia/nib/internal/ui/help"
 	"github.com/bricejulia/nib/internal/ui/memprompt"
 	"github.com/bricejulia/nib/internal/ui/quitconfirm"
+	"github.com/bricejulia/nib/internal/ui/refview"
 	"github.com/bricejulia/nib/internal/ui/reloadconfirm"
 	"github.com/bricejulia/nib/internal/ui/statusbar"
 	"github.com/bricejulia/nib/internal/vcs/gitblame"
@@ -540,6 +542,25 @@ func run() error {
 	}
 	app.SetDoubleShiftHandler(openFinder)
 
+	// refView is Find References' LSP-backed results list (see
+	// openFindReferences below): a plain, already-resolved list to pick
+	// from, so unlike finderView it needs no query/search plumbing of its
+	// own — see internal/ui/refview's package doc for why that's a
+	// separate small package rather than an extension of finder.View.
+	refView := refview.New(absRoot)
+	refView.SetKeymap(cfg.Overrides("references"))
+	refView.OnClose = app.CloseOverlay
+	refView.OnSelect = func(loc lsp.Location) {
+		app.CloseOverlay()
+		path := loc.Path()
+		if path == "" {
+			return
+		}
+		activeEditorPane.view.OpenAtLine(path, loc.Range.Start.Line+1)
+		app.FocusLeaf(activeEditorPane.leaf.ID)
+		refreshLineStatusFor(path)
+	}
+
 	debugView := debug.New()
 	debugView.SetKeymap(cfg.Overrides("debug"))
 	debugView.OnClose = app.CloseOverlay
@@ -563,6 +584,33 @@ func run() error {
 			editor.DefaultKeybinds.Resolve(cfg.Overrides("editor")),
 		)
 		app.ShowOverlay(actionPopupView)
+	}
+
+	// findPane and refreshGitStatus are defined further down (both need
+	// editorPanes/finderView/etc. that exist by then), but caView.OnExecute
+	// just below and wireEditorPane's LSP callbacks (see OnApplyWorkspaceEdit/
+	// OnCodeActions there) only ever run later, from a user action — by
+	// which point both are assigned. Forward-declared so those closures can
+	// close over them now; same trick reloadConfig uses below.
+	var findPane func(absPath string) (*editor.View, bool)
+	var refreshGitStatus func()
+
+	// caView is the code-actions popup ("A" in an editor pane): a list of
+	// server-suggested fixes/refactors for the cursor position, fed fresh
+	// per request — see internal/ui/codeactionpopup.
+	caView := codeactionpopup.New()
+	caView.SetKeymap(cfg.Overrides("codeactions"))
+	caView.OnClose = app.CloseOverlay
+	caView.OnExecute = func(action lsp.CodeAction) {
+		app.CloseOverlay()
+		if action.Edit == nil {
+			return
+		}
+		res := editor.ApplyWorkspaceEdit(*action.Edit, findPane)
+		for path, err := range res.Failed {
+			debuglog.Error("apply code action: %s: %v", path, err)
+		}
+		refreshGitStatus()
 	}
 
 	// The whole-file diff ("D" in an editor pane) is a scrollable document,
@@ -825,6 +873,27 @@ func run() error {
 		// terminal that ignores OSC 52 costs only the crossing-out-of-nib
 		// half of the copy.
 		v.CopyFunc = app.CopyToClipboard
+		// Rename ("R") and code actions ("A") both resolve to an
+		// lsp.WorkspaceEdit that can span files this pane never opened, so
+		// applying it needs findPane (which pane, if any, has each affected
+		// path open) — something only main.go's pane registry can answer.
+		// Same "hand it back out, don't own it" split finderView's own
+		// replace-all logic already makes (see OnReplaceAll below).
+		v.OnApplyWorkspaceEdit = func(edit lsp.WorkspaceEdit) {
+			res := editor.ApplyWorkspaceEdit(edit, findPane)
+			for path, err := range res.Failed {
+				debuglog.Error("apply rename: %s: %v", path, err)
+			}
+			refreshGitStatus()
+		}
+		// Showing the code-actions list is an overlay decision (this
+		// package owns app.ShowOverlay, editor.View does not) — see caView
+		// above, whose OnExecute applies the chosen action's edit through
+		// the exact same ApplyWorkspaceEdit.
+		v.OnCodeActions = func(actions []lsp.CodeAction) {
+			caView.Open(actions)
+			app.ShowOverlay(caView)
+		}
 	}
 	wireEditorPane(editorView)
 
@@ -872,18 +941,33 @@ func run() error {
 		return activeEditorPane, true
 	}
 	// openFindReferences is Ctrl+F's global handler (see
-	// globalDefaultKeybinds): it opens the finder's content search,
-	// pre-filled with the word under the cursor when an editor pane
-	// happens to be focused — the exact behavior "find references" always
-	// had — or with an empty query otherwise, identical to how it already
-	// behaved when no word was under the cursor.
+	// globalDefaultKeybinds): tries the language server's real references
+	// first (opening refView on a non-empty answer), and falls back to the
+	// finder's content search — pre-filled with the word under the
+	// cursor, exactly as this always behaved — both when no server could
+	// take the request at all and when it answered with nothing found.
+	// Same LSP-then-fallback shape goToDefinition uses (navigate.go).
 	openFindReferences := func() {
-		word := ""
-		if p, ok := targetPane(); ok {
-			word = p.view.WordUnderCursor()
+		p, ok := targetPane()
+		if !ok {
+			return
 		}
-		finderView.OpenWithQuery(word)
-		app.ShowOverlay(finderView)
+		word := p.view.WordUnderCursor()
+		fallback := func() {
+			finderView.OpenWithQuery(word)
+			app.ShowOverlay(finderView)
+		}
+		dispatched := p.view.FindReferences(func(locs []lsp.Location, ok bool) {
+			if !ok {
+				fallback()
+				return
+			}
+			refView.Open(locs)
+			app.ShowOverlay(refView)
+		})
+		if !dispatched {
+			fallback()
+		}
 	}
 	// revealInTree is Ctrl+T's global handler: locates the current pane's
 	// active file in the file tree and focuses it, so opening a
@@ -969,7 +1053,7 @@ func run() error {
 		moveTabToPane(p, p.view.ActiveIndex(), dir)
 	}
 
-	refreshGitStatus := func() {
+	refreshGitStatus = func() {
 		direct, err := gitstatus.RunPorcelain(absRoot)
 		if err != nil {
 			return // not a git repo, or git unavailable: leave markers as-is
@@ -996,7 +1080,7 @@ func run() error {
 	// of visiting every pane, since editor.View.ReplaceLines mutates the
 	// buffer's own shared Lines rather than per-tab display state (see its
 	// doc comment) and so must only ever be called once per path.
-	findPane := func(absPath string) (*editor.View, bool) {
+	findPane = func(absPath string) (*editor.View, bool) {
 		for _, p := range editorPanes {
 			for _, path := range p.view.OpenPaths() {
 				if path == absPath {

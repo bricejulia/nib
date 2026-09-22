@@ -39,6 +39,9 @@ const (
 	methodSignatureHelp      = "textDocument/signatureHelp"
 	methodFormatting         = "textDocument/formatting"
 	methodPublishDiagnostics = "textDocument/publishDiagnostics"
+	methodReferences         = "textDocument/references"
+	methodRename             = "textDocument/rename"
+	methodCodeAction         = "textDocument/codeAction"
 )
 
 // Position is a zero-based line/character pair. Note that LSP's
@@ -121,6 +124,22 @@ type DidCloseTextDocumentParams struct {
 type TextDocumentPositionParams struct {
 	TextDocument TextDocumentIdentifier `json:"textDocument"`
 	Position     Position               `json:"position"`
+}
+
+// ReferenceContext controls whether the reference set includes the
+// symbol's own declaration. nib always sends false: "find references"
+// means "find usages", not "find every mention including the
+// declaration itself".
+type ReferenceContext struct {
+	IncludeDeclaration bool `json:"includeDeclaration"`
+}
+
+// ReferenceParams is textDocument/references' request shape:
+// TextDocumentPositionParams plus the declaration-inclusion flag.
+type ReferenceParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+	Context      ReferenceContext       `json:"context"`
 }
 
 // CompletionItem is one suggestion from the server. Label is what to show;
@@ -259,6 +278,78 @@ type TextEdit struct {
 	NewText string `json:"newText"`
 }
 
+// WorkspaceEdit is a set of per-file edits a server wants applied, keyed
+// by file:// URI — the response shape for rename, and reused by
+// CodeAction's Edit field. This is the type nib's own code (Manager,
+// editor.ApplyWorkspaceEdit) works with; the wire decoding in
+// workspaceEdit (client.go) normalizes the spec's alternate
+// DocumentChanges shape into this same Changes map, so nothing
+// downstream needs to know the response came in that form. gopls
+// actually sends DocumentChanges for rename (verified against a real
+// gopls, not assumed) rather than the plain Changes map, which is why
+// both are handled despite this type only exposing one.
+type WorkspaceEdit struct {
+	Changes map[string][]TextEdit `json:"changes"`
+}
+
+// TextDocumentEdit is one file's edits within the spec's DocumentChanges
+// WorkspaceEdit form: like Changes' map value, but naming its file via a
+// VersionedTextDocumentIdentifier instead of a bare URI key, for servers
+// that want optimistic-concurrency checks on the version. nib ignores
+// the version (it never round-trips a WorkspaceEdit back to the server),
+// so decoding just flattens this into the same Changes shape — see
+// workspaceEdit in client.go. DocumentChanges can also contain resource
+// operations (CreateFile/RenameFile/DeleteFile, distinguished on the
+// wire by a "kind" field instead of "edits") which nib doesn't apply;
+// an entry like that simply decodes with an empty Edits and contributes
+// nothing, the same "not something nib can act on" treatment
+// CodeAction's bare Command gets.
+type TextDocumentEdit struct {
+	TextDocument VersionedTextDocumentIdentifier `json:"textDocument"`
+	Edits        []TextEdit                      `json:"edits"`
+}
+
+// UnmarshalJSON normalizes WorkspaceEdit's two wire forms — a plain
+// URI -> TextEdit[] Changes map, or the DocumentChanges list of
+// TextDocumentEdit — into Changes, the only shape nib's own code deals
+// with. This has to live on WorkspaceEdit's own UnmarshalJSON, not a
+// helper only the top-level rename response goes through, because a
+// WorkspaceEdit also decodes nested inside CodeAction.Edit — and a
+// server (gopls, for both) can send DocumentChanges there too.
+func (w *WorkspaceEdit) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Changes         map[string][]TextEdit `json:"changes"`
+		DocumentChanges []TextDocumentEdit    `json:"documentChanges"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if len(wire.Changes) > 0 {
+		w.Changes = wire.Changes
+		return nil
+	}
+	if len(wire.DocumentChanges) == 0 {
+		w.Changes = nil
+		return nil
+	}
+	changes := make(map[string][]TextEdit, len(wire.DocumentChanges))
+	for _, dc := range wire.DocumentChanges {
+		if dc.TextDocument.URI == "" || len(dc.Edits) == 0 {
+			continue // a resource operation (create/rename/delete), not an edit
+		}
+		changes[dc.TextDocument.URI] = append(changes[dc.TextDocument.URI], dc.Edits...)
+	}
+	w.Changes = changes
+	return nil
+}
+
+// RenameParams is textDocument/rename's request shape.
+type RenameParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+	NewName      string                 `json:"newName"`
+}
+
 // DiagnosticSeverity ranks a diagnostic; lower numbers are more severe,
 // matching the wire protocol's own numbering.
 type DiagnosticSeverity int
@@ -285,6 +376,34 @@ type Diagnostic struct {
 type PublishDiagnosticsParams struct {
 	URI         string       `json:"uri"`
 	Diagnostics []Diagnostic `json:"diagnostics"`
+}
+
+// CodeActionContext tells the server what's wrong at the requested
+// range, so it can offer targeted fixes rather than only generic
+// refactors.
+type CodeActionContext struct {
+	Diagnostics []Diagnostic `json:"diagnostics"`
+}
+
+// CodeActionParams is textDocument/codeAction's request shape: a range
+// (nib always sends a zero-width range at the cursor) plus context.
+type CodeActionParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Range        Range                  `json:"range"`
+	Context      CodeActionContext      `json:"context"`
+}
+
+// CodeAction is one server-suggested fix or refactor. Command is left
+// unhandled (the spec allows a response entry to be either a Command or
+// a CodeAction; a bare Command decodes here with an empty Title and a
+// nil Edit) — nib has no generic "execute an arbitrary server command"
+// plumbing, only "apply this WorkspaceEdit", so a server that only
+// offers command-based actions simply produces nothing nib can act on.
+// See codeActions, which filters those out.
+type CodeAction struct {
+	Title string         `json:"title"`
+	Kind  string         `json:"kind,omitempty"`
+	Edit  *WorkspaceEdit `json:"edit,omitempty"`
 }
 
 // InitializeParams is the opening handshake. Capabilities is deliberately
