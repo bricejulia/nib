@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/lsp"
 )
 
 // ctrlSpace builds the Ctrl+Space key the way App.translateKey actually
@@ -285,5 +286,33 @@ func TestBackspaceRefiltersCompletion(t *testing.T) {
 	}
 	if len(v.completion.candidates) != 2 { // "format" and "flag" both match "f"
 		t.Fatalf("candidates after backspace = %v, want 2 matches", v.completion.candidates)
+	}
+}
+
+// TestCompletionLabelsDropsDuplicateInsertText covers a reported bug:
+// servers routinely return multiple items that resolve to the same insert
+// text (overloads, or results merged from more than one provider), which
+// showed up in the popup as the same word listed twice.
+func TestCompletionLabelsDropsDuplicateInsertText(t *testing.T) {
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: []string{""}}}}
+	v.active = 0
+	t0 := v.activeTab()
+
+	items := []lsp.CompletionItem{
+		{Label: "foo(a int)", InsertText: "foo", SortText: "1"},
+		{Label: "foo(a, b int)", InsertText: "foo", SortText: "2"}, // same insert text, different overload
+		{Label: "bar", SortText: "3"},
+	}
+	got := completionLabels(items, 0, t0, 4)
+
+	want := []string{"foo", "bar"}
+	if len(got) != len(want) {
+		t.Fatalf("candidates = %v, want %v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("candidates[%d] = %q, want %q", i, got[i], w)
+		}
 	}
 }
