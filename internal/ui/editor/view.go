@@ -537,6 +537,33 @@ type View struct {
 	// callback" shape as OnShowFileDiff/OnRequestCloseDirtyTabs.
 	OnMoveTabToNextPane func(index int)
 
+	// OnSplitAndMoveRight/OnSplitAndMoveDown, if set, are called with a tab
+	// index when "Split Right"/"Split Down" is chosen from the tab bar's
+	// context menu — cmd/nib/main.go creates a new pane in that direction
+	// and moves the tab into it (see TransferTabTo), the same "reach out via
+	// a callback" shape OnMoveTabToNextPane above uses, since this package
+	// has no notion of the window tree. Unlike the global "split_right"/
+	// "split_down" actions (which duplicate the ACTIVE file into the new
+	// pane), these move the ONE tab the menu was opened for.
+	OnSplitAndMoveRight func(index int)
+	OnSplitAndMoveDown  func(index int)
+
+	// OnMoveRight/OnMoveDown, if set, are called with a tab index when "Move
+	// Right"/"Move Down" is chosen — like OnMoveTabToNextPane, but to
+	// whichever pane sits geometrically right of or below this one (see
+	// layout.Neighbor) rather than the next pane in tab-cycle order.
+	OnMoveRight func(index int)
+	OnMoveDown  func(index int)
+
+	// CanMoveRight/CanMoveDown, if set, report whether a pane currently
+	// exists geometrically right of or below this one — consulted once, when
+	// the context menu opens (see openTabMenu), to decide whether "Move
+	// Right"/"Move Down" appear at all. nil (e.g. in tests that never wire a
+	// real window tree) is treated as false, hiding both items rather than
+	// showing one that would silently no-op.
+	CanMoveRight func() bool
+	CanMoveDown  func() bool
+
 	// OnRequestCloseDirtyTabs, if set, is called instead of silently
 	// refusing (the way ":q"/":qa" do — see closeActiveTab/closeAllTabsCmd)
 	// when a mouse-driven close (middle-click on a tab, or "Close

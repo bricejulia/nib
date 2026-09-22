@@ -790,6 +790,40 @@ func run() error {
 		app.FocusLeaf(dest.leaf.ID)
 	}
 
+	// findPaneInDirection resolves the editor pane geometrically adjacent to
+	// source in direction dir (Horizontal = right, Vertical = down when
+	// forward; left/up when !forward) — the screen-geometry counterpart to
+	// orderedEditorPaneIDs' tree-order-based moveTabToPane, used by "Move
+	// Right"/"Move Down" (and CanMoveRight/CanMoveDown below) rather than
+	// "next/previous pane" cycling.
+	findPaneInDirection := func(source *editorPane, dir layout.Direction, forward bool) (*editorPane, bool) {
+		id, ok := layout.Neighbor(app.Rects(), source.leaf.ID, dir, forward)
+		if !ok {
+			return nil, false
+		}
+		p, ok := editorPanes[id]
+		return p, ok // false if the geometric neighbor isn't an editor pane (e.g. the file tree)
+	}
+	// moveTabDirection moves tabs[index] out of source and into whichever
+	// editor pane sits geometrically in direction dir/forward from it, then
+	// focuses wherever it landed. A no-op if there's no such pane — see
+	// CanMoveRight/CanMoveDown, which is why the menu hides the item instead
+	// of leaving it present-but-inert.
+	moveTabDirection := func(source *editorPane, index int, dir layout.Direction, forward bool) {
+		dest, ok := findPaneInDirection(source, dir, forward)
+		if !ok {
+			return
+		}
+		source.view.TransferTabTo(index, dest.view)
+		app.FocusLeaf(dest.leaf.ID)
+	}
+	// splitAndMoveTab is forward-declared here (assigned for real once
+	// createSplitPane exists to share, next to trySplit further down) so
+	// wireEditorPane's OnSplitAndMoveRight/OnSplitAndMoveDown callbacks can
+	// close over it now; same trick findPane/refreshGitStatus and
+	// reloadConfig use elsewhere in this function.
+	var splitAndMoveTab func(source *editorPane, index int, dir layout.Direction)
+
 	// wireEditorPane attaches every callback an editor pane needs to reach
 	// the rest of the application. Called for the initial pane below and for
 	// each pane trySplit creates, so a new split is never quietly missing a
@@ -865,6 +899,51 @@ func run() error {
 			if p, ok := findPaneForView(v); ok {
 				moveTabToPane(p, index, 1)
 			}
+		}
+		// "Split Right"/"Split Down" from the tab bar's context menu: unlike
+		// the global split_right/split_down actions (trySplit, which
+		// duplicates the active file into the new pane), these move the ONE
+		// tab the menu was opened for — see splitAndMoveTab below.
+		v.OnSplitAndMoveRight = func(index int) {
+			if p, ok := findPaneForView(v); ok {
+				splitAndMoveTab(p, index, layout.Horizontal)
+			}
+		}
+		v.OnSplitAndMoveDown = func(index int) {
+			if p, ok := findPaneForView(v); ok {
+				splitAndMoveTab(p, index, layout.Vertical)
+			}
+		}
+		// "Move Right"/"Move Down" from the tab bar's context menu: like
+		// OnMoveTabToNextPane above, but to the pane geometrically adjacent
+		// rather than next in tab-cycle order — see moveTabDirection.
+		v.OnMoveRight = func(index int) {
+			if p, ok := findPaneForView(v); ok {
+				moveTabDirection(p, index, layout.Horizontal, true)
+			}
+		}
+		v.OnMoveDown = func(index int) {
+			if p, ok := findPaneForView(v); ok {
+				moveTabDirection(p, index, layout.Vertical, true)
+			}
+		}
+		// CanMoveRight/CanMoveDown gate whether the tab menu even shows
+		// "Move Right"/"Move Down" — see openTabMenu.
+		v.CanMoveRight = func() bool {
+			p, ok := findPaneForView(v)
+			if !ok {
+				return false
+			}
+			_, ok = findPaneInDirection(p, layout.Horizontal, true)
+			return ok
+		}
+		v.CanMoveDown = func() bool {
+			p, ok := findPaneForView(v)
+			if !ok {
+				return false
+			}
+			_, ok = findPaneInDirection(p, layout.Vertical, true)
+			return ok
 		}
 		// Copying a mouse selection reaches the system clipboard through
 		// here — the editor pane speaks no OSC 52 itself, same arrangement
@@ -986,11 +1065,15 @@ func run() error {
 			app.FocusLeaf(fileTreeLeaf.ID)
 		}
 	}
-	trySplit := func(dir layout.Direction) {
-		target, ok := targetPane()
-		if !ok {
-			return
-		}
+	// createSplitPane creates a new editor pane wired exactly like every
+	// other one (see wireEditorPane) and splices it into the tree beside
+	// target's leaf in direction dir — the shared first half of trySplit
+	// (which then duplicates target's active file into it) and
+	// splitAndMoveTab (which instead moves one specific tab into it).
+	// Returns ok=false if target has no parent in the tree (target IS root
+	// — see layout.Split), which can't currently happen since root always
+	// wraps more than just the editor, but is checked rather than assumed.
+	createSplitPane := func(target *editorPane, dir layout.Direction) (*editorPane, bool) {
 		newView := editor.NewView()
 		newView.SetKeymap(cfg.Overrides("editor"))
 		newView.SetTabModeDefaults(derivedTabModes(cfg))
@@ -1002,18 +1085,42 @@ func run() error {
 		wireEditorPane(newView)
 		newLeaf := &layout.LeafNode{ID: nextLeafID, View: newView}
 		if !layout.Split(tree, target.leaf, dir, newLeaf) {
-			return
+			return nil, false
 		}
 		nextLeafID++
+		p := &editorPane{leaf: newLeaf, view: newView}
+		editorPanes[newLeaf.ID] = p
+		return p, true
+	}
+	trySplit := func(dir layout.Direction) {
+		target, ok := targetPane()
+		if !ok {
+			return
+		}
+		newPane, ok := createSplitPane(target, dir)
+		if !ok {
+			return
+		}
 		path := target.view.ActivePath()
 		if path != "" {
-			newView.Open(path) // new pane starts on the same file — the SAME Buffer, via bufferStore
+			newPane.view.Open(path) // new pane starts on the same file — the SAME Buffer, via bufferStore
+			refreshLineStatusFor(path)
 		}
-		editorPanes[newLeaf.ID] = &editorPane{leaf: newLeaf, view: newView}
-		if path != "" {
-			refreshLineStatusFor(path) // must run after registration above, so the new pane is in editorPanes to receive it
+		rebuildAndFocus(app, newPane.leaf.ID)
+	}
+	// splitAndMoveTab is trySplit's counterpart for "Split Right"/"Split
+	// Down" in the tab bar's context menu: instead of duplicating source's
+	// active file into the new pane, it moves the specific right-clicked
+	// tab there. No refreshLineStatusFor call needed here — unlike Open,
+	// TransferTabTo carries the tab's existing gutter markers with it (see
+	// View.ApplyLineStatus/TransferTabTo).
+	splitAndMoveTab = func(source *editorPane, index int, dir layout.Direction) {
+		newPane, ok := createSplitPane(source, dir)
+		if !ok {
+			return
 		}
-		rebuildAndFocus(app, newLeaf.ID)
+		source.view.TransferTabTo(index, newPane.view)
+		rebuildAndFocus(app, newPane.leaf.ID)
 	}
 	closeFocusedPane := func() {
 		target, ok := targetPane()

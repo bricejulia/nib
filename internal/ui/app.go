@@ -468,6 +468,15 @@ func (a *App) FocusedLeaf() (layout.LeafID, bool) {
 	return a.focus.Focused()
 }
 
+// Rects returns each leaf's last-computed on-screen Rect (recomputed every
+// render — see render()), keyed by LeafID. leafAt already reads the same
+// map internally for mouse hit-testing; this is the public read door into
+// it for callers outside this package, e.g. cmd/nib/main.go's
+// layout.Neighbor calls for "Move Right"/"Move Down".
+func (a *App) Rects() map[layout.LeafID]layout.Rect {
+	return a.rects
+}
+
 // SetFocusChangeHandler registers fn to be called whenever the focused
 // leaf actually changes, for any reason (Tab-cycle, mouse click, or any
 // FocusLeaf call) — e.g. so a caller managing multiple interchangeable
