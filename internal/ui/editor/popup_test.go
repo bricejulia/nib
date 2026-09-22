@@ -163,6 +163,56 @@ func TestRenderPopupClampsToRemainingRows(t *testing.T) {
 	}
 }
 
+func TestRenderPopupScrollsWindowToKeepSelectedVisible(t *testing.T) {
+	// Same one-row fold as TestRenderPopupClampsToRemainingRows, but with
+	// the last item selected: the window must slide to show it, not stay
+	// stuck on the first line.
+	w := newFakeWindow(40, 6)
+	renderPopup(w, 40, 6, 2, 4, []string{"one", "two", "three", "four"}, 3)
+
+	if strings.TrimSpace(w.lines[5]) != "four" {
+		t.Errorf("row 5 = %q, want the selected (last) popup line", w.lines[5])
+	}
+	if !rowHasStyle(w, 5, func(s layout.Style) bool { return s.Attr&layout.AttrReverse != 0 }) {
+		t.Error("expected row 5 highlighted as the selected row")
+	}
+}
+
+func TestRenderPopupWindowStaysPutWhenSelectedAlreadyVisible(t *testing.T) {
+	w := newFakeWindow(40, 6)
+	renderPopup(w, 40, 6, 2, 4, []string{"one", "two", "three", "four"}, 0)
+
+	if strings.TrimSpace(w.lines[5]) != "one" {
+		t.Errorf("row 5 = %q, want the first popup line (selection already visible)", w.lines[5])
+	}
+}
+
+func TestRenderPopupWindowShowsMultipleRowsAroundSelected(t *testing.T) {
+	// below = 7-4-1 = 2, so two rows fit; selecting index 4 of 5 total
+	// should scroll the window to the last two items.
+	w := newFakeWindow(40, 7)
+	renderPopup(w, 40, 7, 2, 4, []string{"one", "two", "three", "four", "five"}, 4)
+
+	if strings.TrimSpace(w.lines[5]) != "four" {
+		t.Errorf("row 5 = %q, want %q", w.lines[5], "four")
+	}
+	if rowHasStyle(w, 5, func(s layout.Style) bool { return s.Attr&layout.AttrReverse != 0 }) {
+		t.Error("row 5 (\"four\") should not be highlighted")
+	}
+	if strings.TrimSpace(w.lines[6]) != "five" {
+		t.Errorf("row 6 = %q, want %q", w.lines[6], "five")
+	}
+	if !rowHasStyle(w, 6, func(s layout.Style) bool { return s.Attr&layout.AttrReverse != 0 }) {
+		t.Error("row 6 (\"five\") should be highlighted as the selected row")
+	}
+	joined := strings.Join(w.lines, "\n")
+	for _, scrolledOut := range []string{"one", "two", "three"} {
+		if strings.Contains(joined, scrolledOut) {
+			t.Errorf("expected %q scrolled out of view, got:\n%s", scrolledOut, joined)
+		}
+	}
+}
+
 func TestRenderPopupNoRoomBelowFlipsUpward(t *testing.T) {
 	w := newFakeWindow(40, 5)
 	renderPopup(w, 40, 5, 0, 4, []string{"content"}, -1) // anchored on the last row
