@@ -317,9 +317,42 @@ func motionDestination(buf *Buffer, ln, rawCol int, action string, count int) (n
 			ln, rawCol = wordBackwardOnce(buf, ln, rawCol)
 		case "word_end":
 			ln, rawCol = wordEndOnce(buf, ln, rawCol)
+		case "insert_word_forward":
+			ln, rawCol = wordForwardOnceClamped(buf, ln, rawCol)
+		case "insert_word_backward":
+			ln, rawCol = wordBackwardOnceClamped(buf, ln, rawCol)
 		}
 	}
 	return ln, rawCol
+}
+
+// wordForwardOnceClamped is wordForwardOnce's line-bound sibling, used by
+// Alt+Right/Alt+f (insert_word_forward — see DefaultKeybinds) instead of
+// plain "w": vim's own "w" is expected to cross into the next line once it
+// runs out of words, but Alt+Right is the readline/Emacs/IDE-style word-jump
+// most editors bind it to, where that same keystroke instead stops at
+// end-of-line — an extra, deliberate press is what actually reaches the
+// next line. Falling through to wordForwardOnce and then clamping back
+// keeps the two in lockstep for every same-line case (mid-word, punctuation
+// run, ...) and only diverges exactly where a line boundary would've been
+// crossed.
+func wordForwardOnceClamped(buf *Buffer, ln, col int) (int, int) {
+	newLn, newCol := wordForwardOnce(buf, ln, col)
+	if newLn != ln {
+		return ln, len([]rune(buf.Lines[ln]))
+	}
+	return newLn, newCol
+}
+
+// wordBackwardOnceClamped mirrors wordForwardOnceClamped for Alt+Left/Alt+b
+// (insert_word_backward): it stops at the start of the current line instead
+// of crossing into the previous one.
+func wordBackwardOnceClamped(buf *Buffer, ln, col int) (int, int) {
+	newLn, newCol := wordBackwardOnce(buf, ln, col)
+	if newLn != ln {
+		return ln, 0
+	}
+	return newLn, newCol
 }
 
 // wordForwardOnce returns the position of the next word-motion stop after

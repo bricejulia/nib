@@ -2595,16 +2595,19 @@ func (v *View) HandleKey(k layout.Key) bool {
 		if v.OnShowFileDiff != nil && t.path != "" {
 			v.OnShowFileDiff(t.path)
 		}
-	// Alt+Left/Right's own action names (see DefaultKeybinds) forward to
-	// the exact same applyMovement call "b"/"w" make, so Normal mode
-	// treats them identically — this indirection (rather than binding
-	// Alt+Left/Right to word_backward/word_forward directly) is what keeps
-	// "b"/"w" themselves out of handleInsertKey's dispatch, where they must
-	// stay literal, insertable text.
+	// Alt+Left/Right's own action names (see DefaultKeybinds) route to
+	// applyMovement under their OWN name too — this indirection (rather
+	// than binding Alt+Left/Right to word_backward/word_forward directly)
+	// is what keeps "b"/"w" themselves out of handleInsertKey's dispatch,
+	// where they must stay literal, insertable text. Unlike "b"/"w",
+	// though, these stop at end-of-line instead of crossing into the next
+	// one (see wordForwardOnceClamped/wordBackwardOnceClamped) — vim's "w"
+	// is expected to cross lines, but Alt+Right is the readline/IDE-style
+	// word-jump most editors bind it to, which isn't.
 	case "insert_word_backward":
-		v.applyMovement(t, "word_backward", count)
+		v.applyMovement(t, "insert_word_backward", count)
 	case "insert_word_forward":
-		v.applyMovement(t, "word_forward", count)
+		v.applyMovement(t, "insert_word_forward", count)
 	default:
 		if !v.applyMovement(t, action, count) {
 			return false
@@ -2809,7 +2812,7 @@ func (v *View) applyMovement(t *tab, action string, count int) bool {
 		t.cursorLn = 0
 	case "last_line":
 		t.cursorLn = len(t.buf.Lines) - 1
-	case "word_forward", "word_backward", "word_end":
+	case "word_forward", "word_backward", "word_end", "insert_word_forward", "insert_word_backward":
 		raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
 		newLn, newRaw := motionDestination(t.buf, t.cursorLn, raw, action, count)
 		t.cursorLn = newLn
@@ -2878,14 +2881,14 @@ func (v *View) handleInsertKey(k layout.Key) bool {
 		return true
 	case "insert_word_backward":
 		if t := v.activeTab(); t != nil {
-			v.applyMovement(t, "word_backward", 1)
+			v.applyMovement(t, "insert_word_backward", 1)
 			v.clamp(t)
 		}
 		v.completion = nil // moving the cursor invalidates any open popup's context
 		return true
 	case "insert_word_forward":
 		if t := v.activeTab(); t != nil {
-			v.applyMovement(t, "word_forward", 1)
+			v.applyMovement(t, "insert_word_forward", 1)
 			v.clamp(t)
 		}
 		v.completion = nil
