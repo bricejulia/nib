@@ -33,6 +33,7 @@ func (a tabMenuAction) label() string {
 // own leaf-rect cache (a.rects) uses for pane hit-testing.
 type popupRect struct {
 	row, height, col, width int
+	offset                  int // index into items of the row at row — see popupBounds's offset return; 0 for any menu that fits fully in view, as tabMenuState's fixed 4-item list always does today
 }
 
 // tabMenuState is the tab bar's right-click context menu, open for one
@@ -96,8 +97,8 @@ func (v *View) renderTabMenu(w layout.Window, cols, rows int) {
 	for i, it := range menu.items {
 		lines[i] = popupLine{Text: it.label()}
 	}
-	startRow, n, width := popupBounds(cols, rows, menu.anchorCol, 0, lines)
-	menu.rect = popupRect{row: startRow, height: n, col: menu.anchorCol, width: width}
+	startRow, n, offset, width := popupBounds(cols, rows, menu.anchorCol, 0, lines, menu.selected)
+	menu.rect = popupRect{row: startRow, height: n, col: menu.anchorCol, width: width, offset: offset}
 	if n <= 0 || width <= 0 {
 		return
 	}
@@ -144,7 +145,7 @@ func (menu *tabMenuState) rowAt(col, row int) (index int, ok bool) {
 		col < r.col || col >= r.col+r.width {
 		return 0, false
 	}
-	return row - r.row, true
+	return r.offset + (row - r.row), true
 }
 
 // handleTabMenuMouse handles every mouse event while the menu is open:

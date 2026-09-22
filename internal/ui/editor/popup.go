@@ -43,8 +43,8 @@ type popupLine struct {
 // popupBounds computes where renderStyledPopup will actually draw for the
 // given anchor and content: the first row, how many of lines fit (after
 // the same above/below flip and downward-clip fallback described below),
-// and the column width used. n or width being 0 means nothing is drawn at
-// all (see renderStyledPopup).
+// which index of lines that window starts at, and the column width used.
+// n or width being 0 means nothing is drawn at all (see renderStyledPopup).
 //
 // Extracted from renderStyledPopup so a caller that needs to hit-test
 // clicks against an already-drawn popup (see the tab bar's right-click
@@ -59,10 +59,24 @@ type popupLine struct {
 // direction has enough room for everything. Row 0 is always the tab bar
 // (see View.CursorPosition), never available for popup content, so
 // "above" tops out at row 1.
-func popupBounds(cols, rows, anchorCol, anchorRow int, lines []popupLine) (startRow, n, width int) {
+//
+// When the clipped-downward case leaves fewer visible rows (n) than there
+// are lines (total), offset slides the window so selected — the row a
+// caller wants highlighted, or -1 for none — is always within it, the same
+// "keep the cursor row visible" goal finder.View and actionpopup.View reach
+// with a persistent scrollTop field. This is a stateless formula instead,
+// recomputed from selected/n/total on every call: popupBounds is already
+// called fresh on every render (and again for hit-testing), so a
+// persistent field would be redundant and could drift out of sync with
+// selected. One invariant worth spelling out because it'd be easy to break
+// while "simplifying" the clamp: selected < 0 always yields offset == 0, so
+// every read-only tooltip popup (diagnostics, hover, signature help,
+// git-hunk — none of which track a selection, all of which pass -1) keeps
+// showing lines[0:n] exactly as before.
+func popupBounds(cols, rows, anchorCol, anchorRow int, lines []popupLine, selected int) (startRow, n, offset, width int) {
 	total := len(lines)
 	if total == 0 {
-		return 0, 0, 0
+		return 0, 0, 0, 0
 	}
 
 	below := rows - anchorRow - 1
@@ -87,9 +101,19 @@ func popupBounds(cols, rows, anchorCol, anchorRow int, lines []popupLine) (start
 		startRow = anchorRow + 1
 	}
 	if n <= 0 {
-		return startRow, 0, 0
+		return startRow, 0, 0, 0
 	}
-	lines = lines[:n]
+
+	if selected >= n {
+		offset = selected - n + 1
+	}
+	if offset > total-n {
+		offset = total - n
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	lines = lines[offset : offset+n]
 
 	// Width is measured in display columns, not bytes: a message can contain
 	// anything, including non-ASCII.
@@ -103,20 +127,20 @@ func popupBounds(cols, rows, anchorCol, anchorRow int, lines []popupLine) (start
 		width = avail
 	}
 	if width <= 0 {
-		return startRow, n, 0
+		return startRow, n, offset, 0
 	}
-	return startRow, n, width
+	return startRow, n, offset, width
 }
 
 // renderStyledPopup is renderPopup with a per-row style. It carries all the
 // actual drawing; renderPopup is the unstyled convenience wrapper over it,
 // and popupBounds is the layout arithmetic factored out of it.
 func renderStyledPopup(w layout.Window, cols, rows, anchorCol, anchorRow int, lines []popupLine, selected int) {
-	startRow, n, width := popupBounds(cols, rows, anchorCol, anchorRow, lines)
+	startRow, n, offset, width := popupBounds(cols, rows, anchorCol, anchorRow, lines, selected)
 	if n <= 0 || width <= 0 {
 		return
 	}
-	lines = lines[:n]
+	lines = lines[offset : offset+n]
 
 	for i := 0; i < n; i++ {
 		text := clampToWidth(lines[i].Text, width)
@@ -126,7 +150,7 @@ func renderStyledPopup(w layout.Window, cols, rows, anchorCol, anchorRow int, li
 		}
 
 		style := lines[i].Style
-		if i == selected {
+		if offset+i == selected {
 			style.Attr |= layout.AttrReverse
 		}
 

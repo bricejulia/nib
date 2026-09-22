@@ -1,6 +1,8 @@
 package editor
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/bricejulia/nib/internal/layout"
@@ -119,6 +121,59 @@ func TestCompletionUpDownMovesSelection(t *testing.T) {
 	v.HandleKey(layout.Key{Named: layout.KeyUp})
 	if v.completion.selected != 1 {
 		t.Fatalf("selected = %d, want 1 (wrapped the other way)", v.completion.selected)
+	}
+}
+
+// TestCompletionPopupScrollsPastFoldOnDown covers a reported bug: navigating
+// past what fits on screen left the popup looking stuck on the first items
+// forever, because the shared popup renderer always drew lines[0:n] with no
+// regard for which one was selected. See popupBounds' offset return.
+func TestCompletionPopupScrollsPastFoldOnDown(t *testing.T) {
+	lines := []string{"al"}
+	for i := 0; i < 10; i++ {
+		lines = append(lines, fmt.Sprintf("alpha%d", i))
+	}
+	v := NewView()
+	v.tabs = []*tab{{buf: &Buffer{Lines: lines}}}
+	v.active = 0
+	v.activeTab().cursorLn = 0
+	v.activeTab().cursorCol = 2
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(ctrlSpace())
+	if v.completion == nil || len(v.completion.candidates) != 10 {
+		t.Fatalf("setup: expected 10 candidates, got %+v", v.completion)
+	}
+
+	w := newFakeWindow(40, 6) // below the cursor row (1): only 4 rows fit
+	v.Render(w)
+	joined := strings.Join(w.lines, "\n")
+	if !strings.Contains(joined, "alpha0") || strings.Contains(joined, "alpha4") {
+		t.Fatalf("setup: expected only the first fold's worth of candidates, got:\n%s", joined)
+	}
+
+	for i := 0; i < 5; i++ {
+		v.HandleKey(layout.Key{Named: layout.KeyDown})
+	}
+	if v.completion.selected != 5 {
+		t.Fatalf("selected = %d, want 5", v.completion.selected)
+	}
+
+	v.Render(w)
+	joined = strings.Join(w.lines, "\n")
+	if !strings.Contains(joined, "alpha5") {
+		t.Errorf("expected the window to scroll to show the selected item, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "alpha0") || strings.Contains(joined, "alpha1") {
+		t.Errorf("expected the scrolled-out first items gone, got:\n%s", joined)
+	}
+	foundHighlight := false
+	for row, l := range w.lines {
+		if strings.Contains(l, "alpha5") && rowHasStyle(w, row, func(s layout.Style) bool { return s.Attr&layout.AttrReverse != 0 }) {
+			foundHighlight = true
+		}
+	}
+	if !foundHighlight {
+		t.Error("expected the row showing the selected candidate to be highlighted")
 	}
 }
 
