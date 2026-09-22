@@ -164,7 +164,7 @@ func TestTabMenuMoveToNextPaneCallsCallbackWithTarget(t *testing.T) {
 	var gotIndex = -1
 	v.OnMoveTabToNextPane = func(index int) { gotIndex = index }
 
-	v.tabMenu.selected = 3 // "Move to next pane"
+	v.tabMenu.selected = len(v.tabMenu.items) - 1 // "Move to next pane" is always last
 	v.HandleKey(layout.Key{Named: layout.KeyEnter})
 
 	if gotIndex != 1 {

@@ -9,6 +9,10 @@ const (
 	tabMenuClose tabMenuAction = iota
 	tabMenuCloseOthers
 	tabMenuCloseAll
+	tabMenuSplitRight
+	tabMenuSplitDown
+	tabMenuMoveRight
+	tabMenuMoveDown
 	tabMenuMoveToNextPane
 )
 
@@ -20,6 +24,14 @@ func (a tabMenuAction) label() string {
 		return "Close Others"
 	case tabMenuCloseAll:
 		return "Close All"
+	case tabMenuSplitRight:
+		return "Split Right"
+	case tabMenuSplitDown:
+		return "Split Down"
+	case tabMenuMoveRight:
+		return "Move Right"
+	case tabMenuMoveDown:
+		return "Move Down"
 	case tabMenuMoveToNextPane:
 		return "Move to next pane"
 	default:
@@ -60,9 +72,17 @@ func (v *View) openTabMenu(i, anchorCol int) {
 	v.hoverText = ""
 	v.signatureHelp = nil
 	v.gitPopup = nil
+	items := []tabMenuAction{tabMenuClose, tabMenuCloseOthers, tabMenuCloseAll, tabMenuSplitRight, tabMenuSplitDown}
+	if v.CanMoveRight != nil && v.CanMoveRight() {
+		items = append(items, tabMenuMoveRight)
+	}
+	if v.CanMoveDown != nil && v.CanMoveDown() {
+		items = append(items, tabMenuMoveDown)
+	}
+	items = append(items, tabMenuMoveToNextPane)
 	v.tabMenu = &tabMenuState{
 		target:    i,
-		items:     []tabMenuAction{tabMenuClose, tabMenuCloseOthers, tabMenuCloseAll, tabMenuMoveToNextPane},
+		items:     items,
 		anchorCol: anchorCol,
 	}
 }
@@ -82,6 +102,22 @@ func (v *View) activateTabMenuItem() {
 		v.requestCloseOtherTabs(menu.target)
 	case tabMenuCloseAll:
 		v.requestCloseAllTabs()
+	case tabMenuSplitRight:
+		if v.OnSplitAndMoveRight != nil {
+			v.OnSplitAndMoveRight(menu.target)
+		}
+	case tabMenuSplitDown:
+		if v.OnSplitAndMoveDown != nil {
+			v.OnSplitAndMoveDown(menu.target)
+		}
+	case tabMenuMoveRight:
+		if v.OnMoveRight != nil {
+			v.OnMoveRight(menu.target)
+		}
+	case tabMenuMoveDown:
+		if v.OnMoveDown != nil {
+			v.OnMoveDown(menu.target)
+		}
 	case tabMenuMoveToNextPane:
 		if v.OnMoveTabToNextPane != nil {
 			v.OnMoveTabToNextPane(menu.target)
