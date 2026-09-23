@@ -205,6 +205,23 @@ type undoEntry struct {
 	lines     []string
 	cursorLn  int
 	cursorCol int
+	group     *editGroup // nil for an ordinary, single-file edit
+}
+
+// editGroup ties together the undoEntry pushed onto every file a single
+// WorkspaceEdit touched (an LSP rename or code action spanning several
+// files — see workspaceedit.go), so undoing or redoing any ONE member
+// reverts or reapplies the whole operation atomically instead of leaving
+// the others behind — see undo/redo's group-aware branch and
+// undoGroupSiblings/redoGroupSiblings. Identity is the pointer itself: two
+// entries belong to the same operation iff they share the same *editGroup.
+// Every member, whether it already had a tab open or ApplyWorkspaceEdit had
+// to open one itself (see View.OpenBackground), is left
+// dirty-until-manually-saved exactly like any other edit — nothing here
+// auto-saves, forward or on undo/redo, for the same reason nothing else in
+// nib does: which edits have actually reached disk should never be a guess.
+type editGroup struct {
+	paths []string
 }
 
 // tab holds one open file's buffer plus its own scroll/cursor state, so
@@ -891,7 +908,32 @@ func (v *View) Open(path string) {
 			return
 		}
 	}
+	t := v.openTab(path)
+	v.tabs = append(v.tabs, t)
+	v.active = len(v.tabs) - 1
+}
 
+// OpenBackground is Open without the focus change: it opens path as a new
+// tab the same way Open does, but never touches v.active — for a caller
+// opening several files at once (e.g. an LSP rename or code action
+// touching files the user never had open — see workspaceedit.go) that
+// shouldn't yank focus away from whatever tab the user is actually looking
+// at. Returns the existing tab if path is already open in this view.
+func (v *View) OpenBackground(path string) *tab {
+	if t := v.tabForPath(path); t != nil {
+		return t
+	}
+	t := v.openTab(path)
+	v.tabs = append(v.tabs, t)
+	return t
+}
+
+// openTab loads path into a new *tab, wired exactly the way Open always
+// has: buffer via v.store, indent-mode detection, highlight submission,
+// the language server's Open notification, and instant syntax diagnostics.
+// It neither checks for an already-open tab nor appends to v.tabs nor
+// touches v.active — callers (Open, OpenBackground) decide that.
+func (v *View) openTab(path string) *tab {
 	buf, err := v.store.Open(path)
 	lang := languageFor(path)
 	if buf != nil && buf.IndentWidth == 0 {
@@ -909,8 +951,6 @@ func (v *View) Open(path string) {
 		// shows the heuristic colors for the one frame the parse takes.
 		v.submitHighlight(buf, true)
 	}
-	v.tabs = append(v.tabs, t)
-	v.active = len(v.tabs) - 1
 
 	// Hand the buffer to the language server (spawning it on the first
 	// file of its language) so it can start analyzing and publishing
@@ -922,6 +962,7 @@ func (v *View) Open(path string) {
 	// Instant parse-error markers, without waiting for (or needing) a
 	// language server — see refreshSyntaxDiagnostics.
 	v.refreshSyntaxDiagnostics(t)
+	return t
 }
 
 // OpenAtLine is Open, followed by moving the cursor to line (1-based),
@@ -1450,9 +1491,6 @@ func (v *View) StatusText() string {
 	if v.mode == modeSearch {
 		return "/" + v.searchField.String()
 	}
-	if v.mode == modeRename {
-		return "Rename to: " + v.renameField.String()
-	}
 	prefix := ""
 	if v.mode == modeInsert {
 		prefix = "-- INSERT -- "
@@ -1552,9 +1590,45 @@ func (v *View) CursorPosition() (int, int, bool) {
 	if t == nil || t.buf == nil {
 		return 0, 0, false
 	}
-	col := gutterWidthFor(t) + cursorDisplayColumn(t, tabWidthOf(t)) - t.leftCol
-	row := 1 + (t.cursorLn - t.topLine) // +1: row 0 is the tab bar
-	return col, row, true
+	anchorCol, anchorRow := v.cursorAnchor(t)
+	if v.mode == modeRename {
+		// While renaming, the native cursor belongs inside the rename popup
+		// (see Render's modeRename branch) instead of on the buffer cell it's
+		// anchored to — otherwise the box appears but the blinking cursor
+		// stays on the symbol, defeating the point of drawing it inline.
+		label := "Rename to: "
+		lines := []popupLine{{Text: label + v.renameField.String()}}
+		startRow, n, _, width := popupBounds(v.lastWidth, v.lastHeight, anchorCol, anchorRow, lines, -1)
+		if n <= 0 || width <= 0 {
+			return anchorCol, anchorRow, true
+		}
+		// Clamped against the pane's own right edge, not popupBounds' width:
+		// width is sized to fit the box's *content* exactly, so a caret
+		// resting on the empty cell right after the last character (the
+		// common case, since the field starts with the caret at the end of
+		// the prefilled symbol) sits at anchorCol+width — one column past
+		// width-1, but still a real, padded cell inside the drawn row (see
+		// renderStyledPopup's trailing-space segment). Clamping to width-1
+		// there would always pull the caret back onto the last character
+		// instead of past it.
+		caretCol := anchorCol + textwidth.DisplayWidth(label+v.renameField.TextBeforeCaret())
+		if maxCol := v.lastWidth - 1; caretCol > maxCol {
+			caretCol = maxCol
+		}
+		return caretCol, startRow, true
+	}
+	return anchorCol, anchorRow, true
+}
+
+// cursorAnchor is the buffer text-cursor's cell in this View's own Window
+// coordinates — the same value CursorPosition reports outside modeRename, and
+// what Render's modeRename branch anchors the rename popup to (CursorPosition
+// itself can't be reused there, since during modeRename it reports the popup's
+// caret instead — see above).
+func (v *View) cursorAnchor(t *tab) (col, row int) {
+	col = gutterWidthFor(t) + cursorDisplayColumn(t, tabWidthOf(t)) - t.leftCol
+	row = 1 + (t.cursorLn - t.topLine) // +1: row 0 is the tab bar
+	return col, row
 }
 
 func (v *View) Render(w layout.Window) {
@@ -1592,11 +1666,14 @@ func (v *View) Render(w layout.Window) {
 
 	// Popups draw last so they sit on top of the file content. Only one can
 	// be up at a time: the tab menu takes priority over everything (it's
-	// modal to mouse input while open — see HandleMouse), completion
-	// belongs to Insert mode, the rest (diagnostic, hover, signature-help,
-	// and git tooltips) to Normal mode.
+	// modal to mouse input while open — see HandleMouse), completion and
+	// rename belong to Insert/Rename mode respectively, the rest
+	// (diagnostic, hover, signature-help, and git tooltips) to Normal mode.
 	if v.tabMenu != nil {
 		v.renderTabMenu(w, cols, rows)
+	} else if v.mode == modeRename && t != nil {
+		col, row := v.cursorAnchor(t)
+		renderPopup(w, cols, rows, col, row, []string{"Rename to: " + v.renameField.String()}, -1)
 	} else if v.completion != nil {
 		if col, row, ok := v.CursorPosition(); ok {
 			v.renderCompletionPopup(w, cols, rows, col, row)
@@ -3186,29 +3263,125 @@ func (v *View) pushUndoIfChanged(t *tab, before undoEntry) {
 // position; a sibling pane also showing t.buf keeps its own cursor
 // wherever it was (clamped defensively on its next Render if the content
 // shrank out from under it).
+// If entry belongs to an editGroup (it came from a multi-file WorkspaceEdit
+// — a rename or code action), undo also reverts every other file that
+// WorkspaceEdit touched — see undoGroupSiblings — so a single "u" undoes
+// the whole operation, not just the file it happened to be pressed in.
 func (v *View) undo(t *tab) {
 	if len(t.buf.undoStack) == 0 {
 		return
 	}
 	entry := t.buf.undoStack[len(t.buf.undoStack)-1]
 	t.buf.undoStack = t.buf.undoStack[:len(t.buf.undoStack)-1]
-	t.buf.redoStack = append(t.buf.redoStack, snapshotTab(t))
+	redo := snapshotTab(t)
+	redo.group = entry.group
+	t.buf.redoStack = append(t.buf.redoStack, redo)
 	applyUndoEntry(t, entry)
 	v.onBufferEdited(t)
+	if entry.group != nil {
+		v.undoGroupSiblings(t.path, entry.group)
+	}
 }
 
 // redo re-applies the most recently undone change, pushing the current
 // state onto the undo stack first so it can be undone again. A no-op on
-// an empty redo stack.
+// an empty redo stack. Group-aware the same way undo is — see
+// redoGroupSiblings.
 func (v *View) redo(t *tab) {
 	if len(t.buf.redoStack) == 0 {
 		return
 	}
 	entry := t.buf.redoStack[len(t.buf.redoStack)-1]
 	t.buf.redoStack = t.buf.redoStack[:len(t.buf.redoStack)-1]
-	t.buf.undoStack = append(t.buf.undoStack, snapshotTab(t))
+	undo := snapshotTab(t)
+	undo.group = entry.group
+	t.buf.undoStack = append(t.buf.undoStack, undo)
 	applyUndoEntry(t, entry)
 	v.onBufferEdited(t)
+	if entry.group != nil {
+		v.redoGroupSiblings(t.path, entry.group)
+	}
+}
+
+// undoGroupSiblings reverts every OTHER file group touched (see editGroup),
+// after self has already been undone directly by the caller (undo) — so a
+// single "u" on any file a multi-file WorkspaceEdit touched undoes it
+// everywhere at once.
+//
+// A sibling is only reverted if group is still the top entry on ITS OWN
+// undo stack — i.e. nothing has edited that file since the operation that
+// created group — so a later, unrelated edit to a sibling file is never
+// silently discarded; that sibling is just left alone instead of aborting
+// the whole revert.
+//
+// Prefers reverting through a *tab already open in THIS View for full
+// parity with a normal undo (diagnostics refresh, LSP notify, cursor
+// clamp) — the common case, since ApplyWorkspaceEdit opens every file a
+// rename touches as a tab in the pane that triggered it (see
+// View.OpenBackground). Falls back to reverting the shared Buffer directly
+// for a sibling that's open only in a different split pane: visually
+// correct immediately (Render reads the Buffer's live content), but that
+// other pane's diagnostics/LSP view won't refresh until its own next
+// interaction.
+func (v *View) undoGroupSiblings(self string, group *editGroup) {
+	for _, path := range group.paths {
+		if path == self {
+			continue
+		}
+		if t := v.tabForPath(path); t != nil {
+			if len(t.buf.undoStack) == 0 || t.buf.undoStack[len(t.buf.undoStack)-1].group != group {
+				continue
+			}
+			entry := t.buf.undoStack[len(t.buf.undoStack)-1]
+			t.buf.undoStack = t.buf.undoStack[:len(t.buf.undoStack)-1]
+			redo := snapshotTab(t)
+			redo.group = group
+			t.buf.redoStack = append(t.buf.redoStack, redo)
+			applyUndoEntry(t, entry)
+			v.onBufferEdited(t)
+			continue
+		}
+		buf, ok := v.store.Lookup(path)
+		if !ok || len(buf.undoStack) == 0 || buf.undoStack[len(buf.undoStack)-1].group != group {
+			continue
+		}
+		entry := buf.undoStack[len(buf.undoStack)-1]
+		buf.undoStack = buf.undoStack[:len(buf.undoStack)-1]
+		buf.redoStack = append(buf.redoStack, undoEntry{lines: append([]string(nil), buf.Lines...), group: group})
+		buf.Restore(entry.lines)
+	}
+}
+
+// redoGroupSiblings is undoGroupSiblings' mirror image for "U" — see there
+// for the shared reasoning (safety check, same-View-tab preference, the
+// cross-pane fallback).
+func (v *View) redoGroupSiblings(self string, group *editGroup) {
+	for _, path := range group.paths {
+		if path == self {
+			continue
+		}
+		if t := v.tabForPath(path); t != nil {
+			if len(t.buf.redoStack) == 0 || t.buf.redoStack[len(t.buf.redoStack)-1].group != group {
+				continue
+			}
+			entry := t.buf.redoStack[len(t.buf.redoStack)-1]
+			t.buf.redoStack = t.buf.redoStack[:len(t.buf.redoStack)-1]
+			undo := snapshotTab(t)
+			undo.group = group
+			t.buf.undoStack = append(t.buf.undoStack, undo)
+			applyUndoEntry(t, entry)
+			v.onBufferEdited(t)
+			continue
+		}
+		buf, ok := v.store.Lookup(path)
+		if !ok || len(buf.redoStack) == 0 || buf.redoStack[len(buf.redoStack)-1].group != group {
+			continue
+		}
+		entry := buf.redoStack[len(buf.redoStack)-1]
+		buf.redoStack = buf.redoStack[:len(buf.redoStack)-1]
+		buf.undoStack = append(buf.undoStack, undoEntry{lines: append([]string(nil), buf.Lines...), group: group})
+		buf.Restore(entry.lines)
+	}
 }
 
 // snapshotTab captures t's current buffer contents (copied, so later

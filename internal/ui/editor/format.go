@@ -32,7 +32,7 @@ func (v *View) triggerFormat() {
 		if !ok || len(edits) == 0 {
 			return
 		}
-		v.applyTextEdits(t, edits)
+		v.applyTextEdits(t, edits, nil)
 	})
 }
 
@@ -43,6 +43,10 @@ func (v *View) triggerFormat() {
 // ReplaceLines (replace.go) already uses for a whole-buffer rewrite, rather
 // than a new Buffer method.
 //
+// group tags the pushed undo entry so undo/redo can revert or reapply it
+// together with every other file the same WorkspaceEdit touched — see
+// editGroup. nil for a single-file operation like triggerFormat's reformat.
+//
 // edits are applied in REVERSE document order (bottom of the file first):
 // each TextEdit's Range is expressed in the ORIGINAL document's
 // coordinates per the LSP spec, so applying one earlier in the file first
@@ -50,8 +54,9 @@ func (v *View) triggerFormat() {
 // against. Processing back-to-front means every edit still-to-apply sits
 // entirely above the edits already spliced in, so its recorded coordinates
 // stay valid throughout.
-func (v *View) applyTextEdits(t *tab, edits []lsp.TextEdit) {
+func (v *View) applyTextEdits(t *tab, edits []lsp.TextEdit, group *editGroup) {
 	before := snapshotTab(t)
+	before.group = group
 	lines := append([]string(nil), t.buf.Lines...)
 	for _, e := range sortEditsDescending(edits) {
 		lines = applyTextEdit(lines, e)

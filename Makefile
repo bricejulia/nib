@@ -23,6 +23,10 @@ run:
 vet:
 	$(GO) vet ./...
 
+## format: run go fmt
+format:
+	$(GO) fmt ./...
+
 ## tidy: tidy and verify go.mod / go.sum
 tidy:
 	$(GO) mod tidy

@@ -606,7 +606,7 @@ func run() error {
 		if action.Edit == nil {
 			return
 		}
-		res := editor.ApplyWorkspaceEdit(*action.Edit, findPane)
+		res := editor.ApplyWorkspaceEdit(*action.Edit, findPane, activeEditorPane.view)
 		for path, err := range res.Failed {
 			debuglog.Error("apply code action: %s: %v", path, err)
 		}
@@ -957,9 +957,12 @@ func run() error {
 		// applying it needs findPane (which pane, if any, has each affected
 		// path open) — something only main.go's pane registry can answer.
 		// Same "hand it back out, don't own it" split finderView's own
-		// replace-all logic already makes (see OnReplaceAll below).
+		// replace-all logic already makes (see OnReplaceAll below). v itself
+		// is passed as the triggerView: whichever file ApplyWorkspaceEdit
+		// can't find already open gets opened as a new tab right here, in
+		// the pane the rename/action was actually invoked from.
 		v.OnApplyWorkspaceEdit = func(edit lsp.WorkspaceEdit) {
-			res := editor.ApplyWorkspaceEdit(edit, findPane)
+			res := editor.ApplyWorkspaceEdit(edit, findPane, v)
 			for path, err := range res.Failed {
 				debuglog.Error("apply rename: %s: %v", path, err)
 			}

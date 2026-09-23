@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -20,10 +21,8 @@ func withStubs(t *testing.T, osName string, env map[string]string, present ...st
 	goos = osName
 	getenv = func(k string) string { return env[k] }
 	lookPath = func(name string) (string, error) {
-		for _, p := range present {
-			if p == name {
-				return "/usr/bin/" + name, nil
-			}
+		if slices.Contains(present, name) {
+			return "/usr/bin/" + name, nil
 		}
 		return "", errors.New("not found")
 	}
