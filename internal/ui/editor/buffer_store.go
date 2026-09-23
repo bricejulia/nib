@@ -104,3 +104,17 @@ func (s *BufferStore) Rekey(buf *Buffer, oldPath, newPath string) bool {
 func (s *BufferStore) Len() int {
 	return len(s.bufs)
 }
+
+// Lookup returns the Buffer already registered for path, without affecting
+// its reference count — for a caller that needs to check whether a buffer
+// is still tracked (e.g. reverting a WorkspaceEdit group's sibling that's
+// open in a different View than the one undoing it — see
+// View.undoGroupSiblings) without creating or extending a lifetime it
+// doesn't own. ok is false if nothing is registered for path.
+func (s *BufferStore) Lookup(path string) (*Buffer, bool) {
+	sb, ok := s.bufs[path]
+	if !ok {
+		return nil, false
+	}
+	return sb.buf, true
+}
