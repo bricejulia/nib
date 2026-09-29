@@ -140,6 +140,12 @@ func Template(scopes []Scope) string {
 # language name is the same one the "lsp" directive above and the status
 # bar's language indicator use. The ":<width>" suffix is optional.
 #
+# nib ships per-language defaults, and a tabmode line replaces the one for
+# its language. The built-ins: spaces:2 for json, yaml, toml, html, css,
+# scss, javascript, typescript, tsx, ruby, lua, xml, twig, markdown;
+# spaces:4 for php, python, rust, java, kotlin, swift, sql, dockerfile;
+# tabs:4 for go, make, and everything else (default).
+#
 #   tabmode = default = tabs:4
 #   tabmode = yaml     = spaces:2
 #

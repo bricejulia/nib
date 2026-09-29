@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -205,13 +206,13 @@ func mergedLSPServers(cfg *config.Config) map[string][]string {
 	return servers
 }
 
-// derivedTabModes merges the user config's "tabmode" lines over nib's own
-// unconfigured default (real tabs, width 4), the same "config wins"
+// derivedTabModes merges the user config's "tabmode" lines over nib's
+// built-in per-language defaults (config.DefaultTabModes), the same "config wins"
 // shape mergedLSPServers uses for language servers — see
 // editor.View.SetTabModeDefaults, which every editor pane's Open derives
 // each newly opened file's indent style from.
 func derivedTabModes(cfg *config.Config) map[string]config.TabMode {
-	modes := map[string]config.TabMode{"default": {UseSpaces: false, Width: 4}}
+	modes := maps.Clone(config.DefaultTabModes)
 	for lang, mode := range cfg.TabModes() {
 		modes[lang] = mode
 	}
