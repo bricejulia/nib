@@ -134,3 +134,30 @@ func TestTabModeStatusEmptyWithNoFileOpen(t *testing.T) {
 		t.Errorf("TabModeStatus() = %q, want empty with no tabs open", got)
 	}
 }
+
+// Every built-in DefaultTabModes key must be a name languageFor actually
+// returns, or that entry silently never applies. Each sample filename is
+// one languageFor maps to the key.
+func TestDefaultTabModesKeysMatchDetectedLanguages(t *testing.T) {
+	samples := map[string]string{
+		"json": "a.json", "yaml": "a.yaml", "toml": "a.toml", "html": "a.html",
+		"css": "a.css", "scss": "a.scss", "javascript": "a.js", "typescript": "a.ts",
+		"tsx": "a.tsx", "ruby": "a.rb", "lua": "a.lua", "xml": "a.xml",
+		"twig": "a.twig", "markdown": "a.md", "php": "a.php", "python": "a.py",
+		"rust": "a.rs", "java": "a.java", "kotlin": "a.kt", "swift": "a.swift",
+		"sql": "a.sql", "dockerfile": "Dockerfile", "go": "a.go", "make": "Makefile",
+	}
+	for lang := range config.DefaultTabModes {
+		if lang == "default" {
+			continue
+		}
+		path, ok := samples[lang]
+		if !ok {
+			t.Errorf("DefaultTabModes[%q] has no sample file in this test; add one", lang)
+			continue
+		}
+		if got := languageFor(path); got != lang {
+			t.Errorf("languageFor(%q) = %q, want %q (DefaultTabModes key would never match)", path, got, lang)
+		}
+	}
+}

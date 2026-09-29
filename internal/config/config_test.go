@@ -311,3 +311,20 @@ func TestMemWatchThresholdMiBOnNilConfig(t *testing.T) {
 		t.Errorf("expected 0 from a nil *Config, got %v", got)
 	}
 }
+
+func TestDefaultTabModesFollowLanguageConventions(t *testing.T) {
+	cases := map[string]TabMode{
+		"default": {UseSpaces: false, Width: 4},
+		"json":    {UseSpaces: true, Width: 2},
+		"yaml":    {UseSpaces: true, Width: 2},
+		"php":     {UseSpaces: true, Width: 4},
+		"python":  {UseSpaces: true, Width: 4},
+		"go":      {UseSpaces: false, Width: 4}, // gofmt
+		"make":    {UseSpaces: false, Width: 4}, // make requires real tabs
+	}
+	for lang, want := range cases {
+		if got := DefaultTabModes[lang]; got != want {
+			t.Errorf("DefaultTabModes[%q] = %+v, want %+v", lang, got, want)
+		}
+	}
+}

@@ -36,7 +36,8 @@
 //
 // "default" is the fallback applied to any language without its own
 // "tabmode" entry. The width suffix is optional; omitting it keeps
-// whatever width nib would otherwise use.
+// whatever width nib would otherwise use. See DefaultTabModes for the
+// built-ins these merge over.
 //
 // The "whitespace" directive turns on rendering of spaces and tab-fill as
 // visible glyphs in the editor, e.g. "whitespace = true". Any other value
@@ -98,6 +99,45 @@ func (d Defaults) Resolve(overrides map[string]string) map[string]string {
 type TabMode struct {
 	UseSpaces bool
 	Width     int
+}
+
+// DefaultTabModes is nib's built-in indent style per language, keyed the
+// same way as "tabmode" lines (grammar language names, plus "default").
+// A user's "tabmode" line for a language replaces its entry here, the
+// same "config wins" merge internal/lsp.DefaultServers gets from "lsp"
+// lines. Each entry follows the language's dominant convention or
+// formatter: PSR-12 for PHP, PEP 8 for Python, gofmt for Go. Makefiles
+// keep real tabs because make requires them. A language not listed
+// falls back to "default".
+var DefaultTabModes = map[string]TabMode{
+	"default": {UseSpaces: false, Width: 4},
+
+	"json":       {UseSpaces: true, Width: 2},
+	"yaml":       {UseSpaces: true, Width: 2},
+	"toml":       {UseSpaces: true, Width: 2},
+	"html":       {UseSpaces: true, Width: 2},
+	"css":        {UseSpaces: true, Width: 2},
+	"scss":       {UseSpaces: true, Width: 2},
+	"javascript": {UseSpaces: true, Width: 2},
+	"typescript": {UseSpaces: true, Width: 2},
+	"tsx":        {UseSpaces: true, Width: 2},
+	"ruby":       {UseSpaces: true, Width: 2},
+	"lua":        {UseSpaces: true, Width: 2},
+	"xml":        {UseSpaces: true, Width: 2},
+	"twig":       {UseSpaces: true, Width: 2},
+	"markdown":   {UseSpaces: true, Width: 2},
+
+	"php":        {UseSpaces: true, Width: 4},
+	"python":     {UseSpaces: true, Width: 4},
+	"rust":       {UseSpaces: true, Width: 4},
+	"java":       {UseSpaces: true, Width: 4},
+	"kotlin":     {UseSpaces: true, Width: 4},
+	"swift":      {UseSpaces: true, Width: 4},
+	"sql":        {UseSpaces: true, Width: 4},
+	"dockerfile": {UseSpaces: true, Width: 4},
+
+	"go":   {UseSpaces: false, Width: 4},
+	"make": {UseSpaces: false, Width: 4},
 }
 
 // Config holds the parsed user config: per-scope keybinding overrides,
