@@ -41,7 +41,8 @@ servers — in a codebase small enough to read in an afternoon.
   per-occurrence checklist; replace one match or every checked one, in open
   buffers or on disk.
 - **Git integration** — file status in the tree, per-line diff markers in the
-  gutter, branch and dirty summary in the status bar.
+  gutter, branch and dirty summary in the status bar, and a file's history
+  with each commit's diff.
 - **In-file search** — `/` with `n`/`N`, all matches highlighted.
 - **Mouse text selection** — click, drag, double-click a word, triple-click a
   line; finishing a selection copies it to the system clipboard automatically.
@@ -293,6 +294,7 @@ terminals bypass this while a modifier is held (`Option` on macOS).
 | `B` | Blame: who last changed this line, and why |
 | `H` | Show the diff hunk this line belongs to |
 | `D` | Show this file's full diff against `HEAD` (scrollable; `Esc` closes) |
+| `L` | Show this file's history: the commits that touched it, each one's diff previewed below (see [File history](#file-history)) |
 
 ### Editor — search and ex-commands
 
@@ -317,6 +319,7 @@ terminals bypass this while a modifier is held (`Option` on macOS).
 | `r` | Rename / move |
 | `c` | Copy |
 | `d` | Delete |
+| `L` | Show the selected file's git history |
 
 `a`, `r`, and `c` open a prompt on the pane's bottom row. What you type is a
 path relative to the project root — `a` prefills the selected folder, `r`
@@ -358,6 +361,17 @@ unscoped one.
 
 `j`/`k` and arrows scroll · `PageUp`/`PageDown` by a page · `Home`/`End` jump
 to the ends · `←`/`→` peeks at a long line · `Esc` closes
+
+### File history
+
+The commits that touched the file, newest first, followed across renames
+(`git log --follow`, up to 500), with the selected commit's diff to that file
+previewed underneath. Uncommitted changes, if any, head the list as a
+`working` entry.
+
+`j`/`k` and `↑`/`↓` select a commit · `Home`/`End` jump to the newest /
+oldest · `J`/`K` scroll the diff · `PageUp`/`PageDown` (or `Ctrl+U`/`Ctrl+D`)
+by a page · `←`/`→` peeks at a long line · `Esc` closes
 
 ### Find & Replace
 
@@ -406,7 +420,7 @@ There are two directives, `keybind` and `lsp` (below), sharing that
 three-field shape.
 
 Scopes are `global` (the default, so the prefix is optional), `editor`,
-`filetree`, `finder`, `debug`, and `help`. Triggers are spellings like
+`filetree`, `finder`, `debug`, `diff`, `history`, and `help`. Triggers are spellings like
 `ctrl+p`, `shift+left`, `ctrl+space`, or a bare `x`; capitalisation of
 modifiers and named keys doesn't matter. Actions are the names in each
 package's `DefaultKeybinds`.

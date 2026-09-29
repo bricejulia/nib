@@ -38,6 +38,8 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "r", Action: "rename"},
 	{Trigger: "c", Action: "copy"},
 	{Trigger: "d", Action: "delete"},
+	// "L" ("log"), the same key the editor uses for the file's history.
+	{Trigger: "L", Action: "show_history"},
 	{Trigger: "]", Action: "next_view"},
 	{Trigger: "[", Action: "prev_view"},
 }
@@ -133,6 +135,11 @@ type View struct {
 	// path that was removed — once, and again by prefix on the caller's
 	// side for anything that was inside a deleted directory.
 	OnPathDeleted func(path string)
+
+	// OnShowHistory is called with the absolute path of the selected file
+	// when "L" fires, so the caller can open its git history (see
+	// internal/ui/historyview). Never called for a directory.
+	OnShowHistory func(path string)
 
 	// OnMutated is called after any successful create/rename/delete, and
 	// never after a cancel or a refusal, so the caller can re-run the
@@ -540,6 +547,8 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.beginCopy()
 	case "delete":
 		v.beginDelete()
+	case "show_history":
+		v.showHistory()
 	case "next_view":
 		v.NextView()
 	case "prev_view":
@@ -597,6 +606,18 @@ func (v *View) activate() {
 	}
 	if v.OnOpen != nil {
 		v.OnOpen(n.Path)
+	}
+}
+
+// showHistory hands the selected file to OnShowHistory. A directory has no
+// single-file history to show, so it's ignored rather than opening an
+// overlay that would only say "no history".
+func (v *View) showHistory() {
+	if v.cursor < 0 || v.cursor >= len(v.rows) || v.OnShowHistory == nil {
+		return
+	}
+	if n := v.rows[v.cursor].Node; !n.IsDir {
+		v.OnShowHistory(n.Path)
 	}
 }
 

@@ -150,6 +150,9 @@ var DefaultKeybinds = config.Defaults{
 	{Trigger: "B", Action: "show_blame"},
 	{Trigger: "D", Action: "show_file_diff"},
 	{Trigger: "H", Action: "show_line_diff"},
+	// "L" ("log") lists the commits that touched this file — free for the
+	// same reason H is: nib implements none of vim's H/M/L screen motions.
+	{Trigger: "L", Action: "show_file_history"},
 	// "F" ("format") reformats the whole document via the language server.
 	{Trigger: "F", Action: "format_document"},
 	// "R" ("rename") opens the rename-symbol prompt via the language
@@ -441,6 +444,12 @@ type View struct {
 	// in a popup this pane draws. Same plain-callback pattern as
 	// OnAllTabsClosed.
 	OnShowFileDiff func(path string)
+
+	// OnShowFileHistory, if set, is called with the active tab's path when
+	// "L" fires — set by cmd/nib/main.go to open the file-history overlay
+	// (see internal/ui/historyview). Same overlay-the-app-owns reasoning as
+	// OnShowFileDiff.
+	OnShowFileHistory func(path string)
 
 	// OnApplyWorkspaceEdit, if set, is called with a rename request's
 	// resulting lsp.WorkspaceEdit so the caller (which owns the registry of
@@ -2671,6 +2680,10 @@ func (v *View) HandleKey(k layout.Key) bool {
 	case "show_file_diff":
 		if v.OnShowFileDiff != nil && t.path != "" {
 			v.OnShowFileDiff(t.path)
+		}
+	case "show_file_history":
+		if v.OnShowFileHistory != nil && t.path != "" {
+			v.OnShowFileHistory(t.path)
 		}
 	// Alt+Left/Right's own action names (see DefaultKeybinds) route to
 	// applyMovement under their OWN name too — this indirection (rather

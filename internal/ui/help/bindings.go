@@ -110,6 +110,7 @@ var sections = []section{
 			{"B", "Blame: who last changed this line"},
 			{"H", "Show the diff hunk this line belongs to"},
 			{"D", "Show this file's full diff against HEAD"},
+			{"L", "Show this file's git history (commits and their diffs)"},
 		},
 	},
 	{
@@ -123,6 +124,7 @@ var sections = []section{
 			{"r", "Rename / move: edit the path, Enter"},
 			{"c", "Copy: prefilled with a sibling name, edit the path, Enter"},
 			{"d", "Delete (confirm y/N)"},
+			{"L", "Show the selected file's git history"},
 			{"] [", "Cycle view: files / changed files"},
 			{"Esc", "Cancel the prompt"},
 		},
@@ -165,6 +167,17 @@ var sections = []section{
 			{"j k, arrows", "Scroll"},
 			{"PageUp PageDown", "Scroll by a page"},
 			{"Home End", "First / last line"},
+			{"Left Right", "Peek a long line"},
+			{"Esc", "Close"},
+		},
+	},
+	{
+		Title: "File History",
+		Bindings: []binding{
+			{"j k, Up Down", "Previous / next commit"},
+			{"Home End", "Newest / oldest commit"},
+			{"J K", "Scroll the diff"},
+			{"PageUp PageDown, Ctrl+u Ctrl+d", "Scroll the diff by a page"},
 			{"Left Right", "Peek a long line"},
 			{"Esc", "Close"},
 		},

@@ -28,12 +28,14 @@ import (
 	"github.com/bricejulia/nib/internal/ui/filetree"
 	"github.com/bricejulia/nib/internal/ui/finder"
 	"github.com/bricejulia/nib/internal/ui/help"
+	"github.com/bricejulia/nib/internal/ui/historyview"
 	"github.com/bricejulia/nib/internal/ui/memprompt"
 	"github.com/bricejulia/nib/internal/ui/quitconfirm"
 	"github.com/bricejulia/nib/internal/ui/refview"
 	"github.com/bricejulia/nib/internal/ui/reloadconfirm"
 	"github.com/bricejulia/nib/internal/ui/statusbar"
 	"github.com/bricejulia/nib/internal/vcs/gitblame"
+	"github.com/bricejulia/nib/internal/vcs/githistory"
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 	"github.com/bricejulia/nib/internal/vcs/watch"
 	"github.com/bricejulia/nib/internal/version"
@@ -42,6 +44,11 @@ import (
 // watchDebounce is the quiet period after the last observed filesystem
 // change before a refresh fires.
 const watchDebounce = 200 * time.Millisecond
+
+// fileHistoryLimit caps how many commits the file-history overlay lists
+// (see openFileHistory): enough to reach well back into any file's past,
+// while keeping the `git log` behind opening it quick on a huge repository.
+const fileHistoryLimit = 500
 
 // memWatchThreshold/memWatchInterval configure the background memory
 // watchdog (see internal/memwatch) — how much Go heap nib can use before
@@ -255,6 +262,7 @@ var configTemplateScopes = []config.Scope{
 	{Name: "replace", Defaults: finder.ReplaceDefaultKeybinds},
 	{Name: "debug", Defaults: debug.DefaultKeybinds},
 	{Name: "diff", Defaults: diffview.DefaultKeybinds},
+	{Name: "history", Defaults: historyview.DefaultKeybinds},
 	{Name: "help", Defaults: help.DefaultKeybinds},
 }
 
@@ -638,6 +646,66 @@ func run() error {
 		app.ShowOverlay(diffView)
 	}
 
+	// The file history ("L" in an editor pane or the file tree): the
+	// commits that touched a file, each one's diff previewed as it's
+	// selected — see internal/ui/historyview. Uncommitted changes, when
+	// there are any, head the list as their own entry, so the history runs
+	// all the way up to what's on disk now.
+	historyView := historyview.New()
+	historyView.SetKeymap(cfg.Overrides("history"))
+	historyView.OnClose = app.CloseOverlay
+	openFileHistory := func(path string) {
+		title := path
+		if rel, err := filepath.Rel(absRoot, path); err == nil {
+			title = rel
+		}
+		commits, err := githistory.Log(absRoot, path, fileHistoryLimit)
+		if err != nil {
+			// The overlay's own empty state already says "not a git
+			// repository"; the log keeps git's actual reason.
+			debuglog.Warn("history %s: %v", path, err)
+		}
+
+		var entries []historyview.Entry
+		working, err := gitstatus.FileDiff(absRoot, path)
+		if err != nil {
+			debuglog.Warn("history %s: working-tree diff: %v", path, err)
+		}
+		if len(working) > 0 {
+			entries = append(entries, historyview.Entry{ID: "working", When: "uncommitted", Summary: "Changes not yet committed"})
+		}
+		offset := len(entries)
+		for _, c := range commits {
+			entries = append(entries, historyview.Entry{
+				ID:      c.ShortHash,
+				When:    c.Time.Format("2006-01-02"),
+				Author:  c.Author,
+				Summary: c.Summary,
+			})
+		}
+
+		historyView.DiffFunc = func(i int) []string {
+			if i < offset {
+				return working
+			}
+			j := i - offset
+			// The file's path in this commit's parent: the next-older
+			// commit's, or its own for the oldest one listed.
+			prev := commits[j].Path
+			if j+1 < len(commits) {
+				prev = commits[j+1].Path
+			}
+			lines, err := githistory.CommitDiff(absRoot, commits[j], prev)
+			if err != nil {
+				debuglog.Warn("history %s: show %s: %v", path, commits[j].ShortHash, err)
+				return []string{"(diff unavailable — git failed; see Ctrl+D)"}
+			}
+			return lines
+		}
+		historyView.Open(title, entries)
+		app.ShowOverlay(historyView)
+	}
+
 	// reloadconfirmView is the "Keep mine / Reload from disk / Cancel"
 	// prompt shown when a save conflicts with a change made outside nib
 	// (see editor.View.OnSaveConflict / editor.Buffer.HasDiskConflict).
@@ -848,6 +916,7 @@ func run() error {
 			return gitstatus.FileHunkAt(absRoot, path, line)
 		}
 		v.OnShowFileDiff = openFileDiff
+		v.OnShowFileHistory = openFileHistory
 		// A save that finds its file changed on disk since nib last synced
 		// with it (see editor.Buffer.HasDiskConflict) hands off here rather
 		// than writing — queueConflicts shows reloadconfirmView, guarded
@@ -1485,6 +1554,7 @@ func run() error {
 		helpView.SetKeymap(cfg.Overrides("help"))
 		actionPopupView.SetKeymap(cfg.Overrides("actionpopup"))
 		diffView.SetKeymap(cfg.Overrides("diff"))
+		historyView.SetKeymap(cfg.Overrides("history"))
 		lspManager.SetServers(mergedLSPServers(cfg))
 		rebuildGlobalKeymap()
 
@@ -1538,6 +1608,7 @@ func run() error {
 		}
 	}
 	treeView.OnPathDeleted = closeDeletedPath
+	treeView.OnShowHistory = openFileHistory
 	// Run last, after the tabs are carrying their new paths: refreshGitStatus
 	// ends in refreshAllLineStatus, and ApplyLineStatus matches on a tab's
 	// path — so doing this first would leave a moved file's gutter blank

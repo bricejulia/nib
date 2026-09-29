@@ -49,6 +49,12 @@ type View struct {
 
 	lastRows int // last Render's visible row count, for PageUp/PageDown sizing
 
+	// EmptyText is shown in place of an empty diff. "" means the default,
+	// "(no changes against HEAD)" — right for the working-tree diff this
+	// pane was built for, wrong for a host embedding it to show some other
+	// diff (see internal/ui/historyview).
+	EmptyText string
+
 	// OnClose is called when Esc is pressed, dismissing the overlay.
 	OnClose func()
 
@@ -89,8 +95,12 @@ func (v *View) Render(w layout.Window) {
 	v.lastRows = rows
 
 	if len(v.lines) == 0 {
+		empty := v.EmptyText
+		if empty == "" {
+			empty = "(no changes against HEAD)"
+		}
 		w.Println(0, layout.Segment{
-			Text:  "(no changes against HEAD)",
+			Text:  empty,
 			Style: layout.Style{Attr: layout.AttrDim},
 		})
 		return
@@ -164,24 +174,19 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return true
 	}
 
-	page := v.lastRows
-	if page <= 0 {
-		page = 1
-	}
-
 	switch v.keymap[k.String()] {
 	case "close":
 		if v.OnClose != nil {
 			v.OnClose()
 		}
 	case "scroll_up":
-		v.scroll(-1)
+		v.ScrollBy(-1)
 	case "scroll_down":
-		v.scroll(1)
+		v.ScrollBy(1)
 	case "page_up":
-		v.scroll(-page)
+		v.PageBy(-1)
 	case "page_down":
-		v.scroll(page)
+		v.PageBy(1)
 	case "top":
 		v.top = 0
 	case "bottom":
@@ -189,14 +194,37 @@ func (v *View) HandleKey(k layout.Key) bool {
 		// that knows it.
 		v.top = len(v.lines)
 	case "peek_right":
-		v.hScroll += hScrollStep
+		v.PeekBy(1)
 	case "peek_left":
-		v.hScroll -= hScrollStep
-		if v.hScroll < 0 {
-			v.hScroll = 0
-		}
+		v.PeekBy(-1)
 	}
 	return true
+}
+
+// ScrollBy, PageBy, and PeekBy are HandleKey's scrolling, exported for a
+// host that embeds this view under its own keymap (see
+// internal/ui/historyview) rather than letting it handle keys itself.
+
+// ScrollBy scrolls the diff by delta lines (negative is up).
+func (v *View) ScrollBy(delta int) { v.scroll(delta) }
+
+// PageBy scrolls the diff by n pages, a page being the last Render's
+// visible row count.
+func (v *View) PageBy(n int) {
+	page := v.lastRows
+	if page <= 0 {
+		page = 1
+	}
+	v.scroll(n * page)
+}
+
+// PeekBy shifts the view n horizontal steps (negative is left) to read
+// past the edge of a long line.
+func (v *View) PeekBy(n int) {
+	v.hScroll += n * hScrollStep
+	if v.hScroll < 0 {
+		v.hScroll = 0
+	}
 }
 
 // ScrollState implements layout.Scrollable.
