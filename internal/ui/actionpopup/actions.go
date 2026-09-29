@@ -46,4 +46,5 @@ var entries = []entry{
 	{"show_blame", "Blame: who last changed this line", "editor"},
 	{"show_line_diff", "Show the diff hunk this line belongs to", "editor"},
 	{"show_file_diff", "Show this file's full diff against HEAD", "editor"},
+	{"show_file_history", "Show this file's git history (commits and their diffs)", "editor"},
 }

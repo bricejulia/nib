@@ -413,6 +413,10 @@ func (v *View) ExecuteAction(action string) bool {
 		if v.OnShowFileDiff != nil && t.path != "" {
 			v.OnShowFileDiff(t.path)
 		}
+	case "show_file_history":
+		if v.OnShowFileHistory != nil && t.path != "" {
+			v.OnShowFileHistory(t.path)
+		}
 	default:
 		return false
 	}

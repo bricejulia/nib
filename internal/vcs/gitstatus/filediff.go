@@ -50,7 +50,7 @@ func FileDiff(dir, path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return splitDiffLines(out), nil
+	return SplitDiffLines(out), nil
 }
 
 // untrackedDiff renders path as a diff adding the whole file, matching what
@@ -100,10 +100,10 @@ func resolve(dir, path string) string {
 	return filepath.Join(dir, path)
 }
 
-// splitDiffLines turns git's raw output into display lines, dropping the
+// SplitDiffLines turns git's raw output into display lines, dropping the
 // single trailing newline every diff ends with (which would otherwise show
 // as a spurious blank final row).
-func splitDiffLines(out []byte) []string {
+func SplitDiffLines(out []byte) []string {
 	text := strings.TrimSuffix(string(out), "\n")
 	if text == "" {
 		return nil
