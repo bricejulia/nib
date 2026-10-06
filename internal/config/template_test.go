@@ -38,6 +38,12 @@ func TestTemplateDocumentsThemeAndColorDirectives(t *testing.T) {
 	}
 }
 
+func TestTemplateDocumentsIconsDirective(t *testing.T) {
+	if out := Template(testScopes); !strings.Contains(out, "#   icons = true") {
+		t.Errorf("expected icons directive example, got:\n%s", out)
+	}
+}
+
 // TestTemplateListsEveryBuiltinThemeAndRole guards against the hand-written
 // theme doc block in Template drifting from internal/theme's actual role
 // and built-in-theme lists — a future role/theme rename that forgets to

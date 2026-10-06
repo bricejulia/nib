@@ -9,6 +9,7 @@ import (
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/textwidth"
 	"github.com/bricejulia/nib/internal/theme"
+	"github.com/bricejulia/nib/internal/ui/fileicon"
 	"github.com/bricejulia/nib/internal/ui/gitstyle"
 	"github.com/bricejulia/nib/internal/ui/textfield"
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
@@ -166,6 +167,10 @@ type View struct {
 
 	// menu is the right-click context menu, nil when closed — see menu.go.
 	menu *menuState
+
+	// showIcons is true when the user config has "icons = true" — see
+	// SetShowIcons and rowSegments.
+	showIcons bool
 
 	// notice is a one-shot status-bar message: why activate() refused to
 	// expand/open a broken or not-followed symlink, or what the context
@@ -375,8 +380,8 @@ func (v *View) Render(w layout.Window) {
 	// each frame against the SELECTED row's actual width — so it never
 	// scrolls past the end of the very entry you're looking at.
 	if v.cursor >= 0 && v.cursor < len(v.rows) {
-		selected := formatRow(v.rows[v.cursor], true)
-		v.hScroll = textwidth.ClampScroll(v.hScroll, textwidth.DisplayWidth(selected), cols)
+		selected := segmentsWidth(rowSegments(v.rows[v.cursor], true, v.showIcons))
+		v.hScroll = textwidth.ClampScroll(v.hScroll, selected, cols)
 	}
 
 	for i := 0; i < treeRows; i++ {
@@ -384,11 +389,8 @@ func (v *View) Render(w layout.Window) {
 		if idx >= len(v.rows) {
 			break
 		}
-		row := v.rows[idx]
-		isCursor := idx == v.cursor
-		style := styleForRow(row, isCursor)
-		text := textwidth.SliceByDisplayColumn(formatRow(row, isCursor), v.hScroll, cols)
-		w.Println(i, layout.Segment{Text: text, Style: style})
+		segs := rowSegments(v.rows[idx], idx == v.cursor, v.showIcons)
+		w.Println(i, textwidth.SliceSegmentsByDisplayColumn(segs, v.hScroll, cols)...)
 	}
 
 	if v.prompt != promptNone && rows > 0 {
@@ -427,30 +429,34 @@ func styleForRow(r Row, isCursor bool) layout.Style {
 	return style
 }
 
-// formatRow renders one tree row: the git marker, indent, an expand arrow
-// for a directory, a "->" glyph for a symlink, the name, and — only for
-// the focused row, to avoid cluttering a deep tree — the symlink's own
-// immediate target, so "what does this point at" is available without a
-// separate lookup.
+// formatRow renders one tree row as plain text, without icons: the git
+// marker, indent, an expand arrow for a directory, a "->" glyph for a
+// symlink, the name, and — only for the focused row, to avoid cluttering a
+// deep tree — the symlink's own immediate target, so "what does this point
+// at" is available without a separate lookup.
 func formatRow(r Row, isCursor bool) string {
-	indent := ""
-	for i := 0; i < r.Depth; i++ {
-		indent += "  "
-	}
-	icon := " "
+	prefix, name := rowParts(r, isCursor)
+	return prefix + name
+}
+
+// rowParts splits formatRow's text into everything before the name (where
+// an icon goes, when enabled) and the name with its symlink suffix.
+func rowParts(r Row, isCursor bool) (prefix, name string) {
+	indent := strings.Repeat("  ", r.Depth)
+	arrow := " "
 	if r.Node.IsDir {
 		if r.Node.Expanded {
-			icon = " ▼"
+			arrow = " ▼"
 		} else {
-			icon = " ▶"
+			arrow = " ▶"
 		}
 		if r.Node.IsSymlink {
-			icon += "→"
+			arrow += "→"
 		} else {
-			icon += " "
+			arrow += " "
 		}
 	} else if r.Node.IsSymlink {
-		icon = " →"
+		arrow = " →"
 	}
 
 	suffix := ""
@@ -458,7 +464,67 @@ func formatRow(r Row, isCursor bool) string {
 		suffix = " -> " + r.Node.LinkTarget
 	}
 
-	return fmt.Sprintf("%s %s%s%s%s", gitstyle.Marker(r.Node.Status), indent, icon, r.Node.Name, suffix)
+	return gitstyle.Marker(r.Node.Status) + " " + indent + arrow, r.Node.Name + suffix
+}
+
+// rowSegments is one tree row as styled segments. With icons off it's a
+// single segment, exactly formatRow's text in styleForRow's style. With
+// icons on, a file-type glyph and a space go between the prefix and the
+// name: the glyph has its own color unless the row is git-colored (a
+// modified or untracked file keeps that signal on its icon too), the row's
+// reverse/dim attributes apply to every segment, and a directory's bold
+// applies only to its name.
+func rowSegments(r Row, isCursor, showIcons bool) []layout.Segment {
+	style := styleForRow(r, isCursor)
+	prefix, name := rowParts(r, isCursor)
+	if !showIcons {
+		return []layout.Segment{{Text: prefix + name, Style: style}}
+	}
+
+	plain := style
+	plain.Attr &^= layout.AttrBold
+	icon := iconFor(r.Node)
+	iconStyle := plain
+	if gitstyle.Style(r.Node.Status) == (layout.Style{}) {
+		iconStyle.Foreground = icon.Foreground()
+	}
+	return []layout.Segment{
+		{Text: prefix, Style: plain},
+		{Text: icon.Glyph, Style: iconStyle},
+		{Text: " ", Style: plain},
+		{Text: name, Style: style},
+	}
+}
+
+// iconFor picks n's glyph. A symlink shows the type of what it resolves
+// to — IsDir is already the target's, and a file link is looked up by its
+// target's name — or the broken-link glyph when the target is missing.
+func iconFor(n *Node) fileicon.Icon {
+	switch {
+	case n.IsSymlink && n.LinkState == LinkBroken:
+		return fileicon.BrokenLink()
+	case n.IsDir:
+		return fileicon.ForDir(n.Expanded)
+	case n.IsSymlink && n.LinkReal != "":
+		return fileicon.ForFile(filepath.Base(n.LinkReal))
+	default:
+		return fileicon.ForFile(n.Name)
+	}
+}
+
+// segmentsWidth is the total display width of segs.
+func segmentsWidth(segs []layout.Segment) int {
+	w := 0
+	for _, s := range segs {
+		w += textwidth.DisplayWidth(s.Text)
+	}
+	return w
+}
+
+// SetShowIcons turns the Nerd Font file-type icons before each name on or
+// off — the user config's "icons = true".
+func (v *View) SetShowIcons(show bool) {
+	v.showIcons = show
 }
 
 // treeRows is how many rows the tree itself gets to render into — the

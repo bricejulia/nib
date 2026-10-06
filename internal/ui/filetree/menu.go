@@ -239,15 +239,13 @@ func (v *View) renderMenu(w layout.Window, cols, rows int) {
 
 	for i := 0; i < n; i++ {
 		screenRow := start + i
-		var under string
-		var underStyle layout.Style
+		var under []layout.Segment
 		if idx := v.scrollTop + screenRow; idx < len(v.rows) {
-			r := v.rows[idx]
-			under = textwidth.SliceByDisplayColumn(formatRow(r, idx == v.cursor), v.hScroll, cols)
-			underStyle = styleForRow(r, idx == v.cursor)
+			segs := rowSegments(v.rows[idx], idx == v.cursor, v.showIcons)
+			under = textwidth.SliceSegmentsByDisplayColumn(segs, v.hScroll, cols)
 		}
-		left := padTo(textwidth.SliceByDisplayColumn(under, 0, col), col)
-		right := textwidth.SliceByDisplayColumn(under, col+width, cols-col-width)
+		left := padSegmentsTo(textwidth.SliceSegmentsByDisplayColumn(under, 0, col), col)
+		right := textwidth.SliceSegmentsByDisplayColumn(under, col+width, cols-col-width)
 
 		item := " " + menu.items[i].text()
 		item = padTo(textwidth.SliceByDisplayColumn(item, 0, width), width)
@@ -255,17 +253,23 @@ func (v *View) renderMenu(w layout.Window, cols, rows int) {
 		if i == menu.selected {
 			style.Attr |= layout.AttrReverse
 		}
-		w.Println(screenRow,
-			layout.Segment{Text: left, Style: underStyle},
-			layout.Segment{Text: item, Style: style},
-			layout.Segment{Text: right, Style: underStyle},
-		)
+		line := append(left, layout.Segment{Text: item, Style: style})
+		w.Println(screenRow, append(line, right...)...)
 	}
 }
 
 // menuStyle sets the box apart from the tree rows it floats over; the
 // selected item is reversed on top of it.
 var menuStyle = layout.Style{Attr: layout.AttrBold}
+
+// padSegmentsTo right-pads segs with unstyled spaces to exactly width
+// display columns (segs is assumed to be no wider already).
+func padSegmentsTo(segs []layout.Segment, width int) []layout.Segment {
+	if pad := width - segmentsWidth(segs); pad > 0 {
+		return append(segs, layout.Segment{Text: strings.Repeat(" ", pad)})
+	}
+	return segs
+}
 
 // padTo right-pads s with spaces to exactly width display columns (s is
 // assumed to be no wider already).

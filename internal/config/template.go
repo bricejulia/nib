@@ -116,6 +116,8 @@ func Template(scopes []Scope) string {
 #     — inline error text in the file tree's create/rename/copy/delete prompt
 #   filetree_symlink_broken
 #     — a symlink in the file tree whose target is missing
+#   filetree_icon
+#     — folder and generic-file icons when "icons = true" is set
 #   editor_selection
 #     — the mouse-selection highlight
 #   editor_whitespace
@@ -158,6 +160,18 @@ func Template(scopes []Scope) string {
 #
 # Any other value (or omitting the line) leaves it off. Its color is the
 # "editor_whitespace" role, overridable like any other color = line above.
+
+
+# --- file icons ---
+#
+# Show Nerd Font file-type icons in the file tree (needs a Nerd Font
+# patched terminal font, e.g. from https://www.nerdfonts.com):
+#
+#   icons = true
+#
+# Any other value (or omitting the line) leaves them off. Folders and
+# unrecognised files use the "filetree_icon" role; known file types have
+# their own color.
 
 
 # --- memory ---
