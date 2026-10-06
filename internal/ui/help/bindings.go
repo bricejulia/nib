@@ -127,6 +127,7 @@ var sections = []section{
 			{"L", "Show the selected file's git history"},
 			{"] [", "Cycle view: files / changed files"},
 			{"Esc", "Cancel the prompt"},
+			{"Right-click", "Menu: copy path / relative path, rename / move, delete"},
 		},
 	},
 	{

@@ -219,7 +219,12 @@ func (v *View) openPrompt(mode promptMode, prefill string) {
 // never routes a key through this pane's own HandleKey) would otherwise
 // still be swallowing every key the next time the tree got focus back —
 // the same hazard editor.View.ExitEditingModes exists for.
-func (v *View) CancelPrompt() { v.cancelPrompt() }
+//
+// Also closes the right-click menu, for the same reason.
+func (v *View) CancelPrompt() {
+	v.cancelPrompt()
+	v.closeMenu()
+}
 
 func (v *View) cancelPrompt() {
 	v.prompt = promptNone
