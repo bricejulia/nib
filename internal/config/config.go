@@ -9,10 +9,11 @@
 //	color   = <role>             = <color name>
 //	tabmode = <language|default> = <spaces|tabs>[:<width>]
 //
-// plus three two-field directives:
+// plus four two-field directives:
 //
 //	theme      = <name>
 //	whitespace = true
+//	icons      = true
 //	memwatch   = <MiB>
 //
 // The "lsp" directive registers a language server, e.g.
@@ -42,6 +43,11 @@
 // The "whitespace" directive turns on rendering of spaces and tab-fill as
 // visible glyphs in the editor, e.g. "whitespace = true". Any other value
 // (or omitting the directive) leaves it off.
+//
+// The "icons" directive turns on Nerd Font file-type icons in the file
+// tree, e.g. "icons = true". It's off by default because the glyphs need
+// a patched font; any other value (or omitting the directive) leaves it
+// off.
 //
 // The "memwatch" directive sets the heap size, in MiB, that triggers the
 // prompt offering to close a file to free memory, e.g. "memwatch = 500".
@@ -153,6 +159,7 @@ type Config struct {
 	colors      map[string]layout.Color      // role name (as typed, lowercased) -> validated color
 	tabModes    map[string]TabMode           // language (or "default") -> indent style
 	whitespace  bool                         // "whitespace = true" was set
+	icons       bool                         // "icons = true" was set
 	memWatchMiB int                          // "memwatch = <MiB>" value; 0 means unset
 }
 
@@ -217,6 +224,15 @@ func (c *Config) ShowWhitespace() bool {
 	return c.whitespace
 }
 
+// ShowIcons returns whether "icons = true" was set. Safe to call on a nil
+// *Config.
+func (c *Config) ShowIcons() bool {
+	if c == nil {
+		return false
+	}
+	return c.icons
+}
+
 // MemWatchThresholdMiB returns the user-configured "memwatch = <MiB>"
 // value, or 0 if unset — callers fall back to their own default in that
 // case. Safe to call on a nil *Config.
@@ -248,10 +264,10 @@ func Parse(r io.Reader) *Config {
 
 		fields := strings.SplitN(line, "=", 3)
 
-		// "theme = <name>" and "whitespace = true" are the two directives
-		// with a single value rather than this format's usual
-		// <directive> = <key> = <value> triplet, so they're handled before
-		// the three-field shape below.
+		// "theme = <name>", "whitespace = true", "icons = true" and
+		// "memwatch = <MiB>" are the directives with a single value
+		// rather than this format's usual <directive> = <key> = <value>
+		// triplet, so they're handled before the three-field shape below.
 		if len(fields) == 2 {
 			switch strings.TrimSpace(fields[0]) {
 			case "theme":
@@ -260,6 +276,8 @@ func Parse(r io.Reader) *Config {
 				}
 			case "whitespace":
 				cfg.whitespace = strings.TrimSpace(fields[1]) == "true"
+			case "icons":
+				cfg.icons = strings.TrimSpace(fields[1]) == "true"
 			case "memwatch":
 				if mib, err := strconv.Atoi(strings.TrimSpace(fields[1])); err == nil && mib > 0 {
 					cfg.memWatchMiB = mib

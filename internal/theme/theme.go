@@ -65,6 +65,11 @@ const (
 	// file, since that's not an error condition.
 	FiletreeSymlinkBroken Role = "filetree_symlink_broken"
 
+	// The file tree's folder icons and the generic file icon, drawn when
+	// "icons = true" is set. Recognised file types carry their own color
+	// (see internal/ui/fileicon).
+	FiletreeIcon Role = "filetree_icon"
+
 	// The editor's mouse-selection highlight (a Background color).
 	EditorSelection Role = "editor_selection"
 
@@ -84,6 +89,7 @@ var AllRoles = []Role{
 	DebugWarn, DebugError,
 	FiletreePromptError,
 	FiletreeSymlinkBroken,
+	FiletreeIcon,
 	EditorSelection,
 	EditorWhitespace,
 	UIFocusBorder,

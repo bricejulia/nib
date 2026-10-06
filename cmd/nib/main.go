@@ -328,6 +328,7 @@ func run() error {
 
 	treeView := filetree.New(absRoot)
 	treeView.SetKeymap(cfg.Overrides("filetree"))
+	treeView.SetShowIcons(cfg.ShowIcons())
 	// bufferStore is shared by every editor pane (this one and any created
 	// by trySplit below), so opening the same file in two panes gives them
 	// the SAME Buffer — edits, dirty state, and undo are shared exactly
@@ -1553,6 +1554,7 @@ func run() error {
 		theme.SetActive(resolveTheme(cfg))
 
 		treeView.SetKeymap(cfg.Overrides("filetree"))
+		treeView.SetShowIcons(cfg.ShowIcons())
 		for _, p := range editorPanes {
 			p.view.SetKeymap(cfg.Overrides("editor"))
 			p.view.SetTabModeDefaults(derivedTabModes(cfg))

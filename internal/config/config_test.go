@@ -284,6 +284,22 @@ func TestShowWhitespaceOnNilConfig(t *testing.T) {
 	}
 }
 
+func TestParseIconsDirective(t *testing.T) {
+	if got := Parse(strings.NewReader("icons = true\n")).ShowIcons(); !got {
+		t.Errorf("ShowIcons() = %v, want true", got)
+	}
+	if got := Parse(strings.NewReader("icons = on\n")).ShowIcons(); got {
+		t.Errorf(`ShowIcons() = %v, want false for "on"`, got)
+	}
+	if got := Parse(strings.NewReader("")).ShowIcons(); got {
+		t.Errorf("ShowIcons() = %v, want false when unset", got)
+	}
+	var cfg *Config
+	if got := cfg.ShowIcons(); got {
+		t.Errorf("expected false from a nil *Config, got %v", got)
+	}
+}
+
 func TestParseMemwatchDirective(t *testing.T) {
 	if got := Parse(strings.NewReader("memwatch = 500\n")).MemWatchThresholdMiB(); got != 500 {
 		t.Errorf("MemWatchThresholdMiB() = %v, want 500", got)
