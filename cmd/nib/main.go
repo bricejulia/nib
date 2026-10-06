@@ -7,9 +7,11 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bricejulia/nib/internal/config"
@@ -17,6 +19,7 @@ import (
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/lsp"
 	"github.com/bricejulia/nib/internal/memwatch"
+	"github.com/bricejulia/nib/internal/session"
 	"github.com/bricejulia/nib/internal/theme"
 	"github.com/bricejulia/nib/internal/ui"
 	"github.com/bricejulia/nib/internal/ui/actionpopup"
@@ -34,6 +37,7 @@ import (
 	"github.com/bricejulia/nib/internal/ui/refview"
 	"github.com/bricejulia/nib/internal/ui/reloadconfirm"
 	"github.com/bricejulia/nib/internal/ui/statusbar"
+	"github.com/bricejulia/nib/internal/ui/trustprompt"
 	"github.com/bricejulia/nib/internal/vcs/gitblame"
 	"github.com/bricejulia/nib/internal/vcs/githistory"
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
@@ -1138,6 +1142,21 @@ func run() error {
 			app.FocusLeaf(fileTreeLeaf.ID)
 		}
 	}
+	// newEditorView creates an editor view configured and wired exactly
+	// like the initial one — shared by createSplitPane and the session
+	// restore below, which both need fresh panes beyond the first.
+	newEditorView := func() *editor.View {
+		v := editor.NewView()
+		v.SetKeymap(cfg.Overrides("editor"))
+		v.SetTabModeDefaults(derivedTabModes(cfg))
+		v.SetShowWhitespace(cfg.ShowWhitespace())
+		v.SetBufferStore(bufferStore)
+		v.SetRegister(yankRegister)
+		v.SetLSPManager(lspManager)
+		applyWelcomeInfo(v)
+		wireEditorPane(v)
+		return v
+	}
 	// createSplitPane creates a new editor pane wired exactly like every
 	// other one (see wireEditorPane) and splices it into the tree beside
 	// target's leaf in direction dir — the shared first half of trySplit
@@ -1147,21 +1166,12 @@ func run() error {
 	// — see layout.Split), which can't currently happen since root always
 	// wraps more than just the editor, but is checked rather than assumed.
 	createSplitPane := func(target *editorPane, dir layout.Direction) (*editorPane, bool) {
-		newView := editor.NewView()
-		newView.SetKeymap(cfg.Overrides("editor"))
-		newView.SetTabModeDefaults(derivedTabModes(cfg))
-		newView.SetShowWhitespace(cfg.ShowWhitespace())
-		newView.SetBufferStore(bufferStore)
-		newView.SetRegister(yankRegister)
-		newView.SetLSPManager(lspManager)
-		applyWelcomeInfo(newView)
-		wireEditorPane(newView)
-		newLeaf := &layout.LeafNode{ID: nextLeafID, View: newView}
+		newLeaf := &layout.LeafNode{ID: nextLeafID, View: newEditorView()}
 		if !layout.Split(tree, target.leaf, dir, newLeaf) {
 			return nil, false
 		}
 		nextLeafID++
-		p := &editorPane{leaf: newLeaf, view: newView}
+		p := &editorPane{leaf: newLeaf, view: newLeaf.View.(*editor.View)}
 		editorPanes[newLeaf.ID] = p
 		return p, true
 	}
@@ -1621,6 +1631,10 @@ func run() error {
 	// finderView.Post would have nowhere to go.
 	app.SetCustomEventHandler(func(ev interface{}) {
 		switch e := ev.(type) {
+		case terminateEvent:
+			// Quit normally rather than dying mid-loop, so run() still
+			// gets to save the session (see the end of run).
+			app.Quit()
 		case watch.RefreshEvent:
 			debuglog.Debug("fsnotify refresh: gitChanged=%v fsChanged=%v", e.GitChanged, e.FSChanged)
 			if e.FSChanged {
@@ -1752,5 +1766,138 @@ func run() error {
 		treeView.Reveal(openOnStart)
 	}
 
-	return app.Run()
+	// Per-project sessions (see internal/session): only when nib was
+	// launched on a folder — opening a single file (e.g. `nib ~/.zshrc`)
+	// must never ask to trust, or write into, whatever folder it lives in.
+	// A trusted folder gets its last session back now and saved again on
+	// exit; an untrusted one is asked about, every launch until trusted.
+	trusted := false
+	if openOnStart == "" {
+		trusted = session.Trusted(absRoot)
+		if trusted {
+			restoreSession(absRoot, func(sess *session.Session) {
+				first := true
+				root, focused := session.Build(sess, func(sp session.Pane) *layout.LeafNode {
+					states, active := existingTabs(absRoot, sp)
+					if len(states) == 0 {
+						return nil
+					}
+					// The first surviving pane reuses the initial (still
+					// empty) editor pane rather than orphaning it.
+					p := activeEditorPane
+					if !first {
+						p = &editorPane{leaf: &layout.LeafNode{ID: nextLeafID, View: newEditorView()}}
+						p.view = p.leaf.View.(*editor.View)
+						editorPanes[p.leaf.ID] = p
+						nextLeafID++
+					}
+					first = false
+					p.view.RestoreTabs(states, active)
+					for _, st := range states {
+						refreshLineStatusFor(st.Path)
+					}
+					return p.leaf
+				})
+				if root == nil {
+					return
+				}
+				panes.Children[1].Node = root
+				rebuildAndFocus(app, focused.ID)
+				if path := editorPanes[focused.ID].view.ActivePath(); path != "" {
+					treeView.Reveal(path)
+				}
+			})
+		} else {
+			trustView := trustprompt.New()
+			trustView.Show(absRoot)
+			trustView.OnTrust = func() {
+				app.CloseOverlay()
+				if err := session.Trust(absRoot); err != nil {
+					debuglog.Warn("trust folder: %v", err)
+					return
+				}
+				trusted = true
+			}
+			trustView.OnDecline = app.CloseOverlay
+			app.ShowOverlay(trustView)
+		}
+	}
+
+	// Closing the terminal (SIGHUP) or a plain `kill` (SIGTERM) would
+	// otherwise end the process before run() reaches the session save
+	// below — route both through an ordinary quit instead.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGTERM)
+	defer signal.Stop(sigs)
+	go func() {
+		<-sigs
+		app.Post(terminateEvent{})
+	}()
+
+	runErr := app.Run()
+	if trusted {
+		sess := session.Capture(tree, func(l *layout.LeafNode) (*session.Pane, bool) {
+			p, ok := editorPanes[l.ID]
+			if !ok {
+				return nil, false
+			}
+			return capturePane(absRoot, p.view)
+		}, activeEditorPane.leaf.ID)
+		if err := session.Save(absRoot, sess); err != nil {
+			debuglog.Warn("save session: %v", err)
+		}
+	}
+	return runErr
+}
+
+// terminateEvent is posted to the event loop when nib receives SIGHUP or
+// SIGTERM, so the quit happens on the UI goroutine like any other.
+type terminateEvent struct{}
+
+// restoreSession loads root's saved session and hands it to apply, logging
+// (rather than failing startup on) a session that can't be read — nib
+// then just starts with the default empty layout.
+func restoreSession(root string, apply func(*session.Session)) {
+	sess, err := session.Load(root)
+	if err != nil {
+		debuglog.Warn("restore session: %v", err)
+		return
+	}
+	if sess != nil {
+		apply(sess)
+	}
+}
+
+// existingTabs converts a saved pane's tabs into editor.TabStates with
+// absolute paths, skipping files that no longer exist (deleted or renamed
+// since the session was saved) and remapping the active index onto what's
+// left — falling back to the first tab if the active one was skipped.
+func existingTabs(root string, sp session.Pane) ([]editor.TabState, int) {
+	var states []editor.TabState
+	active := 0
+	for i, t := range sp.Tabs {
+		path := session.AbsPath(root, t.Path)
+		if info, err := os.Stat(path); err != nil || info.IsDir() {
+			continue
+		}
+		if i == sp.Active {
+			active = len(states)
+		}
+		states = append(states, editor.TabState{Path: path, Line: t.Line, Col: t.Col, TopLine: t.Top})
+	}
+	return states, active
+}
+
+// capturePane is existingTabs' inverse, for saving: ok is false for a pane
+// with nothing open, which session.Capture then leaves out.
+func capturePane(root string, v *editor.View) (*session.Pane, bool) {
+	states, active := v.TabStates()
+	if len(states) == 0 {
+		return nil, false
+	}
+	sp := &session.Pane{Active: active, Tabs: make([]session.Tab, len(states))}
+	for i, st := range states {
+		sp.Tabs[i] = session.Tab{Path: session.RelPath(root, st.Path), Line: st.Line, Col: st.Col, Top: st.TopLine}
+	}
+	return sp, true
 }

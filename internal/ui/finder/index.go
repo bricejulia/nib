@@ -13,6 +13,7 @@ import (
 // fuzzy-find into.
 var commonIgnoredDirNames = map[string]bool{
 	".git":         true,
+	".nib":         true, // nib's own per-project state — see internal/session
 	"node_modules": true,
 	"vendor":       true,
 }

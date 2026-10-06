@@ -1001,6 +1001,59 @@ func (v *View) OpenAtLine(path string, line int) {
 	v.clampToLastChar(t)
 }
 
+// TabState is one tab's restorable position — what cmd/nib/main.go
+// persists into a project's .nib/session.json on exit and hands back to
+// RestoreTabs on the next launch. Line and Col are 0-based, exactly
+// cursorLn/cursorCol; TopLine is the first visible line.
+type TabState struct {
+	Path    string
+	Line    int
+	Col     int
+	TopLine int
+}
+
+// TabStates returns every open tab's TabState in tab-bar order, along with
+// the active tab's index (-1 if none are open).
+func (v *View) TabStates() ([]TabState, int) {
+	states := make([]TabState, len(v.tabs))
+	for i, t := range v.tabs {
+		states[i] = TabState{Path: t.path, Line: t.cursorLn, Col: t.cursorCol, TopLine: t.topLine}
+	}
+	return states, v.ActiveIndex()
+}
+
+// RestoreTabs opens every state's path as a tab (reusing it if it's
+// already open, like OpenBackground), puts its cursor and scroll back
+// where TabStates left them — the cursor clamped to the buffer, since the
+// file may have shrunk since — and then activates states[active], or the
+// first tab if active is out of range. topLine needs no clamping beyond
+// staying above the cursor: the scroll logic (see scroll.go) re-derives it
+// whenever the cursor falls outside the viewport.
+func (v *View) RestoreTabs(states []TabState, active int) {
+	for _, s := range states {
+		t := v.OpenBackground(s.Path)
+		if t.buf == nil {
+			continue
+		}
+		t.cursorLn = s.Line
+		t.cursorCol = s.Col
+		v.clampToLastChar(t)
+		t.topLine = max(0, min(s.TopLine, t.cursorLn))
+	}
+	if len(v.tabs) == 0 {
+		return
+	}
+	v.active = 0
+	if active >= 0 && active < len(states) {
+		for i, t := range v.tabs {
+			if t.path == states[active].Path {
+				v.active = i
+				break
+			}
+		}
+	}
+}
+
 // NextTab activates the next open tab, wrapping around.
 func (v *View) NextTab() {
 	if len(v.tabs) == 0 {
