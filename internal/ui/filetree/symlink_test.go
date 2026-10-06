@@ -317,8 +317,8 @@ func TestActivateRefusesBrokenSymlink(t *testing.T) {
 	if opened {
 		t.Error("OnOpen must not be called for a broken symlink")
 	}
-	if !strings.Contains(v.BlockedNotice(), "broken-link") || !strings.Contains(v.BlockedNotice(), "missing") {
-		t.Errorf("BlockedNotice = %q, want it to name the row and say the target is missing", v.BlockedNotice())
+	if !strings.Contains(v.Notice(), "broken-link") || !strings.Contains(v.Notice(), "missing") {
+		t.Errorf("Notice = %q, want it to name the row and say the target is missing", v.Notice())
 	}
 }
 
@@ -333,22 +333,22 @@ func TestActivateRefusesOutsideRootSymlink(t *testing.T) {
 	if opened {
 		t.Error("OnOpen must not be called for a symlink whose target is outside the project")
 	}
-	if v.BlockedNotice() == "" {
-		t.Error("expected a BlockedNotice explaining why the link wasn't followed")
+	if v.Notice() == "" {
+		t.Error("expected a Notice explaining why the link wasn't followed")
 	}
 }
 
-func TestBlockedNoticeIsOneShot(t *testing.T) {
+func TestNoticeIsOneShot(t *testing.T) {
 	v, _ := symlinkFixture(t)
 	selectRow(t, v, "broken-link")
 	v.HandleKey(enterKey())
-	if v.BlockedNotice() == "" {
+	if v.Notice() == "" {
 		t.Fatal("expected a notice right after the refusal")
 	}
 
 	v.HandleKey(downKey()) // any subsequent key clears it
-	if v.BlockedNotice() != "" {
-		t.Errorf("expected BlockedNotice cleared after the next keypress, got %q", v.BlockedNotice())
+	if v.Notice() != "" {
+		t.Errorf("expected Notice cleared after the next keypress, got %q", v.Notice())
 	}
 }
 

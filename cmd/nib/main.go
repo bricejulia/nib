@@ -445,12 +445,12 @@ func run() error {
 
 	statusBarView.TextFunc = func() string {
 		parts := make([]string, 0, 6)
-		// A symlink activate() just refused to expand/open — see
-		// filetree.View.BlockedNotice — only shown while the tree pane
-		// itself is focused, the same scoping openFinder below uses for
-		// "which pane's selection does this apply to".
+		// A symlink activate() just refused to expand/open, or a path the
+		// context menu just copied — see filetree.View.Notice — only shown
+		// while the tree pane itself is focused, the same scoping openFinder
+		// below uses for "which pane's selection does this apply to".
 		if id, ok := app.FocusedLeaf(); ok && id == fileTreeLeaf.ID {
-			if notice := treeView.BlockedNotice(); notice != "" {
+			if notice := treeView.Notice(); notice != "" {
 				parts = append(parts, notice)
 			}
 		}
@@ -1619,6 +1619,9 @@ func run() error {
 	}
 	treeView.OnPathDeleted = closeDeletedPath
 	treeView.OnShowHistory = openFileHistory
+	// The context menu's "Copy Path" items — same clipboard route as the
+	// editor panes' CopyFunc.
+	treeView.CopyFunc = app.CopyToClipboard
 	// Run last, after the tabs are carrying their new paths: refreshGitStatus
 	// ends in refreshAllLineStatus, and ApplyLineStatus matches on a tab's
 	// path — so doing this first would leave a moved file's gutter blank

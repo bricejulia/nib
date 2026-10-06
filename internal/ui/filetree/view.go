@@ -158,12 +158,22 @@ type View struct {
 	// one general "make sure this is watched" hook rather than two.
 	OnDirExpanded func(realPath string)
 
-	// blockedNotice is a one-shot status-bar message set when activate()
-	// refuses to expand/open a broken or not-followed symlink — see
-	// BlockedNotice. Cleared at the top of the next HandleKey call, the
-	// same one-render lifetime editor.View's "-- RELOADED --" notice uses,
-	// so the reason for the refusal is visible without lingering forever.
-	blockedNotice string
+	// CopyFunc puts text on the system clipboard, for the context menu's
+	// "Copy Path" items. Set by cmd/nib/main.go to App.CopyToClipboard, the
+	// same arrangement as editor.View.CopyFunc; nil (as in tests) makes
+	// those items no-ops.
+	CopyFunc func(string)
+
+	// menu is the right-click context menu, nil when closed — see menu.go.
+	menu *menuState
+
+	// notice is a one-shot status-bar message: why activate() refused to
+	// expand/open a broken or not-followed symlink, or what the context
+	// menu just copied — see Notice. Cleared at the top of the next
+	// HandleKey call, the same one-render lifetime editor.View's
+	// "-- RELOADED --" notice uses, so it's visible without lingering
+	// forever.
+	notice string
 
 	keymap map[string]string
 }
@@ -384,6 +394,9 @@ func (v *View) Render(w layout.Window) {
 	if v.prompt != promptNone && rows > 0 {
 		v.renderPrompt(w, rows-1, cols)
 	}
+	if v.menu != nil {
+		v.renderMenu(w, cols, treeRows)
+	}
 }
 
 // styleForRow colors a row by its git status (see gitstyle), bolds
@@ -511,13 +524,16 @@ func (v *View) HandleKey(k layout.Key) bool {
 	// Before ensureFresh, and before any keymap lookup: a prompt keystroke
 	// must not re-read every expanded directory from disk, and must never
 	// be matched against a binding — see handlePromptKey.
+	if v.menu != nil {
+		return v.handleMenuKey(k)
+	}
 	if v.prompt != promptNone {
 		return v.handlePromptKey(k)
 	}
 	// One-shot, like editor.View's "-- RELOADED --" notice: shown for
 	// exactly the render(s) between the keypress that set it and the next
 	// keypress, then cleared here before this key is even dispatched.
-	v.blockedNotice = ""
+	v.notice = ""
 	v.ensureFresh()
 	if v.keymap == nil {
 		// A View built via a bare struct literal (as some tests do, to
@@ -622,24 +638,47 @@ func (v *View) showHistory() {
 }
 
 // reportBlocked sets the one-shot status-bar message shown after activate
-// refuses a broken or not-followed symlink — see blockedNotice.
+// refuses a broken or not-followed symlink — see notice.
 func (v *View) reportBlocked(n *Node) {
 	switch n.LinkState {
 	case LinkBroken:
-		v.blockedNotice = fmt.Sprintf("%s: symlink target is missing", n.Name)
+		v.notice = fmt.Sprintf("%s: symlink target is missing", n.Name)
 	case LinkBlocked:
-		v.blockedNotice = fmt.Sprintf("%s: symlink not followed (outside the project, or a loop)", n.Name)
+		v.notice = fmt.Sprintf("%s: symlink not followed (outside the project, or a loop)", n.Name)
 	default:
 		// LinkOK/LinkNone: activate's caller only reaches reportBlocked
 		// when LinkState is already known to be Broken or Blocked.
 	}
 }
 
-// BlockedNotice is the current one-shot "why didn't that symlink open"
-// message, for a host to surface in its status bar — see blockedNotice.
-// Empty outside the single render right after activate refused a link.
-func (v *View) BlockedNotice() string {
-	return v.blockedNotice
+// Notice is the current one-shot status message — why a symlink didn't
+// open, or what the context menu copied — for a host to surface in its
+// status bar. Empty outside the render(s) right after it was set.
+func (v *View) Notice() string {
+	return v.notice
+}
+
+// HandleMouse implements layout.MouseHandler: a right-click on a row opens
+// the context menu for it (see menu.go), which is then modal to the pane's
+// mouse input until dismissed. Everything else is left unconsumed so App's
+// generic handling — focus on click, wheel scrolling — still applies.
+func (v *View) HandleMouse(m layout.Mouse) bool {
+	if v.menu != nil {
+		return v.handleMenuMouse(m)
+	}
+	if m.EventType != layout.EventPress || m.Button != layout.MouseRight {
+		return false
+	}
+	v.ensureFresh()
+	if m.Row < 0 || m.Row >= v.treeRows() {
+		return false
+	}
+	idx := v.scrollTop + m.Row
+	if idx >= len(v.rows) {
+		return false
+	}
+	v.openMenu(idx, m.Col, m.Row)
+	return true
 }
 
 // collapse handles Left/h. On an expanded directory it just closes that
