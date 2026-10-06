@@ -76,7 +76,7 @@ func TestRightClickOpensMenuAndSelectsRow(t *testing.T) {
 		t.Errorf("cursor = %d, want the clicked row %d", v.cursor, idx)
 	}
 	v.Render(w)
-	if !strings.Contains(strings.Join(w.lines, "\n"), "Copy Relative Path") {
+	if !strings.Contains(strings.Join(w.lines, "\n"), "⤷ Copy Relative Path") {
 		t.Errorf("menu not rendered:\n%s", strings.Join(w.lines, "\n"))
 	}
 }

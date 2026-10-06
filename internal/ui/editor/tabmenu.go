@@ -39,6 +39,36 @@ func (a tabMenuAction) label() string {
 	}
 }
 
+// icon is the glyph shown before the label. Plain single-width Unicode,
+// same as the file tree's context menu (see filetree's menuAction.icon):
+// Nerd Font glyphs need a patched font, and emoji render double-width in
+// some terminals, which would throw off popupBounds' column arithmetic.
+func (a tabMenuAction) icon() string {
+	switch a {
+	case tabMenuClose:
+		return "✕"
+	case tabMenuCloseOthers:
+		return "⊠"
+	case tabMenuCloseAll:
+		return "⊗"
+	case tabMenuSplitRight:
+		return "◫"
+	case tabMenuSplitDown:
+		return "⊟"
+	case tabMenuMoveRight:
+		return "⇥"
+	case tabMenuMoveDown:
+		return "⤓"
+	case tabMenuMoveToNextPane:
+		return "⇄"
+	default:
+		return " "
+	}
+}
+
+// text is the item as drawn: icon, then label.
+func (a tabMenuAction) text() string { return a.icon() + " " + a.label() }
+
 // popupRect is where a popup actually ended up drawing (see popupBounds),
 // kept around so a later mouse event can hit-test against it — the same
 // "compute at render time, consumed by the next input event" shape App's
@@ -131,7 +161,7 @@ func (v *View) renderTabMenu(w layout.Window, cols, rows int) {
 	menu := v.tabMenu
 	lines := make([]popupLine, len(menu.items))
 	for i, it := range menu.items {
-		lines[i] = popupLine{Text: it.label()}
+		lines[i] = popupLine{Text: " " + it.text() + " "}
 	}
 	startRow, n, offset, width := popupBounds(cols, rows, menu.anchorCol, 0, lines, menu.selected)
 	menu.rect = popupRect{row: startRow, height: n, col: menu.anchorCol, width: width, offset: offset}
