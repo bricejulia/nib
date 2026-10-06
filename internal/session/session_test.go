@@ -63,7 +63,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := &Session{
-		Focused: 1,
+		Focused:   1,
+		TreeWidth: 34,
 		Layout: &Node{Split: "horizontal", Children: []*Node{
 			{Pane: &Pane{Active: 0, Tabs: []Tab{{Path: "a.go", Line: 3, Col: 2, Top: 1}}}},
 			{Pane: &Pane{Active: 1, Tabs: []Tab{{Path: "b.go"}, {Path: "dir/c.go", Line: 10}}}},

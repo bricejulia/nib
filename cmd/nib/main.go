@@ -426,7 +426,7 @@ func run() error {
 	panes := &layout.SplitNode{
 		Dir: layout.Horizontal,
 		Children: []layout.Child{
-			{Node: fileTreeLeaf, Hint: layout.Fixed(50)},
+			{Node: fileTreeLeaf, Hint: layout.Fixed(defaultTreeWidth)},
 			{Node: editorLeaf, Hint: layout.Ratio(1)},
 		},
 	}
@@ -1781,6 +1781,9 @@ func run() error {
 		trusted = session.Trusted(absRoot)
 		if trusted {
 			restoreSession(absRoot, func(sess *session.Session) {
+				if sess.TreeWidth > 0 {
+					panes.Children[0].Hint = layout.Fixed(sess.TreeWidth)
+				}
 				first := true
 				root, focused := session.Build(sess, func(sp session.Pane) *layout.LeafNode {
 					states, active := existingTabs(absRoot, sp)
@@ -1848,12 +1851,24 @@ func run() error {
 			}
 			return capturePane(absRoot, p.view)
 		}, activeEditorPane.leaf.ID)
+		// A dragged tree width is worth keeping even with nothing open.
+		if w := panes.Children[0].Hint.Fixed; w != defaultTreeWidth {
+			if sess == nil {
+				sess = &session.Session{}
+			}
+			sess.TreeWidth = w
+		}
 		if err := session.Save(absRoot, sess); err != nil {
 			debuglog.Warn("save session: %v", err)
 		}
 	}
 	return runErr
 }
+
+// defaultTreeWidth is the file tree's width in columns until the user drags
+// its border (see ui.App.beginResizeDrag); a dragged width is then kept in
+// the session.
+const defaultTreeWidth = 50
 
 // terminateEvent is posted to the event loop when nib receives SIGHUP or
 // SIGTERM, so the quit happens on the UI goroutine like any other.
