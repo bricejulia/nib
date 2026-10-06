@@ -32,6 +32,28 @@ func (a menuAction) label() string {
 	}
 }
 
+// icon is the glyph shown before the label. Plain single-width Unicode
+// like the tree's own ▶/▼/→, not Nerd Font or emoji: those need a patched
+// font or render double-width depending on the terminal, which would break
+// the box's column arithmetic.
+func (a menuAction) icon() string {
+	switch a {
+	case menuCopyPath:
+		return "⎘"
+	case menuCopyRelPath:
+		return "⤷"
+	case menuRename:
+		return "✎"
+	case menuDelete:
+		return "✕"
+	default:
+		return " "
+	}
+}
+
+// text is the item as drawn: icon, then label.
+func (a menuAction) text() string { return a.icon() + " " + a.label() }
+
 // menuState is the right-click context menu, open for one entry. Same
 // shape as the editor's tab-bar menu (see editor.tabMenuState): keyboard-
 // navigable with Up/Down/Enter/Esc, mouse-clickable on its own rows.
@@ -196,7 +218,7 @@ func (v *View) renderMenu(w layout.Window, cols, rows int) {
 	n := len(menu.items)
 	width := 0
 	for _, it := range menu.items {
-		width = max(width, textwidth.DisplayWidth(it.label()))
+		width = max(width, textwidth.DisplayWidth(it.text()))
 	}
 	width = min(width+2, cols) // one column of padding either side
 
@@ -227,7 +249,7 @@ func (v *View) renderMenu(w layout.Window, cols, rows int) {
 		left := padTo(textwidth.SliceByDisplayColumn(under, 0, col), col)
 		right := textwidth.SliceByDisplayColumn(under, col+width, cols-col-width)
 
-		item := " " + menu.items[i].label()
+		item := " " + menu.items[i].text()
 		item = padTo(textwidth.SliceByDisplayColumn(item, 0, width), width)
 		style := menuStyle
 		if i == menu.selected {
