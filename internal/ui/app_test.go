@@ -949,3 +949,59 @@ func TestPasteStartEventResetsAnyStalePastedState(t *testing.T) {
 		t.Errorf("got %q, want %q", got, "y")
 	}
 }
+
+// resizeApp builds a Fixed(20) tree beside a ratio editor, 100x30, with
+// rects and area already computed as a frame would have left them.
+func resizeApp() (*App, *layout.SplitNode, *mouseStubView, *mouseStubView) {
+	treeView, editorView := &mouseStubView{consumes: true}, &mouseStubView{consumes: true}
+	split := &layout.SplitNode{Dir: layout.Horizontal, Children: []layout.Child{
+		{Node: &layout.LeafNode{ID: 1, View: treeView}, Hint: layout.Fixed(20)},
+		{Node: &layout.LeafNode{ID: 2, View: editorView}, Hint: layout.Ratio(1)},
+	}}
+	fm := &layout.FocusManager{}
+	fm.Rebuild(split)
+	area := layout.Rect{W: 100, H: 30}
+	return &App{root: split, focus: fm, area: area, rects: layout.Compute(split, area)}, split, treeView, editorView
+}
+
+func TestHandleMouseDraggingTheTreeBorderResizesIt(t *testing.T) {
+	a, split, treeView, editorView := resizeApp()
+
+	a.handleMouse(vaxis.Mouse{Col: 19, Row: 5, Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress})
+	a.handleMouse(vaxis.Mouse{Col: 29, Row: 5, Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion})
+
+	if got := split.Children[0].Hint.Fixed; got != 30 {
+		t.Errorf("tree width = %d, want 30", got)
+	}
+
+	a.handleMouse(vaxis.Mouse{Col: 29, Row: 5, Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease})
+	if a.resizeSplit != nil {
+		t.Error("release did not end the drag")
+	}
+	if len(treeView.got)+len(editorView.got) != 0 {
+		t.Errorf("panes got %d+%d events, want none — the drag is chrome", len(treeView.got), len(editorView.got))
+	}
+
+	// After the release, motion is ordinary again.
+	a.handleMouse(vaxis.Mouse{Col: 60, Row: 5, Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion})
+	if got := split.Children[0].Hint.Fixed; got != 30 {
+		t.Errorf("tree width = %d after release, want it to stay 30", got)
+	}
+}
+
+func TestHandleMouseTreeBorderDragClamps(t *testing.T) {
+	a, split, _, _ := resizeApp()
+
+	// Grabbed from the editor's side of the line this time.
+	a.handleMouse(vaxis.Mouse{Col: 20, Row: 5, Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress})
+	a.handleMouse(vaxis.Mouse{Col: -50, Row: 5, Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion})
+	if got := split.Children[0].Hint.Fixed; got != layout.MinFixed {
+		t.Errorf("tree width = %d, want the %d minimum", got, layout.MinFixed)
+	}
+	// Off the right edge of the screen: no pane under the pointer, but the
+	// drag still owns the event.
+	a.handleMouse(vaxis.Mouse{Col: 500, Row: 50, Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion})
+	if got := split.Children[0].Hint.Fixed; got != 100-layout.MinRest {
+		t.Errorf("tree width = %d, want %d", got, 100-layout.MinRest)
+	}
+}

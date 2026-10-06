@@ -40,6 +40,9 @@ type Session struct {
 	// order, of the pane that had focus.
 	Focused int   `json:"focused"`
 	Layout  *Node `json:"layout"`
+	// TreeWidth is the file tree's width in columns, as last dragged; 0
+	// (absent in older sessions) means nib's default.
+	TreeWidth int `json:"treeWidth,omitempty"`
 }
 
 // Node is either a pane (Pane set) or a split (Split set to "horizontal"

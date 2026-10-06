@@ -305,11 +305,14 @@ func scrollbarRect(r layout.Rect) (bar layout.Rect, ok bool) {
 // terminal-independent Key type, and the only place layout.Compute's
 // output is turned into real sub-windows.
 type App struct {
-	vx            *vaxis.Vaxis
-	root          layout.Node
-	focus         *layout.FocusManager
-	global        map[string]func()
-	rects         map[layout.LeafID]layout.Rect
+	vx     *vaxis.Vaxis
+	root   layout.Node
+	focus  *layout.FocusManager
+	global map[string]func()
+	rects  map[layout.LeafID]layout.Rect
+	// area is the whole-terminal rect rects was last computed against,
+	// kept so a border drag can hit-test splits, not just leaves.
+	area          layout.Rect
 	quit          bool
 	onCustomEvent func(ev interface{})
 
@@ -350,6 +353,19 @@ type App struct {
 	// the pointer.
 	scrollCapture    bool
 	scrollDragOffset int
+
+	// resizeSplit is set for the duration of a border drag (see
+	// beginResizeDrag): the split whose HintFixed child resizeIdx is being
+	// resized. Like scrollCapture, it claims every motion/release until the
+	// button comes back up, so the drag never also reaches either pane.
+	// resizeStartCol/resizeStartSize anchor the drag (the new size is the
+	// start size plus how far the pointer moved), and resizeExtent is the
+	// split's width at press time, the bound ClampFixed works within.
+	resizeSplit     *layout.SplitNode
+	resizeIdx       int
+	resizeStartCol  int
+	resizeStartSize int
+	resizeExtent    int
 
 	// lastPress tracks the previous mouse press so consecutive presses in
 	// the same cell within multiClickWindow can be reported as a double or
@@ -754,6 +770,16 @@ const multiClickWindow = 400 * time.Millisecond
 func (a *App) handleMouse(m vaxis.Mouse) {
 	ev := translateMouse(m)
 
+	// A border drag in progress claims every event, wherever the pointer is —
+	// even off every pane, so it's checked before the leafAt lookup.
+	if a.resizeSplit != nil {
+		a.continueResizeDrag(m, ev)
+		return
+	}
+	if ev.EventType == layout.EventPress && ev.Button == layout.MouseLeft && a.beginResizeDrag(m) {
+		return
+	}
+
 	// A drag belongs to whoever the button went down on, even once the
 	// pointer has wandered off that pane — see mouseCapture.
 	id, ok := a.mouseCapture, a.hasMouseCapture
@@ -940,6 +966,37 @@ func (a *App) continueScrollDrag(id layout.LeafID, m vaxis.Mouse, ev layout.Mous
 	target.ScrollTo(layout.ScrollTopForThumbStart(state, track, thumbStart))
 }
 
+// beginResizeDrag starts a border drag if a left press at screen
+// (m.Col, m.Row) lands on the edge of a fixed-width pane (the file tree's
+// right border, or the editor's left border beside it — see
+// layout.FixedEdgeAt). Returns false, having done nothing, otherwise.
+func (a *App) beginResizeDrag(m vaxis.Mouse) bool {
+	split, idx, area, ok := layout.FixedEdgeAt(a.root, a.area, m.Col, m.Row)
+	if !ok {
+		return false
+	}
+	a.resizeSplit, a.resizeIdx = split, idx
+	a.resizeStartCol = m.Col
+	a.resizeStartSize = split.Children[idx].Hint.Fixed
+	a.resizeExtent = area.W
+	return true
+}
+
+// continueResizeDrag routes a motion/release belonging to an in-progress
+// border drag. Motion resizes the fixed pane by however far the pointer
+// has moved since the press; the next render picks the new hint up.
+func (a *App) continueResizeDrag(m vaxis.Mouse, ev layout.Mouse) {
+	if ev.EventType == layout.EventRelease {
+		a.resizeSplit = nil
+		return
+	}
+	if ev.EventType != layout.EventMotion {
+		return
+	}
+	n := layout.ClampFixed(a.resizeStartSize+m.Col-a.resizeStartCol, a.resizeExtent)
+	a.resizeSplit.Children[a.resizeIdx].Hint = layout.Fixed(n)
+}
+
 // isWheel reports whether b is a wheel direction rather than a real button.
 // A wheel tick arrives as a press, but scrolling over a pane must not steal
 // focus from it — that's the whole point of routing the wheel by hover.
@@ -983,7 +1040,8 @@ func (a *App) leafAt(col, row int) (layout.LeafID, bool) {
 func (a *App) render() {
 	full := a.vx.Window()
 	cols, rows := full.Size()
-	a.rects = layout.Compute(a.root, layout.Rect{W: cols, H: rows})
+	a.area = layout.Rect{W: cols, H: rows}
+	a.rects = layout.Compute(a.root, a.area)
 
 	full.Clear()
 
