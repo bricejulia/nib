@@ -148,7 +148,7 @@ func TestSplitLinesMixedEndingsNormalizeCleanly(t *testing.T) {
 func TestJoinLinesRoundTripsWithSplitLines(t *testing.T) {
 	for _, eol := range []EOL{LF, CRLF, CR} {
 		original := []string{"one", "two", "three"}
-		joined := JoinLines(original, eol)
+		joined := JoinLines(original, eol, false)
 		lines, gotEOL := SplitLines(joined)
 		if gotEOL != eol {
 			t.Errorf("%q: detected eol = %q, want %q", eol, gotEOL, eol)
@@ -161,5 +161,27 @@ func TestJoinLinesRoundTripsWithSplitLines(t *testing.T) {
 				t.Errorf("%q: lines[%d] = %q, want %q", eol, i, lines[i], original[i])
 			}
 		}
+	}
+}
+
+func TestHasFinalEOL(t *testing.T) {
+	for text, want := range map[string]bool{
+		"":         false,
+		"one":      false,
+		"one\n":    true,
+		"one\r\n":  true,
+		"one\r":    true,
+		"one\ntwo": false,
+		"\n":       true,
+	} {
+		if got := HasFinalEOL(text); got != want {
+			t.Errorf("HasFinalEOL(%q) = %v, want %v", text, got, want)
+		}
+	}
+}
+
+func TestJoinLinesAddsTheFinalTerminatorInTheFilesStyle(t *testing.T) {
+	if got := JoinLines([]string{"a", "b"}, CRLF, true); got != "a\r\nb\r\n" {
+		t.Errorf("JoinLines = %q, want %q", got, "a\r\nb\r\n")
 	}
 }

@@ -101,9 +101,20 @@ func SplitLines(text string) (lines []string, eol EOL) {
 	return strings.Split(normalized, "\n"), eol
 }
 
-// JoinLines is SplitLines' inverse for a given EOL style.
-func JoinLines(lines []string, eol EOL) string {
-	return strings.Join(lines, eolString(eol))
+// HasFinalEOL reports whether text ends with a line terminator — the one
+// SplitLines strips, which JoinLines puts back when finalEOL is true.
+func HasFinalEOL(text string) bool {
+	return strings.HasSuffix(text, "\n") || strings.HasSuffix(text, "\r")
+}
+
+// JoinLines is SplitLines' inverse for a given EOL style, ending with one
+// more terminator when finalEOL is true (see HasFinalEOL).
+func JoinLines(lines []string, eol EOL, finalEOL bool) string {
+	joined := strings.Join(lines, eolString(eol))
+	if finalEOL {
+		joined += eolString(eol)
+	}
+	return joined
 }
 
 func detectEOL(text string) EOL {

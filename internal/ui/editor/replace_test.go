@@ -205,8 +205,8 @@ func TestRewriteFileReplacesAndSavesWithPreservedMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "bar one\nbar two" {
-		t.Errorf("on-disk content = %q, want %q", got, "bar one\nbar two")
+	if string(got) != "bar one\nbar two\n" {
+		t.Errorf("on-disk content = %q, want %q", got, "bar one\nbar two\n")
 	}
 
 	info, err := os.Stat(path)
@@ -292,8 +292,8 @@ func TestApplyRoutesToOpenBufferAndDisk(t *testing.T) {
 		t.Errorf("open buffer's line = %q, want %q", openBuf.Lines[0], "bar")
 	}
 	onDisk, _ := os.ReadFile(closedPath)
-	if string(onDisk) != "bar" {
-		t.Errorf("closed file's content = %q, want %q", onDisk, "bar")
+	if string(onDisk) != "bar\n" {
+		t.Errorf("closed file's content = %q, want %q", onDisk, "bar\n")
 	}
 }
 
@@ -325,8 +325,8 @@ func TestApplyOneFileFailureDoesNotAbortTheRest(t *testing.T) {
 	}
 
 	onDisk, _ := os.ReadFile(goodPath)
-	if string(onDisk) != "bar" {
-		t.Errorf("good file's content = %q, want %q — one failure must not block the rest", onDisk, "bar")
+	if string(onDisk) != "bar\n" {
+		t.Errorf("good file's content = %q, want %q — one failure must not block the rest", onDisk, "bar\n")
 	}
 }
 

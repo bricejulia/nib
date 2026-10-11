@@ -54,6 +54,11 @@ type Buffer struct {
 	// Load and Save ever convert to/from the on-disk form.
 	Charset textfile.Charset
 	EOL     textfile.EOL
+	// FinalEOL is whether the file ended with a line terminator, which
+	// Lines doesn't keep (see textfile.SplitLines) — reproduced by Save so
+	// saving a file doesn't strip its last newline. Detected at Load like
+	// Charset/EOL; false for a Buffer{} literal, as before.
+	FinalEOL bool
 
 	// IndentUseSpaces and IndentWidth are this file's Tab-key behavior:
 	// whether Tab inserts spaces (IndentWidth of them) or a literal tab
@@ -178,6 +183,7 @@ type loadedFile struct {
 	mode        os.FileMode
 	charset     textfile.Charset
 	eol         textfile.EOL
+	finalEOL    bool
 	hasLongLine bool
 	modTime     time.Time
 	size        int64
@@ -206,6 +212,7 @@ func loadFile(path string) (loadedFile, error) {
 	lf.lines = lines
 	lf.source = []byte(strings.Join(lines, "\n"))
 	lf.charset, lf.eol = charset, eol
+	lf.finalEOL = textfile.HasFinalEOL(text)
 	for _, ln := range lines {
 		if _, _, truncated := runePrefix(ln, maxRenderLineRunes); truncated {
 			lf.hasLongLine = true
@@ -224,7 +231,7 @@ func Load(path string) (*Buffer, error) {
 	return &Buffer{
 		Lines: lf.lines, Path: path, Source: lf.source, mode: lf.mode,
 		saved:   append([]string(nil), lf.lines...),
-		Charset: lf.charset, EOL: lf.eol,
+		Charset: lf.charset, EOL: lf.eol, FinalEOL: lf.finalEOL,
 		HasLongLine: lf.hasLongLine,
 		diskModTime: lf.modTime, diskSize: lf.size,
 	}, nil
@@ -268,6 +275,7 @@ func (b *Buffer) Reload() error {
 	b.mode = lf.mode
 	b.Charset = lf.charset
 	b.EOL = lf.eol
+	b.FinalEOL = lf.finalEOL
 	b.HasLongLine = lf.hasLongLine
 	b.saved = append([]string(nil), lf.lines...)
 	b.highlighted = nil
@@ -669,8 +677,8 @@ func (b *Buffer) Restore(lines []string) {
 }
 
 // Save writes the buffer's current contents back to Path, preserving the
-// original file's permission bits (see Load) and its detected charset/EOL
-// (see textfile), records that content as the new saved baseline, and
+// original file's permission bits (see Load), its detected charset/EOL
+// (see textfile) and whether it ended with a newline (FinalEOL), records that content as the new saved baseline, and
 // clears Dirty.
 //
 // It also re-stats Path right after the write and refreshes
@@ -681,7 +689,7 @@ func (b *Buffer) Restore(lines []string) {
 // calling NoteDiskStat, the baseline it compares against already
 // reflects this write.
 func (b *Buffer) Save() error {
-	data, err := textfile.Encode(textfile.JoinLines(b.Lines, b.EOL), b.Charset)
+	data, err := textfile.Encode(textfile.JoinLines(b.Lines, b.EOL, b.FinalEOL), b.Charset)
 	if err != nil {
 		return err
 	}
