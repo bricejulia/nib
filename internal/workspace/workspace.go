@@ -191,14 +191,19 @@ func (w *Workspace) ApplyConfig(cfg PaneConfig) {
 	}
 }
 
-// Open opens path in the Active pane, at line (1-based) if line > 0, and
-// refreshes its git gutter. Returns the leaf to focus.
-func (w *Workspace) Open(path string, line int) layout.LeafID {
-	if line > 0 {
-		w.active.view.OpenAtLine(path, line)
-	} else {
-		w.active.view.Open(path)
-	}
+// Open opens path in the Active pane and refreshes its git gutter. Returns
+// the leaf to focus.
+func (w *Workspace) Open(path string) layout.LeafID {
+	w.active.view.Open(path)
+	w.refreshLineStatus(path)
+	return w.active.leaf.ID
+}
+
+// OpenAtLine is Open as a navigation jump (see editor.View.OpenAtLine):
+// the cursor lands on line (1-based) when line > 0, and the jump is
+// recorded for jump-back either way.
+func (w *Workspace) OpenAtLine(path string, line int) layout.LeafID {
+	w.active.view.OpenAtLine(path, line)
 	w.refreshLineStatus(path)
 	return w.active.leaf.ID
 }

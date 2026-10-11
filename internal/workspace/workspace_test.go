@@ -85,7 +85,7 @@ func TestOpenShowsFileInActivePaneAndRefreshesItsGutter(t *testing.T) {
 	f := newFixture(t, Options{})
 	a := f.file("a.txt", "alpha\n")
 
-	leaf := f.ws.Open(a, 0)
+	leaf := f.ws.Open(a)
 
 	if leaf != f.ws.ActiveLeaf() {
 		t.Errorf("Open returned leaf %d, want the active pane %d", leaf, f.ws.ActiveLeaf())
@@ -101,7 +101,7 @@ func TestOpenShowsFileInActivePaneAndRefreshesItsGutter(t *testing.T) {
 func TestSplitShowsTheSameBufferInTheNewPane(t *testing.T) {
 	f := newFixture(t, Options{})
 	a := f.file("a.txt", "alpha\n")
-	f.ws.Open(a, 0)
+	f.ws.Open(a)
 	first := f.ws.Active()
 
 	id := f.split(layout.Horizontal)
@@ -121,7 +121,7 @@ func TestSplitShowsTheSameBufferInTheNewPane(t *testing.T) {
 func TestRepathRetargetsTabsInEveryPane(t *testing.T) {
 	f := newFixture(t, Options{})
 	a := f.file("dir/a.txt", "alpha\n")
-	f.ws.Open(a, 0)
+	f.ws.Open(a)
 	f.focus(f.split(layout.Vertical))
 
 	newDir := filepath.Join(f.root, "renamed")
@@ -147,8 +147,8 @@ func TestCloseDeletedClosesCleanTabsAndDetachesDirtyOnes(t *testing.T) {
 	f := newFixture(t, Options{})
 	clean := f.file("clean.txt", "c\n")
 	dirty := f.file("dirty.txt", "d\n")
-	f.ws.Open(clean, 0)
-	f.ws.Open(dirty, 0)
+	f.ws.Open(clean)
+	f.ws.Open(dirty)
 	f.edit(dirty)
 
 	for _, p := range []string{clean, dirty} {
@@ -172,7 +172,7 @@ func TestSyncWithDiskReloadsCleanFlagsDirtyAndClosesDeleted(t *testing.T) {
 	dirty := f.file("dirty.txt", "old\n")
 	gone := f.file("gone.txt", "old\n")
 	for _, p := range []string{clean, dirty, gone} {
-		f.ws.Open(p, 0)
+		f.ws.Open(p)
 	}
 	f.edit(dirty)
 
@@ -203,8 +203,8 @@ func TestDirtyPathsIsDeduplicatedAndSorted(t *testing.T) {
 	f := newFixture(t, Options{})
 	b := f.file("b.txt", "b\n")
 	a := f.file("a.txt", "a\n")
-	f.ws.Open(b, 0)
-	f.ws.Open(a, 0)
+	f.ws.Open(b)
+	f.ws.Open(a)
 	f.edit(a)
 	f.edit(b)
 	f.split(layout.Horizontal) // a is now open in two panes
@@ -218,8 +218,8 @@ func TestSaveAllWritesOnceAndReturnsConflicts(t *testing.T) {
 	f := newFixture(t, Options{})
 	a := f.file("a.txt", "a")
 	b := f.file("b.txt", "b")
-	f.ws.Open(b, 0)
-	f.ws.Open(a, 0)
+	f.ws.Open(b)
+	f.ws.Open(a)
 	f.edit(a)
 	f.edit(b)
 	f.split(layout.Horizontal)
@@ -246,7 +246,7 @@ func TestSaveAllWritesOnceAndReturnsConflicts(t *testing.T) {
 func TestReloadFromDiskDiscardsEdits(t *testing.T) {
 	f := newFixture(t, Options{})
 	a := f.file("a.txt", "a\n")
-	f.ws.Open(a, 0)
+	f.ws.Open(a)
 	f.edit(a)
 	f.file("a.txt", "from disk\n")
 
@@ -265,11 +265,11 @@ func TestClosePaneRefusesTheLastPaneAndUnsavedChanges(t *testing.T) {
 
 	a := f.file("a.txt", "a\n")
 	b := f.file("b.txt", "b\n")
-	f.ws.Open(a, 0)
+	f.ws.Open(a)
 	first := f.ws.ActiveLeaf()
 	second := f.split(layout.Horizontal)
 	f.focus(second)
-	f.ws.Open(b, 0)
+	f.ws.Open(b)
 	f.edit(b)
 
 	if _, ok := f.ws.ClosePane(); ok {
@@ -298,15 +298,15 @@ func TestClosingAPaneReleasesItsBuffers(t *testing.T) {
 	f := newFixture(t, Options{})
 	a := f.file("a.txt", "a\n")
 	b := f.file("b.txt", "old\n")
-	f.ws.Open(a, 0)
+	f.ws.Open(a)
 	f.focus(f.split(layout.Horizontal))
-	f.ws.Open(b, 0)
+	f.ws.Open(b)
 	if _, ok := f.ws.ClosePane(); !ok {
 		t.Fatal("ClosePane failed")
 	}
 
 	f.file("b.txt", "new\n")
-	f.ws.Open(b, 0)
+	f.ws.Open(b)
 
 	if got := f.ws.Active().BufferForPath(b).Lines[0]; got != "new" {
 		t.Errorf("reopened b.txt shows %q, want a fresh load from disk", got)
@@ -317,10 +317,10 @@ func TestMoveActiveTabWrapsAroundPanes(t *testing.T) {
 	f := newFixture(t, Options{})
 	a := f.file("a.txt", "a\n")
 	b := f.file("b.txt", "b\n")
-	f.ws.Open(a, 0)
+	f.ws.Open(a)
 	first := f.ws.ActiveLeaf()
 	second := f.split(layout.Horizontal)
-	f.ws.Open(b, 0) // still in the first pane, which is active
+	f.ws.Open(b) // still in the first pane, which is active
 
 	dest, ok := f.ws.MoveActiveTab(1)
 	if !ok || dest != second {
@@ -359,7 +359,7 @@ func TestTabMenuMoveRightReportsWhereTheTabLanded(t *testing.T) {
 	f.ws.OnLayoutChanged = func(id layout.LeafID) { changed = append(changed, id) }
 
 	a := f.file("a.txt", "a\n")
-	f.ws.Open(a, 0)
+	f.ws.Open(a)
 	left := f.ws.Active()
 	leftID := f.ws.ActiveLeaf()
 	right := f.split(layout.Horizontal)
@@ -390,8 +390,8 @@ func TestTabMenuSplitRightMovesOnlyThatTab(t *testing.T) {
 	f.ws.OnLayoutChanged = func(id layout.LeafID) { changed = append(changed, id) }
 	a := f.file("a.txt", "a\n")
 	b := f.file("b.txt", "b\n")
-	f.ws.Open(a, 0)
-	f.ws.Open(b, 0)
+	f.ws.Open(a)
+	f.ws.Open(b)
 	v := f.ws.Active()
 
 	v.OnSplitAndMoveRight(0) // a.txt
@@ -425,12 +425,12 @@ func TestSessionRoundTrip(t *testing.T) {
 	b := f.file("b.txt", "b\n")
 	c := f.file("c.txt", "c\n")
 	gone := f.file("gone.txt", "g\n")
-	f.ws.Open(a, 0)
-	f.ws.Open(gone, 0)
-	f.ws.Open(b, 0)
+	f.ws.Open(a)
+	f.ws.Open(gone)
+	f.ws.Open(b)
 	second := f.split(layout.Vertical)
 	f.focus(second)
-	f.ws.Open(c, 0)
+	f.ws.Open(c)
 
 	sess := f.ws.Capture()
 	if sess == nil {
@@ -467,7 +467,7 @@ func TestSessionRoundTrip(t *testing.T) {
 func TestRestoreWithNothingLeftChangesNothing(t *testing.T) {
 	f := newFixture(t, Options{})
 	gone := f.file("gone.txt", "g\n")
-	f.ws.Open(gone, 0)
+	f.ws.Open(gone)
 	sess := f.ws.Capture()
 	if err := os.Remove(gone); err != nil {
 		t.Fatal(err)
