@@ -14,7 +14,7 @@ import (
 // Role names one themeable role. A map key (map[Role]layout.Color) rather
 // than a struct field, because "color = <role> = <value>" config lines
 // arrive as arbitrary strings from config.Parse — a map merges those
-// string-keyed overrides directly, the same shape config.Defaults.Resolve
+// string-keyed overrides directly, the same shape config.Actions.Resolve
 // already uses for trigger->action overrides.
 type Role string
 
@@ -123,7 +123,7 @@ func (t Theme) Get(role Role) layout.Color {
 }
 
 // Resolve merges base with overrides (overrides win on a matching role)
-// into a new Theme — the same shape as config.Defaults.Resolve, just keyed
+// into a new Theme — the same shape as config.Actions.Resolve, just keyed
 // by Role/layout.Color instead of trigger/action strings.
 func (base Theme) Resolve(overrides map[Role]layout.Color) Theme {
 	merged := make(Theme, len(base)+len(overrides))

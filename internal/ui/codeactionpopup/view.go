@@ -17,14 +17,14 @@ import (
 	"github.com/bricejulia/nib/internal/lsp"
 )
 
-// DefaultKeybinds are this popup's built-in keybindings, overridable via
+// Scope are this popup's built-in keybindings, overridable via
 // the user config's "codeactions" scope (see internal/config).
-var DefaultKeybinds = config.Defaults{
-	{Trigger: "Esc", Action: "close"},
-	{Trigger: "Down", Action: "move_down"},
-	{Trigger: "Up", Action: "move_up"},
-	{Trigger: "Enter", Action: "execute"},
-}
+var Scope = config.Scope{Name: "codeactions", Title: "Code Actions", Actions: config.Actions{
+	{ID: "close", Keys: []string{"Esc"}, Desc: "Close"},
+	{ID: "move_down", Keys: []string{"Down"}, Desc: "Move selection down"},
+	{ID: "move_up", Keys: []string{"Up"}, Desc: "Move selection up"},
+	{ID: "execute", Keys: []string{"Enter"}, Desc: "Apply the selected action"},
+}}
 
 // View is the code-actions popup's content: a selectable, scrollable list
 // of server-suggested actions.
@@ -47,13 +47,13 @@ type View struct {
 
 // New creates an empty code-actions popup; call Open before showing it.
 func New() *View {
-	return &View{keymap: DefaultKeybinds.Resolve(nil)}
+	return &View{keymap: Scope.Actions.Resolve(nil)}
 }
 
 // SetKeymap merges the user config's "codeactions" scope overrides on top
-// of DefaultKeybinds, replacing the popup's active keymap.
+// of Scope, replacing the popup's active keymap.
 func (v *View) SetKeymap(overrides map[string]string) {
-	v.keymap = DefaultKeybinds.Resolve(overrides)
+	v.keymap = Scope.Actions.Resolve(overrides)
 }
 
 func (v *View) Title() string { return "Code Actions" }

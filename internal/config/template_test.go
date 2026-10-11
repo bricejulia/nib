@@ -10,8 +10,8 @@ import (
 )
 
 var testScopes = []Scope{
-	{Name: "global", Defaults: Defaults{{Trigger: "Ctrl+p", Action: "open_finder"}}},
-	{Name: "editor", Defaults: Defaults{{Trigger: "x", Action: "close_tab"}}},
+	{Name: "global", Actions: Actions{{ID: "open_finder", Keys: []string{"Ctrl+p"}, Desc: "Open file finder"}}},
+	{Name: "editor", Actions: Actions{{ID: "close_tab", Keys: []string{"x"}, Desc: "Close the tab"}}},
 }
 
 func TestTemplateCommentsOutEveryDefaultByScope(t *testing.T) {
@@ -25,6 +25,9 @@ func TestTemplateCommentsOutEveryDefaultByScope(t *testing.T) {
 	}
 	if !strings.Contains(out, "# keybind = editor:x = close_tab") {
 		t.Errorf("expected editor's trigger prefixed with its scope, got:\n%s", out)
+	}
+	if !strings.Contains(out, "# Open file finder\n# keybind = Ctrl+p = open_finder") {
+		t.Errorf("expected each action's description on the line above its keys, got:\n%s", out)
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
-// DefaultKeybinds are the file tree pane's built-in keybindings,
+// Scope is the file tree pane's actions and their default keys,
 // overridable via the user config's "filetree" scope (see
 // internal/config).
 //
@@ -23,27 +23,22 @@ import (
 // create/rename/delete prompt is open, keys go to handlePromptKey, which
 // never looks at this map. That's what keeps "a"/"r"/"d" — or any other
 // plain letter bound here — typeable in a filename.
-var DefaultKeybinds = config.Defaults{
-	{Trigger: "Down", Action: "move_down"},
-	{Trigger: "j", Action: "move_down"},
-	{Trigger: "Up", Action: "move_up"},
-	{Trigger: "k", Action: "move_up"},
-	{Trigger: "Enter", Action: "open_or_expand"},
-	{Trigger: "Right", Action: "open_or_expand"},
-	{Trigger: "l", Action: "open_or_expand"},
-	{Trigger: "Left", Action: "collapse"},
-	{Trigger: "h", Action: "collapse"},
-	{Trigger: "Shift+Right", Action: "peek_right"},
-	{Trigger: "Shift+Left", Action: "peek_left"},
-	{Trigger: "a", Action: "create"},
-	{Trigger: "r", Action: "rename"},
-	{Trigger: "c", Action: "copy"},
-	{Trigger: "d", Action: "delete"},
+var Scope = config.Scope{Name: "filetree", Title: "File Tree", Actions: config.Actions{
+	{ID: "move_down", Keys: []string{"Down", "j"}, Desc: "Move down"},
+	{ID: "move_up", Keys: []string{"Up", "k"}, Desc: "Move up"},
+	{ID: "open_or_expand", Keys: []string{"Enter", "Right", "l"}, Desc: "Open file / expand directory"},
+	{ID: "collapse", Keys: []string{"Left", "h"}, Desc: "Collapse directory (or its parent)"},
+	{ID: "peek_right", Keys: []string{"Shift+Right"}, Desc: "Peek further into a long name"},
+	{ID: "peek_left", Keys: []string{"Shift+Left"}, Desc: "Peek back along a long name"},
+	{ID: "create", Keys: []string{"a"}, Desc: "New file (end with \"/\" for a directory)"},
+	{ID: "rename", Keys: []string{"r"}, Desc: "Rename / move: edit the path, Enter"},
+	{ID: "copy", Keys: []string{"c"}, Desc: "Copy: prefilled with a sibling name, edit the path, Enter"},
+	{ID: "delete", Keys: []string{"d"}, Desc: "Delete (confirm y/N)"},
 	// "L" ("log"), the same key the editor uses for the file's history.
-	{Trigger: "L", Action: "show_history"},
-	{Trigger: "]", Action: "next_view"},
-	{Trigger: "[", Action: "prev_view"},
-}
+	{ID: "show_history", Keys: []string{"L"}, Desc: "Show the selected file's git history"},
+	{ID: "next_view", Keys: []string{"]"}, Desc: "Next view: files / changed files"},
+	{ID: "prev_view", Keys: []string{"["}, Desc: "Previous view: files / changed files"},
+}}
 
 // Mode selects which tree the pane displays. ModeFiles is the full,
 // disk-backed project tree; ModeChanges is the same tree shape pruned down
@@ -193,14 +188,14 @@ func New(absPath string) *View {
 		// empty pane rather than a nil-pointer panic.
 		changesRoot: &Node{Name: filepath.Base(absPath), Path: absPath, IsDir: true, Expanded: true, Loaded: true},
 		dirty:       true,
-		keymap:      DefaultKeybinds.Resolve(nil),
+		keymap:      Scope.Actions.Resolve(nil),
 	}
 }
 
 // SetKeymap merges the user config's "filetree" scope overrides on top
-// of DefaultKeybinds, replacing the pane's active keymap.
+// of Scope, replacing the pane's active keymap.
 func (v *View) SetKeymap(overrides map[string]string) {
-	v.keymap = DefaultKeybinds.Resolve(overrides)
+	v.keymap = Scope.Actions.Resolve(overrides)
 }
 
 func (v *View) Title() string {
@@ -605,7 +600,7 @@ func (v *View) HandleKey(k layout.Key) bool {
 		// A View built via a bare struct literal (as some tests do, to
 		// set up a fixture root directly) skips New's initialization —
 		// fall back to the defaults rather than consuming no keys.
-		v.keymap = DefaultKeybinds.Resolve(nil)
+		v.keymap = Scope.Actions.Resolve(nil)
 	}
 
 	switch v.keymap[k.String()] {

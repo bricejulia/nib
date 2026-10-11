@@ -56,8 +56,8 @@
 //
 // scope is one of "global" (or omitted, e.g. "keybind = ctrl+p = ..."),
 // "editor", "filetree", "finder", "debug", "help", "actionpopup",
-// "references", "codeactions" — see each package's
-// DefaultKeybinds for the actions available in that scope. trigger is a
+// "references", "codeactions" (and a few more) — see each package's
+// Scope for the actions available in it, or the generated template. trigger is a
 // key description like "ctrl+p", "shift+left", or a bare character like
 // "x"; see Normalize for exactly what's accepted. Blank lines and lines
 // starting with "#" are ignored; malformed lines are skipped rather than
@@ -73,32 +73,6 @@ import (
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/theme"
 )
-
-// Binding is one trigger→action keybinding, in the canonical trigger form
-// Normalize produces.
-type Binding struct {
-	Trigger string
-	Action  string
-}
-
-// Defaults is a scope's built-in keybindings, kept in a fixed display
-// order (unlike a plain map, whose iteration order Go deliberately
-// randomizes) so the generated template config lists them consistently.
-type Defaults []Binding
-
-// Resolve merges these defaults with a scope's user-config overrides
-// (overrides win on a matching trigger) into a trigger->action lookup
-// map, ready for a View's HandleKey to index into via Key.String().
-func (d Defaults) Resolve(overrides map[string]string) map[string]string {
-	m := make(map[string]string, len(d)+len(overrides))
-	for _, b := range d {
-		m[b.Trigger] = b.Action
-	}
-	for trigger, action := range overrides {
-		m[trigger] = action
-	}
-	return m
-}
 
 // TabMode is a language's indent style: whether Tab inserts spaces or a
 // literal tab character, and how wide an indent level is.

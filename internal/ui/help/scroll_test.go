@@ -7,7 +7,7 @@ import (
 )
 
 func TestHelpScrollStateMirrorsTopAndLineCount(t *testing.T) {
-	v := New("dev")
+	v := New("dev", testScopes)
 	v.lastRows = 20
 	v.topLine = 15
 
@@ -18,7 +18,7 @@ func TestHelpScrollStateMirrorsTopAndLineCount(t *testing.T) {
 }
 
 func TestHelpScrollToClampsToValidRange(t *testing.T) {
-	v := New("dev")
+	v := New("dev", testScopes)
 	v.lastRows = 5 // real content is much longer than 5 rows
 
 	v.ScrollTo(-5)
@@ -34,7 +34,7 @@ func TestHelpScrollToClampsToValidRange(t *testing.T) {
 }
 
 func TestHelpImplementsScrollInterfaces(t *testing.T) {
-	var v layout.View = New("dev")
+	var v layout.View = New("dev", testScopes)
 	if _, ok := v.(layout.Scrollable); !ok {
 		t.Error("help.View should implement layout.Scrollable")
 	}

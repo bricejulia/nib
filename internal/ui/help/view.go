@@ -13,21 +13,21 @@ import (
 	"github.com/bricejulia/nib/internal/ui/textfield"
 )
 
-// DefaultKeybinds are the help overlay's built-in keybindings,
+// Scope is the help overlay's actions and their default keys,
 // overridable via the user config's "help" scope (see internal/config).
-// Deliberately narrow, the same trade finder.DefaultKeybinds makes for its
+// Deliberately narrow, the same trade finder.Scope makes for its
 // own search query: any trigger not listed here falls through to being
 // typed into the search box instead (see HandleKey) — that's what makes
 // this list searchable at all.
-var DefaultKeybinds = config.Defaults{
-	{Trigger: "Esc", Action: "close"},
-	{Trigger: "Down", Action: "scroll_down"},
-	{Trigger: "Up", Action: "scroll_up"},
-	{Trigger: "PageDown", Action: "page_down"},
-	{Trigger: "PageUp", Action: "page_up"},
-	{Trigger: "Home", Action: "home"},
-	{Trigger: "End", Action: "end"},
-}
+var Scope = config.Scope{Name: "help", Title: "Help", Actions: config.Actions{
+	{ID: "close", Keys: []string{"Esc"}, Desc: "Close (also clears the search)"},
+	{ID: "scroll_down", Keys: []string{"Down"}, Desc: "Scroll down"},
+	{ID: "scroll_up", Keys: []string{"Up"}, Desc: "Scroll up"},
+	{ID: "page_down", Keys: []string{"PageDown"}, Desc: "Scroll down a page"},
+	{ID: "page_up", Keys: []string{"PageUp"}, Desc: "Scroll up a page"},
+	{ID: "home", Keys: []string{"Home"}, Desc: "Jump to the top"},
+	{ID: "end", Keys: []string{"End"}, Desc: "Jump to the bottom"},
+}}
 
 // searchLabel prefixes the always-typeable search box pinned above the
 // scrollable list — row 0, the same reserved-header-row convention the
@@ -38,8 +38,10 @@ const searchLabel = "Search: "
 // typed query, with a scrollable viewport for terminals too small to show
 // it all at once.
 type View struct {
-	version string
-	query   textfield.TextField
+	version  string
+	scopes   []config.Scope
+	sections []section
+	query    textfield.TextField
 
 	lines    [][]layout.Segment // sections filtered to the current query
 	topLine  int
@@ -51,17 +53,32 @@ type View struct {
 	keymap map[string]string
 }
 
-// New creates a help view showing version alongside every keybinding.
-func New(version string) *View {
-	v := &View{version: version, keymap: DefaultKeybinds.Resolve(nil)}
-	v.refilter()
+// New creates a help view showing version alongside every action in
+// scopes, with its default keys until SetBindings says otherwise.
+func New(version string, scopes []config.Scope) *View {
+	v := &View{version: version, scopes: scopes, keymap: Scope.Actions.Resolve(nil)}
+	v.SetBindings(func(string) map[string]string { return nil })
 	return v
 }
 
+// SetBindings re-lists every action with the keys actually bound to it:
+// overrides gives a scope's user-config overrides by scope name (e.g.
+// (*config.Config).Overrides). Call again after the config is reloaded.
+func (v *View) SetBindings(overrides func(scope string) map[string]string) {
+	byName := map[string]config.Actions{}
+	for _, s := range v.scopes {
+		byName[s.Name] = s.Actions
+	}
+	v.sections = buildSections(v.scopes, func(scope string) map[string]string {
+		return byName[scope].Resolve(overrides(scope))
+	})
+	v.refilter()
+}
+
 // SetKeymap merges the user config's "help" scope overrides on top of
-// DefaultKeybinds, replacing the pane's active keymap.
+// Scope, replacing the pane's active keymap.
 func (v *View) SetKeymap(overrides map[string]string) {
-	v.keymap = DefaultKeybinds.Resolve(overrides)
+	v.keymap = Scope.Actions.Resolve(overrides)
 }
 
 func (v *View) Title() string { return "Help" }
@@ -71,7 +88,7 @@ func (v *View) Title() string { return "Help" }
 // static list rather than the async, debounced git-grep search
 // finder.View.refilterContent runs for its own query.
 func (v *View) refilter() {
-	v.lines = buildLines(v.version, v.query.String())
+	v.lines = buildLines(v.version, v.sections, v.query.String())
 	v.topLine = 0
 }
 
@@ -83,7 +100,7 @@ func (v *View) refilter() {
 // entirely (heading included), and a query matching nothing at all gets an
 // explicit "no matching keybindings" line rather than silently rendering
 // empty.
-func buildLines(version, query string) [][]layout.Segment {
+func buildLines(version string, sections []section, query string) [][]layout.Segment {
 	lines := [][]layout.Segment{
 		{{Text: "nib " + version}},
 	}
@@ -216,7 +233,7 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.topLine = len(v.lines)
 	default:
 		// Everything else — printable text, Backspace, Left/Right — is
-		// unclaimed by DefaultKeybinds, so it edits the search box directly
+		// unclaimed by Scope, so it edits the search box directly
 		// via textfield.TextField.HandleKey: the same "reserve only the
 		// named actions this pane needs, let everything else type" trade
 		// finder.View.HandleKey makes for its own query. Home/End stay

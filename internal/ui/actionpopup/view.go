@@ -16,17 +16,17 @@ import (
 	"github.com/bricejulia/nib/internal/ui/textfield"
 )
 
-// DefaultKeybinds are the action popup's built-in keybindings, overridable
+// Scope is the action popup's actions and their default keys, overridable
 // via the user config's "actionpopup" scope (see internal/config).
-// Deliberately narrow, the same trade finder.DefaultKeybinds/
-// help.DefaultKeybinds make for their own search query: any trigger not
+// Deliberately narrow, the same trade finder.Scope/
+// help.Scope make for their own search query: any trigger not
 // listed here falls through to being typed into the query box instead.
-var DefaultKeybinds = config.Defaults{
-	{Trigger: "Esc", Action: "close"},
-	{Trigger: "Down", Action: "move_down"},
-	{Trigger: "Up", Action: "move_up"},
-	{Trigger: "Enter", Action: "execute"},
-}
+var Scope = config.Scope{Name: "actionpopup", Title: "Action Popup", Actions: config.Actions{
+	{ID: "close", Keys: []string{"Esc"}, Desc: "Close"},
+	{ID: "move_down", Keys: []string{"Down"}, Desc: "Move selection down"},
+	{ID: "move_up", Keys: []string{"Up"}, Desc: "Move selection up"},
+	{ID: "execute", Keys: []string{"Enter"}, Desc: "Run the selected command"},
+}}
 
 // queryLabel prefixes the always-typeable query box pinned above the
 // scrollable result list — row 0, the same reserved-header-row convention
@@ -43,6 +43,8 @@ const descColumn = 46
 type View struct {
 	query textfield.TextField
 
+	scopes   []config.Scope
+	entries  []entry
 	filtered []entry
 	// keybind maps "scope:id" -> the currently resolved trigger for that
 	// command, so each row can show its live shortcut. Rebuilt by Open on
@@ -55,49 +57,44 @@ type View struct {
 
 	// OnClose is called when Esc is pressed, dismissing the overlay.
 	OnClose func()
-	// OnExecute is called with the selected row's id when Enter is
-	// pressed on a non-empty list. This package only knows how to search
-	// and select — actually dispatching the id (to cmd/nib/main.go's
-	// global actions map, or to the focused editor.View.ExecuteAction) is
-	// the caller's job, mirroring how internal/ui/help keeps display
-	// separate from the real keymaps it describes.
-	OnExecute func(id string)
+	// OnExecute is called with the selected row's scope and action id when
+	// Enter is pressed on a non-empty list. This package only knows how to
+	// search and select — actually running the action (cmd/nib/main.go's
+	// global actions, or the target editor pane's ExecuteAction) is the
+	// caller's job.
+	OnExecute func(scope, id string)
 
 	keymap map[string]string
 }
 
-// New creates an action popup with no keybind hints yet — call Open before
-// showing it so hints and the result list start fresh.
-func New() *View {
-	v := &View{keymap: DefaultKeybinds.Resolve(nil)}
+// New creates an action popup offering every InPopup action in scopes,
+// with no keybind hints yet — call Open before showing it so hints and the
+// result list start fresh.
+func New(scopes []config.Scope) *View {
+	v := &View{scopes: scopes, entries: popupEntries(scopes), keymap: Scope.Actions.Resolve(nil)}
 	v.refilter()
 	return v
 }
 
 // SetKeymap merges the user config's "actionpopup" scope overrides on top
-// of DefaultKeybinds, replacing the pane's active keymap.
+// of Scope, replacing the pane's active keymap.
 func (v *View) SetKeymap(overrides map[string]string) {
-	v.keymap = DefaultKeybinds.Resolve(overrides)
+	v.keymap = Scope.Actions.Resolve(overrides)
 }
 
 func (v *View) Title() string { return "Actions" }
 
-// Open resets the query and selection to a blank slate, and rebuilds the
-// id->trigger hint lookup from the currently resolved global and editor
-// keymaps (first trigger found for a given action wins) — called every
-// time the popup is shown, like finder.View.Open, rather than only once at
-// construction like help.View: the shortcuts shown next to each command
-// can change after a live config reload.
-func (v *View) Open(global, editor map[string]string) {
-	v.keybind = make(map[string]string, len(global)+len(editor))
-	for trigger, action := range global {
-		if _, ok := v.keybind["global:"+action]; !ok {
-			v.keybind["global:"+action] = trigger
-		}
-	}
-	for trigger, action := range editor {
-		if _, ok := v.keybind["editor:"+action]; !ok {
-			v.keybind["editor:"+action] = trigger
+// Open resets the query and selection to a blank slate, and rebuilds each
+// command's key hint from overrides (a scope's user-config overrides by
+// name, e.g. (*config.Config).Overrides) — called every time the popup is
+// shown, since a config reload can change them. The hint is the action's
+// first bound key in declared order (see config.Actions.KeysFor), so it
+// doesn't change from one opening to the next.
+func (v *View) Open(overrides func(scope string) map[string]string) {
+	v.keybind = map[string]string{}
+	for _, s := range v.scopes {
+		for id, keys := range s.Actions.KeysFor(s.Actions.Resolve(overrides(s.Name))) {
+			v.keybind[s.Name+":"+id] = keys[0]
 		}
 	}
 	v.query = textfield.TextField{}
@@ -109,7 +106,7 @@ func (v *View) Open(global, editor map[string]string) {
 // selection to the top — run synchronously on every keystroke, exactly
 // like help.View.refilter, since entries is a small in-memory static list.
 func (v *View) refilter() {
-	v.filtered = filterEntries(v.query.String())
+	v.filtered = filterEntries(v.entries, v.query.String())
 	v.scrollTop = 0
 	if v.cursor >= len(v.filtered) {
 		v.cursor = len(v.filtered) - 1
@@ -120,9 +117,8 @@ func (v *View) refilter() {
 }
 
 // filterEntries keeps only the entries whose description contains query
-// (case-insensitive); a blank query keeps everything, in entries' declared
-// order.
-func filterEntries(query string) []entry {
+// (case-insensitive); a blank query keeps everything, in declared order.
+func filterEntries(entries []entry, query string) []entry {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
 		return entries
@@ -244,11 +240,12 @@ func (v *View) HandleKey(k layout.Key) bool {
 		}
 	case "execute":
 		if len(v.filtered) > 0 && v.OnExecute != nil {
-			v.OnExecute(v.filtered[v.cursor].ID)
+			e := v.filtered[v.cursor]
+			v.OnExecute(e.Scope, e.ID)
 		}
 	default:
 		// Everything else — printable text, Backspace, Left/Right — is
-		// unclaimed by DefaultKeybinds, so it edits the query box directly
+		// unclaimed by Scope, so it edits the query box directly
 		// via textfield.TextField.HandleKey, the same "reserve only the
 		// named actions this pane needs, let everything else type" trade
 		// help.View.HandleKey makes for its own query.
