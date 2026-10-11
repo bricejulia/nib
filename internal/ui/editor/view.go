@@ -18,13 +18,55 @@ import (
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
-// DefaultKeybinds are the editor pane's built-in keybindings, overridable
-// via the user config's "editor" scope (see internal/config).
-var DefaultKeybinds = config.Defaults{
-	{Trigger: "]", Action: "next_tab"},
-	{Trigger: "[", Action: "prev_tab"},
-	{Trigger: "x", Action: "delete_char_forward"},
-	{Trigger: "X", Action: "delete_char_backward"},
+// Scope is the editor pane's actions and their default keys, overridable
+// via the user config's "editor" scope (see internal/config). The action
+// popup runs the InPopup ones through ExecuteAction.
+var Scope = config.Scope{Name: "editor", Title: "Editor", Actions: config.Actions{
+	{ID: "next_tab", Keys: []string{"]"}, Desc: "Next tab", InPopup: true},
+	{ID: "prev_tab", Keys: []string{"["}, Desc: "Previous tab", InPopup: true},
+	{ID: "move_down", Keys: []string{"j", "Down"}, Desc: "Move down (arrows also work in Insert mode)"},
+	{ID: "move_up", Keys: []string{"k", "Up"}, Desc: "Move up"},
+	{ID: "move_left", Keys: []string{"h", "Left"}, Desc: "Move left"},
+	{ID: "move_right", Keys: []string{"l", "Right"}, Desc: "Move right"},
+	{ID: "page_down", Keys: []string{"PageDown"}, Desc: "Move down a page"},
+	{ID: "page_up", Keys: []string{"PageUp"}, Desc: "Move up a page"},
+	{ID: "line_start", Keys: []string{"0", "Home"}, Desc: "Start of line"},
+	{ID: "line_end", Keys: []string{"$", "End"}, Desc: "End of line"},
+	{ID: "first_line", Keys: []string{"g"}, Desc: "First line"},
+	{ID: "last_line", Keys: []string{"G"}, Desc: "Last line"},
+	// Vim's small-word motions: the start of the next/previous word-or-
+	// punctuation run ("w"/"b"), or the end of the next one ("e") — see
+	// motion.go's classifyRune/wordForwardOnce/wordBackwardOnce/
+	// wordEndOnce. Combine with an operator ("dw", "d$", ...) via
+	// operatorMotions/tryCompleteOperator.
+	{ID: "word_forward", Keys: []string{"w"}, Desc: "Next word"},
+	{ID: "word_end", Keys: []string{"e"}, Desc: "End of word"},
+	{ID: "word_backward", Keys: []string{"b"}, Desc: "Previous word"},
+	// Alt+Left/Right: word-nav, in BOTH Normal and Insert mode — but under
+	// their OWN action names, deliberately distinct from word_backward/
+	// word_forward (what "w"/"b" use): those two letters must stay literal,
+	// insertable text while Insert mode's own dispatch (handleInsertKey) is
+	// scanning the keymap for action names to intercept, and reusing the
+	// same name here would make plain "b"/"w" keystrokes silently move the
+	// cursor instead of being typed.
+	//
+	// Alt+b/Alt+f are aliases: Ghostty (and Terminal.app before it) don't
+	// send Option+Left/Right as a modified arrow key at all — by default
+	// they translate it to the classic readline "Meta-b"/"Meta-f" escapes.
+	{ID: "insert_word_backward", Keys: []string{"Alt+Left", "Alt+b"}, Desc: "Previous word, stopping at the line start (also in Insert mode)"},
+	{ID: "insert_word_forward", Keys: []string{"Alt+Right", "Alt+f"}, Desc: "Next word, stopping at the line end (also in Insert mode)"},
+	{ID: "insert_mode", Keys: []string{"i"}, Desc: "Enter Insert mode"},
+	{ID: "append_mode", Keys: []string{"a"}, Desc: "Enter Insert mode, after the cursor"},
+	{ID: "append_new_line_mode", Keys: []string{"o"}, Desc: "Open a new line below and enter Insert mode"},
+	{ID: "normal_mode", Keys: []string{"Esc"}, Desc: "Return to Normal mode, or dismiss the mouse selection"},
+	{ID: "delete_char_forward", Keys: []string{"x"}, Desc: "Delete the character under the cursor"},
+	{ID: "delete_char_backward", Keys: []string{"X"}, Desc: "Delete the character before the cursor"},
+	// "r" is vim's replace-char-under-cursor ("r<char>"): the key
+	// immediately following this one is captured raw, bypassing v.keymap,
+	// so any printable character works as the replacement — see
+	// handleReplaceCharKey. That's also why redo lives on Shift+U instead
+	// of bare "r".
+	{ID: "replace_char", Keys: []string{"r"}, Desc: "Replace the character under the cursor with the next key typed"},
 	// "d", "y" and "c" are vim's operators: delete, yank, change. Each arms
 	// on the first press (see pendingOp) and either combines with the next
 	// motion/text-object ("dw", "ciw"), or, on an immediate second press of
@@ -32,145 +74,68 @@ var DefaultKeybinds = config.Defaults{
 	// "yy", "cc" — see tryCompleteOperator/applyLinewiseOperator). Bound as
 	// one trigger each rather than as a literal two-key sequence because a
 	// trigger is a single key by construction — see config.Normalize.
-	{Trigger: "d", Action: "delete_line"},
-	{Trigger: "y", Action: "yank_line"},
-	{Trigger: "c", Action: "change_line"},
-	{Trigger: "p", Action: "put_after"},
-	{Trigger: "Down", Action: "move_down"},
-	{Trigger: "j", Action: "move_down"},
-	{Trigger: "Up", Action: "move_up"},
-	{Trigger: "k", Action: "move_up"},
-	{Trigger: "Left", Action: "move_left"},
-	{Trigger: "h", Action: "move_left"},
-	{Trigger: "Right", Action: "move_right"},
-	{Trigger: "l", Action: "move_right"},
-	// Alt+Left/Right: word-nav, in BOTH Normal and Insert mode — but bound
-	// to their OWN action names (insert_word_backward/insert_word_forward),
-	// deliberately distinct from word_backward/word_forward (what "w"/"b"
-	// use): those two letters must stay literal, insertable text while
-	// Insert mode's own dispatch (handleInsertKey) is scanning the keymap
-	// for action names to intercept, and reusing the same name here would
-	// make plain "b"/"w" keystrokes silently trigger a cursor move instead
-	// of being typed. Normal mode has its own explicit case below that
-	// forwards to the SAME applyMovement("word_backward"/"word_forward")
-	// call "b"/"w" make, so the two stay behaviorally identical without
-	// sharing an action name.
-	{Trigger: "Alt+Left", Action: "insert_word_backward"},
-	{Trigger: "Alt+Right", Action: "insert_word_forward"},
-	// Ghostty (and Terminal.app before it) don't send Option+Left/Right as
-	// a modified arrow key at all — by default they translate it to the
-	// classic Unix readline/emacs "Meta-b"/"Meta-f" word-motion escapes
-	// (literal ESC, then the letter), matching what bash/zsh/vim already
-	// expect from Option+arrow in a terminal. Bound as extra ALIASES to the
-	// exact same two actions above, not a replacement, so both encodings
-	// work depending on the terminal.
-	{Trigger: "Alt+b", Action: "insert_word_backward"},
-	{Trigger: "Alt+f", Action: "insert_word_forward"},
-	// Alt+Backspace: word-DELETE, Insert mode only — there's no Normal-mode
-	// equivalent to alias (Backspace isn't bound to anything in Normal mode
-	// to begin with), so this has no Normal-mode case either; applyMovement
-	// doesn't recognize it, so it's a harmless no-op there.
-	{Trigger: "Alt+Backspace", Action: "delete_word_backward"},
-	{Trigger: "PageDown", Action: "page_down"},
-	{Trigger: "PageUp", Action: "page_up"},
-	{Trigger: "Home", Action: "line_start"},
-	{Trigger: "0", Action: "line_start"},
-	{Trigger: "End", Action: "line_end"},
-	{Trigger: "$", Action: "line_end"},
-	{Trigger: "g", Action: "first_line"},
-	{Trigger: "G", Action: "last_line"},
-	// Vim's small-word motions: the start of the next/previous word-or-
-	// punctuation run ("w"/"b"), or the end of the next one ("e") — see
-	// motion.go's classifyRune/wordForwardOnce/wordBackwardOnce/
-	// wordEndOnce. Combine with an operator ("dw", "d$", ...) via
-	// operatorMotions/tryCompleteOperator.
-	{Trigger: "w", Action: "word_forward"},
-	{Trigger: "e", Action: "word_end"},
-	{Trigger: "b", Action: "word_backward"},
-	{Trigger: "i", Action: "insert_mode"},
-	{Trigger: "a", Action: "append_mode"},
-	{Trigger: "o", Action: "append_new_line_mode"},
-	{Trigger: "Esc", Action: "normal_mode"},
-	{Trigger: "Enter", Action: "insert_newline"},
-	{Trigger: "Backspace", Action: "insert_backspace"},
-	{Trigger: "Tab", Action: "insert_tab"},
-	{Trigger: "Ctrl+s", Action: "save"},
+	{ID: "delete_line", Keys: []string{"d"}, Desc: "Delete operator: dd a line, dw a word, d$ to line end, diw the word"},
+	{ID: "yank_line", Keys: []string{"y"}, Desc: "Yank operator: yy a line, yw a word; with a mouse selection, copy it"},
+	{ID: "change_line", Keys: []string{"c"}, Desc: "Change operator: cc a line, cw a word, ciw the word; then Insert mode"},
+	{ID: "put_after", Keys: []string{"p"}, Desc: "Put (paste) after this line"},
+	{ID: "undo", Keys: []string{"u"}, Desc: "Undo the last change", InPopup: true},
+	{ID: "redo", Keys: []string{"U"}, Desc: "Redo", InPopup: true},
+	{ID: "insert_newline", Keys: []string{"Enter"}, Desc: "Insert a newline (Insert mode)"},
+	{ID: "insert_backspace", Keys: []string{"Backspace"}, Desc: "Delete before the cursor (Insert mode)"},
+	// Insert mode only — Backspace isn't bound to anything in Normal mode,
+	// so there's nothing to alias there.
+	{ID: "delete_word_backward", Keys: []string{"Alt+Backspace"}, Desc: "Delete the word before the cursor (Insert mode)"},
+	{ID: "insert_tab", Keys: []string{"Tab"}, Desc: "Insert a tab, or spaces per this file's indent style (Insert mode)"},
+	{ID: "save", Keys: []string{"Ctrl+s"}, Desc: "Save the active tab", InPopup: true},
 	// Flips the current file's Tab behavior (spaces vs. a literal tab
 	// character) without touching the config's per-language default — see
 	// the "tabmode" directive in internal/config.
-	{Trigger: "Ctrl+Alt+t", Action: "toggle_tab_mode"},
-	{Trigger: "u", Action: "undo"},
-	// "r" is vim's replace-char-under-cursor ("r<char>"): the key
-	// immediately following this one is captured raw, bypassing v.keymap,
-	// so any printable character works as the replacement — see
-	// handleReplaceCharKey. That's also why redo lives on Shift+U instead
-	// of bare "r" here: freeing "r" for this vim gesture. Ctrl+r stays
-	// claimed globally for "open_replace" (see cmd/nib/main.go),
-	// unaffected either way — layout.Dispatch tries this pane's own
-	// keymap before ever falling back to the global one, but neither "r"
-	// nor "U" collides with Ctrl+r.
-	{Trigger: "r", Action: "replace_char"},
-	{Trigger: "U", Action: "redo"},
-	{Trigger: ":", Action: "command_mode"},
-	{Trigger: "Ctrl+g", Action: "go_to_parent"},
-	{Trigger: "Ctrl+]", Action: "go_to_definition"},
+	{ID: "toggle_tab_mode", Keys: []string{"Ctrl+Alt+t"}, Desc: "Toggle this file between spaces and tabs", InPopup: true},
+	{ID: "command_mode", Keys: []string{":"}, Desc: "Command line: :<N> goes to a line, :w :q :wq …"},
+	{ID: "search_mode", Keys: []string{"/"}, Desc: "Search in this file: type, Enter to jump, Esc to cancel"},
+	{ID: "search_next", Keys: []string{"n"}, Desc: "Next search match", InPopup: true},
+	{ID: "search_prev", Keys: []string{"N"}, Desc: "Previous search match", InPopup: true},
+	{ID: "go_to_parent", Keys: []string{"Ctrl+g"}, Desc: "Go to parent (syntax tree)", InPopup: true},
+	{ID: "go_to_definition", Keys: []string{"Ctrl+]"}, Desc: "Go to definition", InPopup: true},
 	// Not Ctrl+[ (a more obvious visual pairing with Ctrl+]): on legacy
-	// terminal protocols Ctrl+[ sends the exact same byte as Esc, so it's
-	// indistinguishable from a bare Esc keypress and would never fire —
-	// the same class of terminal ambiguity the double-shift detector
-	// elsewhere already has to work around. Ctrl+b ("back") has no such
-	// collision.
-	{Trigger: "Ctrl+b", Action: "jump_back"},
+	// terminal protocols Ctrl+[ sends the exact same byte as Esc, so it
+	// would never fire. Ctrl+b ("back") has no such collision.
+	{ID: "jump_back", Keys: []string{"Ctrl+b"}, Desc: "Jump back to before the last jump (definition, parent, search match, :<line>, finder result)", InPopup: true},
 	// Not bound here: Ctrl+f ("find references") is a GLOBAL binding (see
-	// cmd/nib/main.go's globalDefaultKeybinds) so it works regardless of
-	// which pane has focus — the global handler asks this pane for
-	// WordUnderCursor when it happens to be the focused one, rather than
-	// this pane owning the trigger itself.
-	{Trigger: "Ctrl+Space", Action: "trigger_autocomplete"},
-	// Not Ctrl+Shift+Space (the more VSCode-familiar chord for signature
-	// help): Ctrl+Shift+<key> is indistinguishable from plain Ctrl+<key> on
-	// any terminal (or multiplexer, e.g. tmux with extended-keys off) that
-	// isn't reporting the kitty keyboard protocol's full modifier state —
-	// degrading silently to Ctrl+Space here would fire autocomplete instead,
-	// in the exact scope/mode signature help needs.
-	// Reachable from both Normal and Insert mode — see handleInsertKey.
-	{Trigger: "Ctrl+a", Action: "trigger_signature_help"},
-	// "K" is vim's own "look up what's under the cursor", which is exactly
-	// this gesture — and being a letter, it works on any keyboard layout.
-	{Trigger: "K", Action: "show_diagnostics"},
-	// "I" ("info") is hover's own binding, kept separate from "K" rather
-	// than merged into it — they're different LSP requests with different
-	// popup content decisions, so a dedicated key keeps both independently
-	// testable.
-	{Trigger: "I", Action: "show_hover"},
-	// The three git gestures, all shifted letters for the same
-	// works-on-any-layout reason as "K"/"I", and all free of vim's own
-	// meanings for those keys (nib binds no operator-pending "d", and
-	// implements neither H/M/L screen motions nor "B").
-	{Trigger: "B", Action: "show_blame"},
-	{Trigger: "D", Action: "show_file_diff"},
-	{Trigger: "H", Action: "show_line_diff"},
-	// "L" ("log") lists the commits that touched this file — free for the
-	// same reason H is: nib implements none of vim's H/M/L screen motions.
-	{Trigger: "L", Action: "show_file_history"},
-	// "F" ("format") reformats the whole document via the language server.
-	{Trigger: "F", Action: "format_document"},
-	// "R" ("rename") opens the rename-symbol prompt via the language
-	// server — same shifted-letter convention as B/D/H/I/K above. Not "r"
-	// (already vim's replace-char) or Ctrl+r (globally "open_replace").
-	{Trigger: "R", Action: "rename_symbol"},
-	// "A" ("actions") lists code actions/fixes available at the cursor.
-	{Trigger: "A", Action: "trigger_code_action"},
-	{Trigger: "/", Action: "search_mode"},
-	{Trigger: "n", Action: "search_next"},
-	{Trigger: "N", Action: "search_prev"},
-}
+	// cmd/nib/main.go) so it works regardless of which pane has focus.
+	{ID: "trigger_autocomplete", Keys: []string{"Ctrl+Space"}, Desc: "Trigger autocomplete (Insert mode)"},
+	// Not Ctrl+Shift+Space (the more VSCode-familiar chord): Ctrl+Shift+<key>
+	// is indistinguishable from plain Ctrl+<key> on any terminal not
+	// reporting the kitty keyboard protocol's full modifier state, and
+	// would silently fire autocomplete instead. Reachable from both Normal
+	// and Insert mode — see handleInsertKey.
+	{ID: "trigger_signature_help", Keys: []string{"Ctrl+a"}, Desc: "Show signature help for the enclosing call", InPopup: true},
+	// "K" is vim's own "look up what's under the cursor" — and being a
+	// letter, it works on any keyboard layout. "I" ("info") is hover's,
+	// kept separate: they're different LSP requests with different popups.
+	{ID: "show_diagnostics", Keys: []string{"K"}, Desc: "Show error/warning details for this line", InPopup: true},
+	{ID: "show_hover", Keys: []string{"I"}, Desc: "Show hover info (type/doc) for the symbol under the cursor", InPopup: true},
+	// "F" ("format"), "R" ("rename"; not "r", vim's replace-char, or
+	// Ctrl+r, globally "open_replace"), "A" ("actions"): the same
+	// shifted-letter convention as K/I.
+	{ID: "format_document", Keys: []string{"F"}, Desc: "Format the document via the language server", InPopup: true},
+	{ID: "rename_symbol", Keys: []string{"R"}, Desc: "Rename symbol via the language server: type the new name, Enter to apply", InPopup: true},
+	{ID: "trigger_code_action", Keys: []string{"A"}, Desc: "Show code actions (fixes/refactors) at the cursor", InPopup: true},
+	// The git gestures, all shifted letters for the same works-on-any-
+	// layout reason as "K"/"I", and all free of vim's own meanings for
+	// those keys (nib implements none of vim's H/M/L screen motions, nor
+	// "B"). "L" is "log".
+	{ID: "show_blame", Keys: []string{"B"}, Desc: "Blame: who last changed this line", Section: "Editor — git", InPopup: true},
+	{ID: "show_line_diff", Keys: []string{"H"}, Desc: "Show the diff hunk this line belongs to", Section: "Editor — git", InPopup: true},
+	{ID: "show_file_diff", Keys: []string{"D"}, Desc: "Show this file's full diff against HEAD", Section: "Editor — git", InPopup: true},
+	{ID: "show_file_history", Keys: []string{"L"}, Desc: "Show this file's git history (commits and their diffs)", Section: "Editor — git", InPopup: true},
+}}
 
 // editMode is the editor pane's modal-editing state: Normal (the pane's
 // original, navigation-only behavior), Insert (typed text goes into the
 // buffer), or Command (a minimal, digit-only ":<line>" prompt — see
 // handleCommandKey). Mirrors vim's Normal/Insert/command-line split,
-// matching the hjkl/g/G navigation scheme DefaultKeybinds already uses.
+// matching the hjkl/g/G navigation scheme Scope already uses.
 type editMode int
 
 const (
@@ -670,7 +635,7 @@ type languageServer interface {
 // NewView creates an empty editor pane with no tabs open; call Open to
 // load a file into it.
 func NewView() *View {
-	return &View{keymap: DefaultKeybinds.Resolve(nil), store: NewBufferStore(), register: NewRegister()}
+	return &View{keymap: Scope.Actions.Resolve(nil), store: NewBufferStore(), register: NewRegister()}
 }
 
 // SetBufferStore replaces this pane's BufferStore, so it shares loaded
@@ -744,9 +709,9 @@ func (v *View) SetLSPManager(m *lsp.Manager) {
 }
 
 // SetKeymap merges the user config's "editor" scope overrides on top of
-// DefaultKeybinds, replacing the pane's active keymap.
+// Scope's default keys, replacing the pane's active keymap.
 func (v *View) SetKeymap(overrides map[string]string) {
-	v.keymap = DefaultKeybinds.Resolve(overrides)
+	v.keymap = Scope.Actions.Resolve(overrides)
 }
 
 // SetTabModeDefaults installs the language->indent-style config Open
@@ -2624,6 +2589,26 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return false
 	}
 
+	if action == "normal_mode" {
+		// Esc in Normal mode has no mode to leave, but it does dismiss a
+		// selection. Deliberately only consumed when there IS one: an Esc
+		// with nothing to dismiss has always bubbled to the global keymap,
+		// and swallowing it here would quietly break that.
+		if t == nil || !t.hasSel {
+			return false
+		}
+		t.clearSelection()
+		return true
+	}
+	return v.runAction(action, count)
+}
+
+// runAction runs one of Scope's actions by ID, count times where that
+// means something (movements). It is the one place an editor action is
+// carried out, whether it came from a key (HandleKey, after counts and
+// operators are dealt with) or from the action popup (ExecuteAction).
+// Reports whether action was one this pane could run just now.
+func (v *View) runAction(action string, count int) bool {
 	switch action {
 	case "next_tab":
 		v.NextTab()
@@ -2666,21 +2651,12 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return true
 	}
 
+	t := v.activeTab()
 	if t == nil {
 		return false
 	}
 
 	switch action {
-	case "normal_mode":
-		// Esc in Normal mode has no mode to leave, but it does dismiss a
-		// selection. Deliberately only consumed when there IS one: an Esc
-		// with nothing to dismiss has always bubbled to the global keymap,
-		// and swallowing it here would quietly break that.
-		if !t.hasSel {
-			return false
-		}
-		t.clearSelection()
-		return true
 	case "undo":
 		v.undo(t)
 	case "redo":
@@ -2738,7 +2714,7 @@ func (v *View) HandleKey(k layout.Key) bool {
 		if v.OnShowFileHistory != nil && t.path != "" {
 			v.OnShowFileHistory(t.path)
 		}
-	// Alt+Left/Right's own action names (see DefaultKeybinds) route to
+	// Alt+Left/Right's own action names (see Scope) route to
 	// applyMovement under their OWN name too — this indirection (rather
 	// than binding Alt+Left/Right to word_backward/word_forward directly)
 	// is what keeps "b"/"w" themselves out of handleInsertKey's dispatch,

@@ -32,11 +32,10 @@ func TestNormalizeCanonicalizesModifiersAndNamedKeys(t *testing.T) {
 	}
 }
 
-func TestDefaultsResolveMergesAndOverrides(t *testing.T) {
-	defaults := Defaults{
-		{Trigger: "j", Action: "move_down"},
-		{Trigger: "Down", Action: "move_down"},
-		{Trigger: "k", Action: "move_up"},
+func TestActionsResolveMergesAndOverrides(t *testing.T) {
+	defaults := Actions{
+		{ID: "move_down", Keys: []string{"j", "Down"}},
+		{ID: "move_up", Keys: []string{"k"}},
 	}
 	merged := defaults.Resolve(map[string]string{
 		"j":      "custom_action", // overrides a default trigger

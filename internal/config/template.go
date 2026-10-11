@@ -9,14 +9,6 @@ import (
 	"github.com/bricejulia/nib/internal/theme"
 )
 
-// Scope is one section of the generated template config file: a scope
-// name (as used in "keybind = <scope>:<trigger> = <action>") paired with
-// that scope's built-in keybindings.
-type Scope struct {
-	Name     string
-	Defaults Defaults
-}
-
 // Template renders a starting-point config file: every default
 // keybinding, commented out, grouped by scope, so the user can see
 // exactly what's bindable and uncomment/edit a line to override it, plus
@@ -186,12 +178,17 @@ func Template(scopes []Scope) string {
 		b.WriteString("\n# --- ")
 		b.WriteString(s.Name)
 		b.WriteString(" ---\n")
-		for _, bind := range s.Defaults {
-			prefix := s.Name + ":"
-			if s.Name == "global" {
-				prefix = ""
+		prefix := s.Name + ":"
+		if s.Name == "global" {
+			prefix = ""
+		}
+		for _, act := range s.Actions {
+			// The description on its own line, so uncommenting a keybind
+			// line below it leaves nothing trailing on that line.
+			fmt.Fprintf(&b, "# %s\n", act.Desc)
+			for _, key := range act.Keys {
+				fmt.Fprintf(&b, "# keybind = %s%s = %s\n", prefix, key, act.ID)
 			}
-			fmt.Fprintf(&b, "# keybind = %s%s = %s\n", prefix, bind.Trigger, bind.Action)
 		}
 	}
 

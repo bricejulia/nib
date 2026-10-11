@@ -17,21 +17,19 @@ import (
 	"github.com/bricejulia/nib/internal/theme"
 )
 
-// DefaultKeybinds are the diff pane's built-in keybindings, overridable via
+// Scope is the diff pane's actions and their default keys, overridable via
 // the user config's "diff" scope (see internal/config).
-var DefaultKeybinds = config.Defaults{
-	{Trigger: "Esc", Action: "close"},
-	{Trigger: "Up", Action: "scroll_up"},
-	{Trigger: "k", Action: "scroll_up"},
-	{Trigger: "Down", Action: "scroll_down"},
-	{Trigger: "j", Action: "scroll_down"},
-	{Trigger: "PageUp", Action: "page_up"},
-	{Trigger: "PageDown", Action: "page_down"},
-	{Trigger: "Home", Action: "top"},
-	{Trigger: "End", Action: "bottom"},
-	{Trigger: "Right", Action: "peek_right"},
-	{Trigger: "Left", Action: "peek_left"},
-}
+var Scope = config.Scope{Name: "diff", Title: "Diff", Actions: config.Actions{
+	{ID: "close", Keys: []string{"Esc"}, Desc: "Close"},
+	{ID: "scroll_up", Keys: []string{"Up", "k"}, Desc: "Scroll up"},
+	{ID: "scroll_down", Keys: []string{"Down", "j"}, Desc: "Scroll down"},
+	{ID: "page_up", Keys: []string{"PageUp"}, Desc: "Scroll up a page"},
+	{ID: "page_down", Keys: []string{"PageDown"}, Desc: "Scroll down a page"},
+	{ID: "top", Keys: []string{"Home"}, Desc: "First line"},
+	{ID: "bottom", Keys: []string{"End"}, Desc: "Last line"},
+	{ID: "peek_right", Keys: []string{"Right"}, Desc: "Peek further along a long line"},
+	{ID: "peek_left", Keys: []string{"Left"}, Desc: "Peek back along a long line"},
+}}
 
 // hScrollStep is how many display columns Left/Right shift the view, for
 // reading past the right edge of a long line — the same "peek" gesture, and
@@ -63,13 +61,13 @@ type View struct {
 
 // New creates an empty diff view; call Show before displaying it.
 func New() *View {
-	return &View{keymap: DefaultKeybinds.Resolve(nil)}
+	return &View{keymap: Scope.Actions.Resolve(nil)}
 }
 
 // SetKeymap merges the user config's "diff" scope overrides on top of
-// DefaultKeybinds, replacing the pane's active keymap.
+// Scope, replacing the pane's active keymap.
 func (v *View) SetKeymap(overrides map[string]string) {
-	v.keymap = DefaultKeybinds.Resolve(overrides)
+	v.keymap = Scope.Actions.Resolve(overrides)
 }
 
 // Show replaces the displayed diff and scrolls back to the top. title names

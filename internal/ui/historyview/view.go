@@ -26,29 +26,25 @@ import (
 	"github.com/bricejulia/nib/internal/ui/diffview"
 )
 
-// DefaultKeybinds are the history overlay's built-in keybindings,
+// Scope is the history overlay's actions and their default keys,
 // overridable via the user config's "history" scope (see internal/config).
 //
 // The plain movement keys belong to the commit list, since stepping
 // through commits is what this overlay is for; the preview gets the paging
 // keys, plus J/K for a line at a time.
-var DefaultKeybinds = config.Defaults{
-	{Trigger: "Esc", Action: "close"},
-	{Trigger: "Down", Action: "next_commit"},
-	{Trigger: "j", Action: "next_commit"},
-	{Trigger: "Up", Action: "prev_commit"},
-	{Trigger: "k", Action: "prev_commit"},
-	{Trigger: "Home", Action: "first_commit"},
-	{Trigger: "End", Action: "last_commit"},
-	{Trigger: "J", Action: "scroll_down"},
-	{Trigger: "K", Action: "scroll_up"},
-	{Trigger: "PageDown", Action: "page_down"},
-	{Trigger: "Ctrl+d", Action: "page_down"},
-	{Trigger: "PageUp", Action: "page_up"},
-	{Trigger: "Ctrl+u", Action: "page_up"},
-	{Trigger: "Right", Action: "peek_right"},
-	{Trigger: "Left", Action: "peek_left"},
-}
+var Scope = config.Scope{Name: "history", Title: "File History", Actions: config.Actions{
+	{ID: "close", Keys: []string{"Esc"}, Desc: "Close"},
+	{ID: "next_commit", Keys: []string{"Down", "j"}, Desc: "Next (older) commit"},
+	{ID: "prev_commit", Keys: []string{"Up", "k"}, Desc: "Previous (newer) commit"},
+	{ID: "first_commit", Keys: []string{"Home"}, Desc: "Newest commit"},
+	{ID: "last_commit", Keys: []string{"End"}, Desc: "Oldest commit"},
+	{ID: "scroll_down", Keys: []string{"J"}, Desc: "Scroll the diff down"},
+	{ID: "scroll_up", Keys: []string{"K"}, Desc: "Scroll the diff up"},
+	{ID: "page_down", Keys: []string{"PageDown", "Ctrl+d"}, Desc: "Scroll the diff down a page"},
+	{ID: "page_up", Keys: []string{"PageUp", "Ctrl+u"}, Desc: "Scroll the diff up a page"},
+	{ID: "peek_right", Keys: []string{"Right"}, Desc: "Peek further along a long line"},
+	{ID: "peek_left", Keys: []string{"Left"}, Desc: "Peek back along a long line"},
+}}
 
 // Entry is one row of the list. ID is what identifies it in the row's
 // first column — a short commit hash, or a placeholder like "working" for
@@ -96,13 +92,13 @@ type View struct {
 func New() *View {
 	p := diffview.New()
 	p.EmptyText = "(no changes to this file in this commit)"
-	return &View{preview: p, keymap: DefaultKeybinds.Resolve(nil)}
+	return &View{preview: p, keymap: Scope.Actions.Resolve(nil)}
 }
 
 // SetKeymap merges the user config's "history" scope overrides on top of
-// DefaultKeybinds, replacing the overlay's active keymap.
+// Scope, replacing the overlay's active keymap.
 func (v *View) SetKeymap(overrides map[string]string) {
-	v.keymap = DefaultKeybinds.Resolve(overrides)
+	v.keymap = Scope.Actions.Resolve(overrides)
 }
 
 // Open replaces the list with entries, newest first, selects the first

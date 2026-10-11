@@ -24,14 +24,14 @@ import (
 	"github.com/bricejulia/nib/internal/lsp"
 )
 
-// DefaultKeybinds are this popup's built-in keybindings, overridable via
+// Scope are this popup's built-in keybindings, overridable via
 // the user config's "references" scope (see internal/config).
-var DefaultKeybinds = config.Defaults{
-	{Trigger: "Esc", Action: "close"},
-	{Trigger: "Down", Action: "move_down"},
-	{Trigger: "Up", Action: "move_up"},
-	{Trigger: "Enter", Action: "select"},
-}
+var Scope = config.Scope{Name: "references", Title: "References", Actions: config.Actions{
+	{ID: "close", Keys: []string{"Esc"}, Desc: "Close"},
+	{ID: "move_down", Keys: []string{"Down"}, Desc: "Move selection down"},
+	{ID: "move_up", Keys: []string{"Up"}, Desc: "Move selection up"},
+	{ID: "select", Keys: []string{"Enter"}, Desc: "Open the selected reference"},
+}}
 
 // View is the references popup's content: a fixed header row plus a
 // selectable, scrollable list of locations.
@@ -56,13 +56,13 @@ type View struct {
 
 // New creates an empty references popup; call Open before showing it.
 func New(root string) *View {
-	return &View{root: root, keymap: DefaultKeybinds.Resolve(nil)}
+	return &View{root: root, keymap: Scope.Actions.Resolve(nil)}
 }
 
 // SetKeymap merges the user config's "references" scope overrides on top
-// of DefaultKeybinds, replacing the popup's active keymap.
+// of Scope, replacing the popup's active keymap.
 func (v *View) SetKeymap(overrides map[string]string) {
-	v.keymap = DefaultKeybinds.Resolve(overrides)
+	v.keymap = Scope.Actions.Resolve(overrides)
 }
 
 func (v *View) Title() string { return "References" }

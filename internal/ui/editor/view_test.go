@@ -2510,7 +2510,7 @@ func TestNormalModeAltRightStopsAtEndOfLine(t *testing.T) {
 }
 
 // TestNormalModeAltBFAliasesWork confirms the Ghostty/Terminal.app
-// compatibility aliases (see DefaultKeybinds) also reach Normal mode, not
+// compatibility aliases (see Scope) also reach Normal mode, not
 // just Insert mode.
 func TestNormalModeAltBFAliasesWork(t *testing.T) {
 	v := NewView()

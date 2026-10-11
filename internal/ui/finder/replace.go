@@ -12,9 +12,9 @@ import (
 	"github.com/bricejulia/nib/internal/ui/textfield"
 )
 
-// ReplaceDefaultKeybinds are the replace-in-path overlay's built-in
-// keybindings, overridable via the user config's "replace" scope (see
-// internal/config). Deliberately narrow, like finder's own DefaultKeybinds:
+// ReplaceScope is the replace-in-path overlay's actions and their
+// default keys, overridable via the user config's "replace" scope (see
+// internal/config). Deliberately narrow, like finder's own Scope:
 // most of these only ever apply once focus is on the results list (see
 // ReplaceView.HandleKey) — while typing into the Find/Replace/Scope
 // fields, every character stays typeable the same way filetree's in-pane
@@ -23,16 +23,16 @@ import (
 // is listed here. "focus_scope" is the one exception: like Esc/Tab it
 // applies regardless of which field currently has focus (see HandleKey),
 // but unlike them it's a genuine, remappable action.
-var ReplaceDefaultKeybinds = config.Defaults{
-	{Trigger: "Down", Action: "move_down"},
-	{Trigger: "Up", Action: "move_up"},
-	{Trigger: "Space", Action: "toggle"},
-	{Trigger: "Enter", Action: "replace_current"},
-	{Trigger: "a", Action: "replace_all"},
-	// See finder.DefaultKeybinds' own "focus_scope" binding for why Ctrl+k
+var ReplaceScope = config.Scope{Name: "replace", Title: "Find & Replace", Actions: config.Actions{
+	{ID: "move_down", Keys: []string{"Down"}, Desc: "Move selection down (results list)"},
+	{ID: "move_up", Keys: []string{"Up"}, Desc: "Move selection up (results list)"},
+	{ID: "toggle", Keys: []string{"Space"}, Desc: "Toggle the occurrence, or a whole file's occurrences"},
+	{ID: "replace_current", Keys: []string{"Enter"}, Desc: "Replace just this occurrence (results list)"},
+	{ID: "replace_all", Keys: []string{"a"}, Desc: "Replace every checked occurrence"},
+	// See finder.Scope' own "focus_scope" binding for why Ctrl+k
 	// rather than Ctrl+g or Ctrl+l.
-	{Trigger: "Ctrl+k", Action: "focus_scope"},
-}
+	{ID: "focus_scope", Keys: []string{"Ctrl+k"}, Desc: "Edit the folder scope (Enter returns to Find)"},
+}}
 
 // replaceHeaderRows is how many rows sit above the scrollable results
 // list: the Find field, the Replace field, the folder-scope field, and a
@@ -126,13 +126,13 @@ type ReplaceView struct {
 // NewReplaceView creates a replace-in-path view rooted at absPath. Call
 // Open each time it's about to be shown.
 func NewReplaceView(absPath string) *ReplaceView {
-	return &ReplaceView{root: absPath, keymap: ReplaceDefaultKeybinds.Resolve(nil)}
+	return &ReplaceView{root: absPath, keymap: ReplaceScope.Actions.Resolve(nil)}
 }
 
 // SetKeymap merges the user config's "replace" scope overrides on top of
-// ReplaceDefaultKeybinds, replacing the pane's active keymap.
+// ReplaceScope, replacing the pane's active keymap.
 func (v *ReplaceView) SetKeymap(overrides map[string]string) {
-	v.keymap = ReplaceDefaultKeybinds.Resolve(overrides)
+	v.keymap = ReplaceScope.Actions.Resolve(overrides)
 }
 
 func (v *ReplaceView) Title() string {
@@ -379,7 +379,7 @@ func (v *ReplaceView) fireReplace(occs []editor.Occurrence) {
 // Esc and Tab are structural to this pane (close / switch field) rather
 // than remappable actions — the same trade filetree's in-pane prompt makes
 // for Esc — so they're intercepted before v.keymap is ever consulted, and
-// aren't listed in ReplaceDefaultKeybinds. Enter is likewise structural
+// aren't listed in ReplaceScope. Enter is likewise structural
 // while focus is off the results list (advance to the next field, same as
 // Tab). "focus_scope" is checked next, before the focus-specific branches,
 // since — like Esc/Tab — it needs to apply regardless of which field
