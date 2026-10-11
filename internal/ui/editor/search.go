@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/bricejulia/nib/internal/debuglog"
@@ -164,11 +165,11 @@ func inAnyRange(ranges []runeRange, i int) bool {
 	return false
 }
 
-// enterSearchMode opens the "/" prompt, remembering where the cursor was so
-// cancelling can put it back. A no-op — logged, not silent — on a buffer
-// over maxLiveSearchBytes: see that constant's doc comment for why search
-// specifically, unlike rendering/navigation, isn't worth trying to bound
-// instead of disabling outright.
+// enterSearchMode opens the "/" prompt, remembering where the cursor and
+// view were so cancelling can put them back. A no-op — logged, not silent —
+// on a buffer over maxLiveSearchBytes: see that constant's doc comment for
+// why search specifically, unlike rendering/navigation, isn't worth trying
+// to bound instead of disabling outright.
 func (v *View) enterSearchMode() {
 	t := v.activeTab()
 	if t == nil || t.buf == nil {
@@ -181,20 +182,21 @@ func (v *View) enterSearchMode() {
 	}
 	v.mode = modeSearch
 	v.searchField = textfield.TextField{}
-	v.searchOriginLn, v.searchOriginCol = t.cursorLn, t.cursorCol
+	v.searchOriginLn, v.searchOriginCol, v.searchOriginTop = t.cursorLn, t.cursorCol, t.topLine
+	v.recomputeSearchMatches()
 }
 
 // handleSearchKey handles a key while the "/" prompt is open: Esc cancels
-// (restoring the cursor and clearing highlights), Enter commits and jumps to
-// the first match after the origin, and everything else — Backspace, Left/
-// Right/Home/End (and their Alt-modified word-nav/word-delete variants), and
-// printable text — is delegated to the shared TextField primitive, the same
-// as finder/help/actionpopup's own query fields.
+// (see cancelSearch), Enter commits (see commitSearch), and everything else
+// — Backspace, Left/Right/Home/End (and their Alt-modified word-nav/
+// word-delete variants), and printable text — is delegated to the shared
+// TextField primitive, the same as finder/help/actionpopup's own query
+// fields.
 //
-// Matches are re-highlighted whenever the typed pattern actually changes so
-// you can see what you're converging on, but the cursor doesn't move until
-// Enter — vim's jump-as-you-type "incsearch" is a deferred nicety, and not
-// moving means cancelling is genuinely lossless.
+// Whenever the typed pattern actually changes, its matches are highlighted
+// and the cursor jumps to the first one after where "/" was pressed —
+// vim's "incsearch" — or back to that spot when nothing matches. Nothing
+// is pushed onto the jump list until Enter.
 func (v *View) handleSearchKey(k layout.Key) bool {
 	switch v.keymap[k.String()] {
 	case "normal_mode": // Esc
@@ -208,64 +210,138 @@ func (v *View) handleSearchKey(k layout.Key) bool {
 	before := v.searchField.String()
 	consumed := v.searchField.HandleKey(k)
 	if consumed && v.searchField.String() != before {
-		v.refreshSearchHighlights()
+		v.searchTextChanged()
 	}
 	return consumed
 }
 
-// refreshSearchHighlights recomputes the highlighted matches for the
-// pattern typed so far, without moving the cursor.
-func (v *View) refreshSearchHighlights() {
+// searchTextChanged re-highlights for the pattern typed (or pasted) so far
+// and moves the cursor to its first match after the origin, or back to the
+// origin when nothing matches.
+func (v *View) searchTextChanged() {
+	v.recomputeSearchMatches()
+	v.restoreSearchOrigin()
+	if len(v.searchMatches) > 0 {
+		i, _ := v.matchIndexFromOrigin()
+		v.placeCursorAtMatch(i)
+	}
+}
+
+// searchText is the pattern whose matches are shown: the one being typed
+// while the "/" prompt is open, the committed one otherwise.
+func (v *View) searchText() string {
+	if v.mode == modeSearch {
+		return v.searchField.String()
+	}
+	return v.searchPattern
+}
+
+// recomputeSearchMatches finds searchText's matches in the active tab and
+// records which tab and buffer revision they describe, so
+// syncSearchMatches can tell when they've gone stale.
+func (v *View) recomputeSearchMatches() {
+	t := v.activeTab()
+	if t == nil || t.buf == nil || len(t.buf.Source) > maxLiveSearchBytes {
+		v.searchMatches, v.searchFor = nil, nil
+		return
+	}
+	v.searchMatches = findMatches(t.buf, v.searchText())
+	v.searchFor, v.searchForRev = t, t.buf.rev
+}
+
+// syncSearchMatches recomputes the matches if they were computed for
+// another tab (a tab switch, or a file opened) or an older revision of the
+// buffer (an edit, possibly from another pane sharing it). Cheap to call
+// every render: a no-op unless something changed.
+func (v *View) syncSearchMatches() {
+	t := v.activeTab()
+	if t == nil || t.buf == nil {
+		v.searchMatches, v.searchFor = nil, nil
+		return
+	}
+	if t != v.searchFor || t.buf.rev != v.searchForRev {
+		v.recomputeSearchMatches()
+	}
+}
+
+// visibleSearchMatches is what the body draws highlighted: nothing once
+// Esc has hidden them (see HandleKey's "normal_mode" case), until the next
+// search or n/N brings them back.
+func (v *View) visibleSearchMatches() []searchMatch {
+	if v.searchHidden && v.mode != modeSearch {
+		return nil
+	}
+	return v.searchMatches
+}
+
+// restoreSearchOrigin puts the cursor and scroll back where they were when
+// "/" was pressed.
+func (v *View) restoreSearchOrigin() {
 	t := v.activeTab()
 	if t == nil {
 		return
 	}
-	v.searchMatches = findMatches(t.buf, v.searchField.String())
+	t.cursorLn, t.cursorCol, t.topLine = v.searchOriginLn, v.searchOriginCol, v.searchOriginTop
+	v.clampToLastChar(t)
 }
 
-// cancelSearch abandons the prompt, restoring the cursor and clearing the
-// highlights — so an abandoned search leaves no trace.
+// cancelSearch abandons the prompt: the cursor and view go back to where
+// they were, and the previously committed search (if any) is shown again,
+// exactly as it was — n/N keep repeating it.
 func (v *View) cancelSearch() {
 	v.mode = modeNormal
 	v.searchField = textfield.TextField{}
-	v.searchMatches = nil
-	if t := v.activeTab(); t != nil {
-		t.cursorLn, t.cursorCol = v.searchOriginLn, v.searchOriginCol
-		v.clampToLastChar(t)
-	}
+	v.restoreSearchOrigin()
+	v.recomputeSearchMatches()
 }
 
-// commitSearch accepts the typed pattern as the active search, keeps its
-// highlights up, and jumps to the first match at or after where the prompt
-// was opened. The pattern is remembered for n/N.
+// commitSearch accepts the typed pattern as the active search, shows its
+// highlights, and jumps to the first match after where the prompt was
+// opened. An empty pattern repeats the last search, as in vim. The pattern
+// is remembered for n/N.
 func (v *View) commitSearch() {
-	v.mode = modeNormal
 	pattern := v.searchField.String()
+	v.mode = modeNormal
 	v.searchField = textfield.TextField{}
 	if pattern == "" {
-		v.searchMatches = nil
+		pattern = v.searchPattern
+	}
+	// Back to the origin first, undoing the live jump, so the jump below
+	// records where the search started, for Ctrl+b.
+	v.restoreSearchOrigin()
+	if pattern == "" {
+		v.recomputeSearchMatches()
 		return
 	}
 
 	v.searchPattern = pattern
-	v.refreshSearchMatchesForPattern()
+	v.searchHidden = false
+	v.recomputeSearchMatches()
 	if len(v.searchMatches) == 0 {
-		debuglog.Warn("search: no match for %q", pattern)
+		v.noMatch()
 		return
 	}
-	v.jumpToMatch(v.matchIndexFrom(v.searchOriginLn, v.searchOriginCol, true))
+	i, wrapped := v.matchIndexFromOrigin()
+	v.jumpToMatch(i)
+	if wrapped {
+		v.searchNotice = "Search wrapped"
+	}
 }
 
-// refreshSearchMatchesForPattern recomputes matches for the committed
-// pattern — called after a commit and whenever n/N runs, so matches stay
-// correct after the buffer has been edited.
-func (v *View) refreshSearchMatchesForPattern() {
+// noMatch reports that searchPattern matches nothing in this file.
+func (v *View) noMatch() {
+	v.searchNotice = "No match: " + v.searchPattern
+	debuglog.Warn("search: no match for %q", v.searchPattern)
+}
+
+// matchIndexFromOrigin is matchIndexFrom relative to where "/" was pressed.
+func (v *View) matchIndexFromOrigin() (int, bool) {
 	t := v.activeTab()
-	if t == nil {
-		v.searchMatches = nil
-		return
+	raw := v.searchOriginCol
+	if t != nil && t.buf != nil && v.searchOriginLn < len(t.buf.Lines) {
+		raw = rawIndexForExpandedCol(t.buf.Lines[v.searchOriginLn], v.searchOriginCol, tabWidthOf(t))
 	}
-	v.searchMatches = findMatches(t.buf, v.searchPattern)
+	return v.matchIndexFrom(v.searchOriginLn, raw, true)
 }
 
 // searchNext moves to the next match after the cursor, wrapping at the end
@@ -293,54 +369,96 @@ func (v *View) stepSearch(forward bool) {
 			t.path, len(t.buf.Source), maxLiveSearchBytes)
 		return
 	}
+	v.searchHidden = false
 	// Recompute rather than trusting a cached set: the buffer may have been
 	// edited (or changed under us by another pane) since the last search.
-	v.refreshSearchMatchesForPattern()
+	v.recomputeSearchMatches()
 	if len(v.searchMatches) == 0 {
-		debuglog.Warn("search: no match for %q", v.searchPattern)
+		v.noMatch()
 		return
 	}
 	raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
-	v.jumpToMatch(v.matchIndexFrom(t.cursorLn, raw, forward))
+	i, wrapped := v.matchIndexFrom(t.cursorLn, raw, forward)
+	v.jumpToMatch(i)
+	if wrapped {
+		v.searchNotice = "Search wrapped"
+	}
 }
 
 // matchIndexFrom picks which match to jump to relative to (ln, rawCol),
 // wrapping around the ends of the file — vim's behaviour, and what makes
-// n/N usable without thinking about where you are.
-func (v *View) matchIndexFrom(ln, rawCol int, forward bool) int {
+// n/N usable without thinking about where you are. wrapped reports that it
+// had to.
+func (v *View) matchIndexFrom(ln, rawCol int, forward bool) (i int, wrapped bool) {
 	if forward {
 		for i, m := range v.searchMatches {
 			if m.ln > ln || (m.ln == ln && m.start > rawCol) {
-				return i
+				return i, false
 			}
 		}
-		return 0 // wrapped past the end
+		return 0, true
 	}
 	for i := len(v.searchMatches) - 1; i >= 0; i-- {
 		m := v.searchMatches[i]
 		if m.ln < ln || (m.ln == ln && m.start < rawCol) {
-			return i
+			return i, false
 		}
 	}
-	return len(v.searchMatches) - 1 // wrapped past the start
+	return len(v.searchMatches) - 1, true
 }
 
 // jumpToMatch moves the cursor to the match at index i, pushing the
 // pre-move position onto the jump stack first (see pushJump) — the single
 // choke point both commitSearch (Enter) and searchNext/searchPrev (n/N)
 // jump through, so this alone gives Ctrl+b coverage for both without
-// duplicating the push at each call site. Safe to push unconditionally
-// here specifically because incremental typing of the pattern
-// (refreshSearchHighlights) never calls this function — only an actual
-// cursor-moving commit or step does.
+// duplicating the push at each call site. The live jump while typing uses
+// placeCursorAtMatch instead, so it pushes nothing.
 func (v *View) jumpToMatch(i int) {
 	t := v.activeTab()
 	if t == nil || i < 0 || i >= len(v.searchMatches) {
 		return
 	}
 	v.pushJump(t)
+	v.placeCursorAtMatch(i)
+}
+
+// placeCursorAtMatch moves the cursor to the start of match i.
+func (v *View) placeCursorAtMatch(i int) {
+	t := v.activeTab()
+	if t == nil || i < 0 || i >= len(v.searchMatches) {
+		return
+	}
 	m := v.searchMatches[i]
 	t.cursorLn = m.ln
 	t.cursorCol = expandedColForRawIndexIn(t.buf, m.ln, m.start, tabWidthOf(t))
 	v.clampToLastChar(t)
+}
+
+// searchStatus is the status-bar summary of the active search: the
+// pattern and which match the cursor is on out of how many ("/foo [3/12]"),
+// or just how many when it isn't on one — empty when no highlights are
+// showing. Followed by searchNotice, if any.
+func (v *View) searchStatus() string {
+	var out string
+	if t := v.activeTab(); t != nil && t.buf != nil && v.searchPattern != "" && !v.searchHidden && len(v.searchMatches) > 0 {
+		raw := 0
+		if t.cursorLn < len(t.buf.Lines) {
+			raw = rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
+		}
+		count := fmt.Sprintf("[%d]", len(v.searchMatches))
+		for i, m := range v.searchMatches {
+			if m.ln == t.cursorLn && raw >= m.start && raw < m.end {
+				count = fmt.Sprintf("[%d/%d]", i+1, len(v.searchMatches))
+				break
+			}
+		}
+		out = "/" + v.searchPattern + " " + count
+	}
+	if v.searchNotice != "" {
+		if out != "" {
+			out += "  "
+		}
+		out += v.searchNotice
+	}
+	return out
 }

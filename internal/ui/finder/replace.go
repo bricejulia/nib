@@ -35,7 +35,7 @@ var ReplaceScope = config.Scope{Name: "replace", Title: "Find & Replace", Action
 }}
 
 // replaceHeaderRows is how many rows sit above the scrollable results
-// list: the Find field, the Replace field, the folder-scope field, and a
+// list: the Find field, the Replace field, the scope field, and a
 // status/hint line.
 const replaceHeaderRows = 4
 
@@ -142,7 +142,7 @@ func (v *ReplaceView) Title() string {
 	return "Find & Replace in Path"
 }
 
-// SetScope sets the folder-scope field's starting text — called from
+// SetScope sets the scope field's starting text — called from
 // finder.View (toggleMode, openReplace) right before Open, so a scope set
 // in file/content mode, or pre-filled via OpenScoped/OpenReplaceScoped,
 // carries forward into replace mode as this view's own, independently
@@ -157,6 +157,14 @@ func (v *ReplaceView) SetScope(scope string) {
 // field is editable for the life of the popup.
 func (v *ReplaceView) currentScope() string {
 	return normalizeScope(v.scopeField.String())
+}
+
+// SetQuery pre-fills the Find field with q, caret at the end, and starts
+// the search for it — called right after Open, e.g. with the word under
+// the editor's cursor (see View.OpenReplaceWithQueryScoped).
+func (v *ReplaceView) SetQuery(q string) {
+	v.find = textfield.New(q)
+	v.refilter()
 }
 
 // Open resets the view to a blank query, ready to be shown.
