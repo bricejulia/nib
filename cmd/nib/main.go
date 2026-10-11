@@ -85,7 +85,7 @@ const mainShortcutsHint = "Tab Switch pane  ·  Ctrl+P Finder  ·  Ctrl+F Find r
 
 // welcomeKeybinds is the short key-binding reference shown centered in an
 // editor pane that has no tabs open (see editor.View.SetWelcomeInfo) — a
-// subset of globalDefaultKeybinds/editor.DefaultKeybinds picked for a
+// subset of globalScope/editor.Scope picked for a
 // first-time user staring at an empty pane, not the full reference (that's
 // "?"/internal/ui/help).
 var welcomeKeybinds = []editor.WelcomeKeybind{
@@ -97,52 +97,51 @@ var welcomeKeybinds = []editor.WelcomeKeybind{
 	{Key: "Ctrl+C", Desc: "Quit"},
 }
 
-// globalDefaultKeybinds are nib's built-in global keybindings,
-// overridable via the user config's "global" scope (see internal/config).
-// Each trigger's action name must have a matching entry in the actions
-// map built in run(), or the (default or user-configured) binding for it
-// is silently ignored.
-var globalDefaultKeybinds = config.Defaults{
-	{Trigger: "Ctrl+c", Action: "quit"},
-	{Trigger: "Tab", Action: "focus_next"},
-	{Trigger: "Shift+Tab", Action: "focus_prev"},
+// globalScope is nib's global actions and their default keys, overridable
+// via the user config's "global" scope (see internal/config). Each one runs
+// through the actions map built in run(); run() warns about any without a
+// handler there.
+var globalScope = config.Scope{Name: "global", Title: "Global", Actions: config.Actions{
+	{ID: "quit", Keys: []string{"Ctrl+c"}, Desc: "Quit (asks to confirm first if anything is unsaved)", InPopup: true},
+	{ID: "focus_next", Keys: []string{"Tab"}, Desc: "Focus next pane", InPopup: true},
+	{ID: "focus_prev", Keys: []string{"Shift+Tab"}, Desc: "Focus previous pane", InPopup: true},
 	// Double-tap Shift opens the same finder, but that only works on
 	// terminals reporting bare modifier keypresses (kitty keyboard
 	// protocol) — Ctrl+P is the conventional fallback everywhere else.
-	{Trigger: "Ctrl+p", Action: "open_finder"},
+	{ID: "open_finder", Keys: []string{"Ctrl+p"}, Desc: "Open file finder", InPopup: true},
 	// "Find references": opens the finder's content search, pre-filled
 	// with the word under the cursor when an editor pane happens to be
 	// focused (see openFindReferences) — global, not editor-scoped, so it
 	// also works from the file tree, unlike every other editor-only
 	// gesture (B/D/H, go-to-definition, ...). A bare Ctrl+<letter>, so it's
 	// reliably representable on any terminal.
-	{Trigger: "Ctrl+f", Action: "open_find_references"},
+	{ID: "open_find_references", Keys: []string{"Ctrl+f"}, Desc: "Find references via the language server (word under the cursor); falls back to a content search", InPopup: true},
 	// Bare Ctrl+r, not Ctrl+Shift+r: the latter is only reliably
 	// distinguishable from plain Ctrl+r on terminals reporting the kitty
 	// keyboard protocol's full modifier state, which tmux doesn't negotiate
 	// (its own "extended-keys" disambiguation defaults to off) — degrading
 	// there to indistinguishable-from-Ctrl+r, which editor's own keymap used
 	// to claim for redo. Redo now lives on Shift+U instead (see
-	// editor.DefaultKeybinds) — bare "r" is vim's own replace-char-under-
+	// editor.Scope) — bare "r" is vim's own replace-char-under-
 	// cursor gesture — specifically to free Ctrl+r up: a bare
 	// Ctrl+<letter> needs no modifier disambiguation and no macOS
 	// Option-as-Alt terminal setting, so it's reliably representable
 	// everywhere with zero configuration.
-	{Trigger: "Ctrl+r", Action: "open_replace"},
-	{Trigger: "Ctrl+d", Action: "open_debug"},
-	{Trigger: "?", Action: "open_help"},
+	{ID: "open_replace", Keys: []string{"Ctrl+r"}, Desc: "Open find & replace in path", InPopup: true},
+	{ID: "open_debug", Keys: []string{"Ctrl+d"}, Desc: "Open debug log", InPopup: true},
+	{ID: "open_help", Keys: []string{"?"}, Desc: "Open this help", InPopup: true},
 	// Not Ctrl+, (a common "settings" mnemonic elsewhere): outside the
 	// kitty keyboard protocol, a terminal has no standard control code
 	// for Ctrl held with punctuation, so it would silently never fire on
 	// most terminals/multiplexers. Ctrl+letter is always representable.
-	{Trigger: "Ctrl+o", Action: "open_config"},
+	{ID: "open_config", Keys: []string{"Ctrl+o"}, Desc: "Open config file", InPopup: true},
 	// These three are a reasonable starting point, not load-bearing —
 	// like every other binding here, they're trivially remapped via the
 	// user's own config file (Ctrl+O) if any of them collide with a given
 	// terminal's own chrome shortcuts.
-	{Trigger: "Ctrl+w", Action: "split_right"},
-	{Trigger: "Ctrl+e", Action: "split_down"},
-	{Trigger: "Ctrl+x", Action: "close_pane"},
+	{ID: "split_right", Keys: []string{"Ctrl+w"}, Desc: "Split the editor pane (side-by-side, right)", Section: "Splits", InPopup: true},
+	{ID: "split_down", Keys: []string{"Ctrl+e"}, Desc: "Split the editor pane (stacked, below)", Section: "Splits", InPopup: true},
+	{ID: "close_pane", Keys: []string{"Ctrl+x"}, Desc: "Close the editor pane", Section: "Splits", InPopup: true},
 	// Moves the active tab into the next/previous editor pane (see
 	// Workspace.MoveActiveTab). NOT Alt+]/Alt+[ (the obvious pairing with
 	// next_tab/prev_tab's own "]"/"["): outside the kitty keyboard
@@ -155,31 +154,31 @@ var globalDefaultKeybinds = config.Defaults{
 	// all. Ctrl+Alt+Right/Left (named keys, not bare printables) don't
 	// have that ambiguity, and pair with the existing Ctrl+Alt+t
 	// (toggle_tab_mode) precedent for a dual-modifier structural action.
-	{Trigger: "Ctrl+Alt+Right", Action: "move_tab_next_pane"},
-	{Trigger: "Ctrl+Alt+Left", Action: "move_tab_prev_pane"},
+	{ID: "move_tab_next_pane", Keys: []string{"Ctrl+Alt+Right"}, Desc: "Move the active tab to the next pane", Section: "Splits", InPopup: true},
+	{ID: "move_tab_prev_pane", Keys: []string{"Ctrl+Alt+Left"}, Desc: "Move the active tab to the previous pane", Section: "Splits", InPopup: true},
 	// Re-reads the config file and re-applies everything it drives —
 	// every pane's keybindings, the global keymap, the LSP server
 	// registry, and the theme — live, no restart needed. Also fires
 	// automatically when the Ctrl+O editor exits (see openConfig); this
 	// binding covers editing the file from elsewhere (another terminal,
 	// tmux pane) while nib stays open.
-	{Trigger: "Ctrl+l", Action: "reload_config"},
+	{ID: "reload_config", Keys: []string{"Ctrl+l"}, Desc: "Reload config file", InPopup: true},
 	// Reveals the active pane's file in the tree and focuses it — the
 	// fix for "I opened index.tsx from the finder, but which one?" when a
 	// project has many same-named files. Bare Ctrl+t, not a bare letter:
 	// works the same from Insert mode as everywhere else, and "tree" is
 	// free of collisions with every other pane's own keymap.
-	{Trigger: "Ctrl+t", Action: "reveal_in_tree"},
+	{ID: "reveal_in_tree", Keys: []string{"Ctrl+t"}, Desc: "Locate the active file in the file tree", InPopup: true},
 	// Bare Ctrl+j, not Ctrl+Shift+A (JetBrains' own "Find Action" mnemonic,
 	// tried first here): outside the kitty keyboard protocol, a terminal
 	// has no way to report Shift held alongside Ctrl+<letter> — Ctrl+Shift+A
 	// arrives indistinguishable from plain Ctrl+A on most terminals/
-	// multiplexers, which editor.DefaultKeybinds already binds to
+	// multiplexers, which editor.Scope already binds to
 	// "trigger_signature_help", silently stealing the key whenever an
 	// editor pane is focused. A bare Ctrl+<letter> needs no modifier
 	// disambiguation and collides with nothing else's keymap.
-	{Trigger: "Ctrl+j", Action: "open_action_popup"},
-}
+	{ID: "open_action_popup", Keys: []string{"Ctrl+j"}, Desc: "Open the action popup: search and run any command"},
+}}
 
 // rebuildAndFocus recomputes focus traversal order after the tree's
 // leaves change, then immediately refocuses id — bundled into one call so
@@ -257,19 +256,24 @@ func resolveTheme(cfg *config.Config) theme.Theme {
 	return theme.Resolve(cfg.ThemeName(), overrides)
 }
 
-// configTemplateScopes is every scope's built-in keybindings, in the
-// order the generated template config file lists them — see
-// config.EnsureFile.
-var configTemplateScopes = []config.Scope{
-	{Name: "global", Defaults: globalDefaultKeybinds},
-	{Name: "editor", Defaults: editor.DefaultKeybinds},
-	{Name: "filetree", Defaults: filetree.DefaultKeybinds},
-	{Name: "finder", Defaults: finder.DefaultKeybinds},
-	{Name: "replace", Defaults: finder.ReplaceDefaultKeybinds},
-	{Name: "debug", Defaults: debug.DefaultKeybinds},
-	{Name: "diff", Defaults: diffview.DefaultKeybinds},
-	{Name: "history", Defaults: historyview.DefaultKeybinds},
-	{Name: "help", Defaults: help.DefaultKeybinds},
+// scopes is every keymap in nib, in the order help and the generated
+// config file list them. Everything that reads keybindings goes through
+// it: help, the action popup, the config template, installing each
+// View's keymap (at startup and on reload), and the check for unknown
+// action names in the user's config.
+var scopes = []config.Scope{
+	globalScope,
+	editor.Scope,
+	filetree.Scope,
+	finder.Scope,
+	finder.ReplaceScope,
+	refview.Scope,
+	codeactionpopup.Scope,
+	diffview.Scope,
+	historyview.Scope,
+	debug.Scope,
+	actionpopup.Scope,
+	help.Scope,
 }
 
 func main() {
@@ -329,7 +333,6 @@ func run() error {
 	theme.SetActive(resolveTheme(cfg))
 
 	treeView := filetree.New(absRoot)
-	treeView.SetKeymap(cfg.Overrides("filetree"))
 	treeView.SetShowIcons(cfg.ShowIcons())
 
 	// lspManager is shared by every editor pane: one language
@@ -471,7 +474,6 @@ func run() error {
 	})
 
 	finderView := finder.New(absRoot)
-	finderView.SetKeymap(cfg.Overrides("finder"))
 	finderView.OnClose = app.CloseOverlay
 	finderView.OnSelect = func(absPath string, line int) {
 		app.FocusLeaf(ws.OpenAtLine(absPath, line))
@@ -502,7 +504,6 @@ func run() error {
 	// own — see internal/ui/refview's package doc for why that's a
 	// separate small package rather than an extension of finder.View.
 	refView := refview.New(absRoot)
-	refView.SetKeymap(cfg.Overrides("references"))
 	refView.OnClose = app.CloseOverlay
 	refView.OnSelect = func(loc lsp.Location) {
 		app.CloseOverlay()
@@ -514,12 +515,10 @@ func run() error {
 	}
 
 	debugView := debug.New()
-	debugView.SetKeymap(cfg.Overrides("debug"))
 	debugView.OnClose = app.CloseOverlay
 	openDebugLog := func() { app.ShowOverlay(debugView) }
 
-	helpView := help.New(version.Version)
-	helpView.SetKeymap(cfg.Overrides("help"))
+	helpView := help.New(version.Version, scopes)
 	helpView.OnClose = app.CloseOverlay
 	openHelp := func() { app.ShowOverlay(helpView) }
 
@@ -527,14 +526,10 @@ func run() error {
 	// filter a list of named commands, Enter to run the selected one. Its
 	// OnExecute is wired up further down, once the actions map exists
 	// (see there for why).
-	actionPopupView := actionpopup.New()
-	actionPopupView.SetKeymap(cfg.Overrides("actionpopup"))
+	actionPopupView := actionpopup.New([]config.Scope{globalScope, editor.Scope})
 	actionPopupView.OnClose = app.CloseOverlay
 	openActionPopup := func() {
-		actionPopupView.Open(
-			globalDefaultKeybinds.Resolve(cfg.Overrides("global")),
-			editor.DefaultKeybinds.Resolve(cfg.Overrides("editor")),
-		)
+		actionPopupView.Open(cfg.Overrides)
 		app.ShowOverlay(actionPopupView)
 	}
 
@@ -550,7 +545,6 @@ func run() error {
 	// server-suggested fixes/refactors for the cursor position, fed fresh
 	// per request — see internal/ui/codeactionpopup.
 	caView := codeactionpopup.New()
-	caView.SetKeymap(cfg.Overrides("codeactions"))
 	caView.OnClose = app.CloseOverlay
 	caView.OnExecute = func(action lsp.CodeAction) {
 		app.CloseOverlay()
@@ -568,7 +562,6 @@ func run() error {
 	// so it gets the same modal-overlay treatment as the finder and debug
 	// log rather than an in-pane popup — see internal/ui/diffview.
 	diffView := diffview.New()
-	diffView.SetKeymap(cfg.Overrides("diff"))
 	diffView.OnClose = app.CloseOverlay
 	openFileDiff := func(path string) {
 		title := path
@@ -594,7 +587,6 @@ func run() error {
 	// there are any, head the list as their own entry, so the history runs
 	// all the way up to what's on disk now.
 	historyView := historyview.New()
-	historyView.SetKeymap(cfg.Overrides("history"))
 	historyView.OnClose = app.CloseOverlay
 	openFileHistory := func(path string) {
 		title := path
@@ -846,7 +838,7 @@ func run() error {
 		if cfgPath == "" {
 			return
 		}
-		if err := config.EnsureFile(cfgPath, configTemplateScopes); err != nil {
+		if err := config.EnsureFile(cfgPath, scopes); err != nil {
 			debuglog.Warn("create config %s: %v", cfgPath, err)
 			return
 		}
@@ -863,7 +855,7 @@ func run() error {
 	}
 
 	// openFindReferences is Ctrl+F's global handler (see
-	// globalDefaultKeybinds): tries the language server's real references
+	// globalScope): tries the language server's real references
 	// first (opening refView on a non-empty answer), and falls back to the
 	// finder's content search — pre-filled with the word under the
 	// cursor, exactly as this always behaved — both when no server could
@@ -946,7 +938,6 @@ func run() error {
 	// Search-and-replace is finder.View's third mode (Tab-cycled, alongside
 	// filename/content search), so it shares finderView's own overlay
 	// rather than getting a separate one — see finder.View.Replace.
-	finderView.Replace().SetKeymap(cfg.Overrides("replace"))
 	finderView.Replace().OnClose = app.CloseOverlay
 	// Reuses the same async plumbing finderView.Post already relies on —
 	// see finder.ReplaceView.refilter.
@@ -1081,36 +1072,78 @@ func run() error {
 
 	// actionPopupView.OnExecute closes the popup first — restoring
 	// whichever pane was really focused underneath it, since
-	// ShowOverlay/CloseOverlay never touch the FocusManager — then
-	// dispatches the selected command: global commands run straight
-	// through the actions map just built, editor commands through
-	// editor.View.ExecuteAction on the workspace's target pane, the same
-	// "act on the editor pane you were just in" fallback
-	// openFindReferences/revealInTree above already rely on.
-	actionPopupView.OnExecute = func(id string) {
+	// ShowOverlay/CloseOverlay never touch the FocusManager — then runs the
+	// selected command: a global one through the actions map just built,
+	// an editor one through editor.View.ExecuteAction on the workspace's
+	// target pane, the same "act on the editor pane you were just in"
+	// fallback openFindReferences/revealInTree above already rely on.
+	actionPopupView.OnExecute = func(scope, id string) {
 		app.CloseOverlay()
-		if fn, ok := actions[id]; ok {
-			fn()
+		if scope == globalScope.Name {
+			if fn, ok := actions[id]; ok {
+				fn()
+			}
 			return
 		}
 		ws.Target().ExecuteAction(id)
 	}
 
-	// rebuildGlobalKeymap resolves globalDefaultKeybinds against cfg's
-	// current "global" overrides and installs the result — factored out
-	// so reloadConfig can rebuild it exactly the same way the initial
-	// setup below does, instead of duplicating this loop.
-	rebuildGlobalKeymap := func() {
+	// rebuildGlobalKeymap resolves globalScope against cfg's current
+	// "global" overrides and installs the result. An action with no entry
+	// in actions is skipped — applyKeymaps has already warned about it.
+	rebuildGlobalKeymap := func(overrides map[string]string) {
 		global := map[string]func(){}
-		for trigger, action := range globalDefaultKeybinds.Resolve(cfg.Overrides("global")) {
-			fn, ok := actions[action]
-			if !ok {
-				debuglog.Warn("config: unknown global action %q bound to %q", action, trigger)
-				continue
+		for trigger, action := range globalScope.Actions.Resolve(overrides) {
+			if fn, ok := actions[action]; ok {
+				global[trigger] = fn
 			}
-			global[trigger] = fn
 		}
 		app.SetGlobalKeymap(global)
+	}
+
+	// keymapSetters installs one scope's keybindings, given that scope's
+	// user-config overrides — one per entry in scopes, which applyKeymaps
+	// checks, so a new scope can't be left out of startup or reload.
+	keymapSetters := map[string]func(overrides map[string]string){
+		globalScope.Name:           rebuildGlobalKeymap,
+		editor.Scope.Name:          func(map[string]string) { ws.ApplyConfig(paneConfig(cfg)) },
+		filetree.Scope.Name:        treeView.SetKeymap,
+		finder.Scope.Name:          finderView.SetKeymap,
+		finder.ReplaceScope.Name:   finderView.Replace().SetKeymap,
+		refview.Scope.Name:         refView.SetKeymap,
+		codeactionpopup.Scope.Name: caView.SetKeymap,
+		diffview.Scope.Name:        diffView.SetKeymap,
+		historyview.Scope.Name:     historyView.SetKeymap,
+		debug.Scope.Name:           debugView.SetKeymap,
+		actionpopup.Scope.Name:     actionPopupView.SetKeymap,
+		help.Scope.Name:            helpView.SetKeymap,
+	}
+	// Every global action needs a handler, or its key would silently do
+	// nothing; reload_config is added to actions below, before this runs.
+	checkGlobalHandlers := func() {
+		for _, a := range globalScope.Actions {
+			if _, ok := actions[a.ID]; !ok {
+				debuglog.Error("global action %q has no handler", a.ID)
+			}
+		}
+	}
+
+	// applyKeymaps installs every scope's keybindings from cfg, refreshes
+	// the keys help lists, and warns about any config line binding an
+	// action that doesn't exist — at startup and on every reload.
+	applyKeymaps := func() {
+		for _, w := range cfg.UnknownActions(scopes) {
+			debuglog.Warn("config: %s", w)
+		}
+		for _, sc := range scopes {
+			set, ok := keymapSetters[sc.Name]
+			if !ok {
+				debuglog.Error("no keymap setter for scope %q", sc.Name)
+				continue
+			}
+			set(cfg.Overrides(sc.Name))
+		}
+		helpView.SetBindings(cfg.Overrides)
 	}
 
 	// reloadConfig re-reads cfgPath and re-applies everything it drives —
@@ -1130,25 +1163,16 @@ func run() error {
 		cfg = newCfg
 
 		theme.SetActive(resolveTheme(cfg))
-
-		treeView.SetKeymap(cfg.Overrides("filetree"))
 		treeView.SetShowIcons(cfg.ShowIcons())
-		ws.ApplyConfig(paneConfig(cfg))
-		finderView.SetKeymap(cfg.Overrides("finder"))
-		finderView.Replace().SetKeymap(cfg.Overrides("replace"))
-		debugView.SetKeymap(cfg.Overrides("debug"))
-		helpView.SetKeymap(cfg.Overrides("help"))
-		actionPopupView.SetKeymap(cfg.Overrides("actionpopup"))
-		diffView.SetKeymap(cfg.Overrides("diff"))
-		historyView.SetKeymap(cfg.Overrides("history"))
 		lspManager.SetServers(mergedLSPServers(cfg))
-		rebuildGlobalKeymap()
+		applyKeymaps()
 
 		debuglog.Info("config reloaded from %s", cfgPath)
 	}
 	actions["reload_config"] = reloadConfig
 
-	rebuildGlobalKeymap()
+	checkGlobalHandlers()
+	applyKeymaps()
 
 	treeView.OnOpen = func(path string) {
 		app.FocusLeaf(ws.Open(path))

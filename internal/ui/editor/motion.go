@@ -327,7 +327,7 @@ func motionDestination(buf *Buffer, ln, rawCol int, action string, count int) (n
 }
 
 // wordForwardOnceClamped is wordForwardOnce's line-bound sibling, used by
-// Alt+Right/Alt+f (insert_word_forward — see DefaultKeybinds) instead of
+// Alt+Right/Alt+f (insert_word_forward — see Scope) instead of
 // plain "w": vim's own "w" is expected to cross into the next line once it
 // runs out of words, but Alt+Right is the readline/Emacs/IDE-style word-jump
 // most editors bind it to, where that same keystroke instead stops at

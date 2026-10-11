@@ -17,18 +17,18 @@ import (
 // progressively noisier messages filtered out.
 var minLevels = []debuglog.Level{debuglog.LevelDebug, debuglog.LevelInfo, debuglog.LevelWarn, debuglog.LevelError}
 
-// DefaultKeybinds are the debug log pane's built-in keybindings,
+// Scope is the debug log pane's actions and their default keys,
 // overridable via the user config's "debug" scope (see internal/config).
-var DefaultKeybinds = config.Defaults{
-	{Trigger: "Esc", Action: "close"},
-	{Trigger: "Tab", Action: "cycle_filter"},
-	{Trigger: "Up", Action: "scroll_up"},
-	{Trigger: "Down", Action: "scroll_down"},
-	{Trigger: "PageUp", Action: "page_up"},
-	{Trigger: "PageDown", Action: "page_down"},
-	{Trigger: "Home", Action: "oldest"},
-	{Trigger: "End", Action: "newest"},
-}
+var Scope = config.Scope{Name: "debug", Title: "Debug Log", Actions: config.Actions{
+	{ID: "close", Keys: []string{"Esc"}, Desc: "Close"},
+	{ID: "cycle_filter", Keys: []string{"Tab"}, Desc: "Cycle minimum severity filter"},
+	{ID: "scroll_up", Keys: []string{"Up"}, Desc: "Scroll up"},
+	{ID: "scroll_down", Keys: []string{"Down"}, Desc: "Scroll down"},
+	{ID: "page_up", Keys: []string{"PageUp"}, Desc: "Scroll up a page"},
+	{ID: "page_down", Keys: []string{"PageDown"}, Desc: "Scroll down a page"},
+	{ID: "oldest", Keys: []string{"Home"}, Desc: "Oldest entry"},
+	{ID: "newest", Keys: []string{"End"}, Desc: "Newest entry"},
+}}
 
 // View renders EntriesFunc's result, newest at the bottom, auto-following
 // as new messages arrive until the user scrolls up to look at history. Tab
@@ -54,13 +54,13 @@ type View struct {
 // New creates a debug log view backed by debuglog's global ring buffer,
 // initially showing every level.
 func New() *View {
-	return &View{EntriesFunc: debuglog.Entries, minLevel: debuglog.LevelDebug, keymap: DefaultKeybinds.Resolve(nil)}
+	return &View{EntriesFunc: debuglog.Entries, minLevel: debuglog.LevelDebug, keymap: Scope.Actions.Resolve(nil)}
 }
 
 // SetKeymap merges the user config's "debug" scope overrides on top of
-// DefaultKeybinds, replacing the pane's active keymap.
+// Scope, replacing the pane's active keymap.
 func (v *View) SetKeymap(overrides map[string]string) {
-	v.keymap = DefaultKeybinds.Resolve(overrides)
+	v.keymap = Scope.Actions.Resolve(overrides)
 }
 
 func (v *View) Title() string {

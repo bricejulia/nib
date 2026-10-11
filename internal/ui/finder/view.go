@@ -21,18 +21,18 @@ import (
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
 
-// DefaultKeybinds are the finder's built-in keybindings, overridable via
+// Scope is the finder's actions and their default keys, overridable via
 // the user config's "finder" scope (see internal/config). Deliberately
 // narrow: any trigger not listed here (and not otherwise Ctrl/Alt/Super-
 // modified) falls through to being typed into the search query instead,
 // so overriding a plain letter key here means it stops being typeable —
 // see HandleKey.
-var DefaultKeybinds = config.Defaults{
-	{Trigger: "Esc", Action: "close"},
-	{Trigger: "Tab", Action: "switch_mode"},
-	{Trigger: "Enter", Action: "open_selection"},
-	{Trigger: "Down", Action: "move_down"},
-	{Trigger: "Up", Action: "move_up"},
+var Scope = config.Scope{Name: "finder", Title: "Finder", Actions: config.Actions{
+	{ID: "close", Keys: []string{"Esc"}, Desc: "Close"},
+	{ID: "switch_mode", Keys: []string{"Tab"}, Desc: "Cycle file / content / find & replace search"},
+	{ID: "open_selection", Keys: []string{"Enter"}, Desc: "Open selection"},
+	{ID: "move_down", Keys: []string{"Down"}, Desc: "Move selection down"},
+	{ID: "move_up", Keys: []string{"Up"}, Desc: "Move selection up"},
 	// Jumps focus into (or back out of) the folder-scope field below the
 	// query prompt — see focusScope, Render, and HandleKey. Not Ctrl+g
 	// (editor's own "go to parent node") or Ctrl+l (global's own
@@ -40,8 +40,8 @@ var DefaultKeybinds = config.Defaults{
 	// neither would actually collide, but the same physical key meaning
 	// something else depending on context is still a confusing default.
 	// Ctrl+k is otherwise unused across every scope in this codebase.
-	{Trigger: "Ctrl+k", Action: "focus_scope"},
-}
+	{ID: "focus_scope", Keys: []string{"Ctrl+k"}, Desc: "Edit the folder scope (pre-filled with the folder selected in the tree; Enter returns to the query)"},
+}}
 
 // viewFocus is which field a keystroke currently goes to: the search
 // query (the default) or the folder-scope field below it. A distinct type
@@ -175,7 +175,7 @@ type View struct {
 // New creates a finder rooted at absPath. Call Open each time it's about
 // to be shown.
 func New(absPath string) *View {
-	return &View{root: absPath, keymap: DefaultKeybinds.Resolve(nil), replace: NewReplaceView(absPath)}
+	return &View{root: absPath, keymap: Scope.Actions.Resolve(nil), replace: NewReplaceView(absPath)}
 }
 
 // Replace returns the replace-mode sub-view, so the host application can
@@ -186,9 +186,9 @@ func (v *View) Replace() *ReplaceView {
 }
 
 // SetKeymap merges the user config's "finder" scope overrides on top of
-// DefaultKeybinds, replacing the pane's active keymap.
+// Scope, replacing the pane's active keymap.
 func (v *View) SetKeymap(overrides map[string]string) {
-	v.keymap = DefaultKeybinds.Resolve(overrides)
+	v.keymap = Scope.Actions.Resolve(overrides)
 }
 
 // scopeLabel prefixes the folder-scope field, mirroring ReplaceView's own
@@ -673,7 +673,7 @@ func (v *View) HandleKey(k layout.Key) bool {
 	// implements for ReplaceView's own Find/Replace fields (replace.go), and
 	// handlePromptKey's for the file tree's inline prompt. Only
 	// Esc/Tab/Enter/Up/Down/Ctrl+K are ever remappable actions in this
-	// mode (see DefaultKeybinds); every other key stays typeable.
+	// mode (see Scope); every other key stays typeable.
 	if v.query.HandleKey(k) {
 		v.refilter()
 	}

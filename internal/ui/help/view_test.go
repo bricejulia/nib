@@ -4,8 +4,27 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bricejulia/nib/internal/config"
 	"github.com/bricejulia/nib/internal/layout"
 )
+
+// testScopes stands in for the app's real scopes (cmd/nib's list), which
+// this package can't import.
+var testScopes = []config.Scope{
+	{Name: "global", Title: "Global", Actions: config.Actions{
+		{ID: "quit", Keys: []string{"Ctrl+c"}, Desc: "Quit"},
+		{ID: "reveal_in_tree", Keys: []string{"Ctrl+t"}, Desc: "Locate the active file in the file tree"},
+		{ID: "split_right", Keys: []string{"Ctrl+w"}, Desc: "Split right", Section: "Splits"},
+	}},
+	{Name: "editor", Title: "Editor", Actions: config.Actions{
+		{ID: "move_down", Keys: []string{"j", "Down"}, Desc: "Move down"},
+		{ID: "show_blame", Keys: []string{"B"}, Desc: "Blame", Section: "Editor — git"},
+	}},
+	{Name: "finder", Title: "Finder", Actions: config.Actions{
+		{ID: "close", Keys: []string{"Esc"}, Desc: "Close"},
+	}},
+	Scope,
+}
 
 // fakeWindow is an in-memory layout.Window double so View.Render is
 // testable without a live terminal.
@@ -36,7 +55,7 @@ func (w *fakeWindow) Clear() {
 }
 
 func TestRenderShowsVersionAndBindings(t *testing.T) {
-	v := New("1.2.3")
+	v := New("1.2.3", testScopes)
 	w := newFakeWindow(60, 100) // tall enough for every section's bindings to render unscrolled
 	v.Render(w)
 
@@ -49,13 +68,13 @@ func TestRenderShowsVersionAndBindings(t *testing.T) {
 }
 
 func TestTitleIsHelp(t *testing.T) {
-	if got := New("dev").Title(); got != "Help" {
+	if got := New("dev", testScopes).Title(); got != "Help" {
 		t.Errorf("got %q, want \"Help\"", got)
 	}
 }
 
 func TestEscClosesOverlay(t *testing.T) {
-	v := New("dev")
+	v := New("dev", testScopes)
 	closed := false
 	v.OnClose = func() { closed = true }
 
@@ -74,7 +93,7 @@ func typeText(v *View, s string) {
 }
 
 func TestTypingFiltersToMatchingBindings(t *testing.T) {
-	v := New("dev")
+	v := New("dev", testScopes)
 	typeText(v, "tree")
 
 	w := newFakeWindow(60, 100) // tall enough to render everything unscrolled
@@ -93,7 +112,7 @@ func TestTypingFiltersToMatchingBindings(t *testing.T) {
 }
 
 func TestClearingQueryRestoresFullList(t *testing.T) {
-	v := New("dev")
+	v := New("dev", testScopes)
 	typeText(v, "tree")
 	for i := 0; i < 4; i++ {
 		v.HandleKey(layout.Key{Named: layout.KeyBackspace})
@@ -110,7 +129,7 @@ func TestClearingQueryRestoresFullList(t *testing.T) {
 }
 
 func TestSearchWithNoMatchesShowsAHint(t *testing.T) {
-	v := New("dev")
+	v := New("dev", testScopes)
 	typeText(v, "zzzznomatch")
 
 	w := newFakeWindow(60, 20)
@@ -122,7 +141,7 @@ func TestSearchWithNoMatchesShowsAHint(t *testing.T) {
 }
 
 func TestCursorPositionTracksTheSearchCaret(t *testing.T) {
-	v := New("dev")
+	v := New("dev", testScopes)
 	typeText(v, "ab")
 
 	col, row, ok := v.CursorPosition()
@@ -139,7 +158,7 @@ func TestCursorPositionTracksTheSearchCaret(t *testing.T) {
 }
 
 func TestEscClearsTheSearchQueryToo(t *testing.T) {
-	v := New("dev")
+	v := New("dev", testScopes)
 	typeText(v, "tree")
 	if v.query.String() != "tree" {
 		t.Fatalf("query = %q, want \"tree\"", v.query.String())
@@ -152,7 +171,7 @@ func TestEscClearsTheSearchQueryToo(t *testing.T) {
 }
 
 func TestScrollDownThenHomeReturnsToTop(t *testing.T) {
-	v := New("dev")
+	v := New("dev", testScopes)
 	w := newFakeWindow(60, 3) // row 0 is the search bar; content starts at row 1
 	v.Render(w)
 
@@ -172,7 +191,7 @@ func TestScrollDownThenHomeReturnsToTop(t *testing.T) {
 }
 
 func TestSetKeymapOverridesATrigger(t *testing.T) {
-	v := New("dev")
+	v := New("dev", testScopes)
 	w := newFakeWindow(60, 3)
 	v.Render(w)
 	v.SetKeymap(map[string]string{"Down": "close"}) // reverse Down's default action
@@ -189,7 +208,7 @@ func TestSetKeymapOverridesATrigger(t *testing.T) {
 }
 
 func TestScrollClampsAtBottom(t *testing.T) {
-	v := New("dev")
+	v := New("dev", testScopes)
 	w := newFakeWindow(60, 5) // row 0 is the search bar, so 4 content rows
 
 	for i := 0; i < 1000; i++ {
@@ -203,10 +222,47 @@ func TestScrollClampsAtBottom(t *testing.T) {
 }
 
 func TestReleaseEventsAreIgnored(t *testing.T) {
-	v := New("dev")
+	v := New("dev", testScopes)
 	before := v.topLine
 	v.HandleKey(layout.Key{Named: layout.KeyDown, EventType: layout.EventRelease})
 	if v.topLine != before {
 		t.Errorf("expected a release event to be a no-op, topLine changed from %d to %d", before, v.topLine)
+	}
+}
+
+func TestBindingsShowTheKeysActuallyBound(t *testing.T) {
+	v := New("dev", testScopes)
+	v.SetBindings(func(scope string) map[string]string {
+		if scope == "editor" {
+			return map[string]string{"Ctrl+n": "move_down", "j": "show_blame"}
+		}
+		return nil
+	})
+
+	w := newFakeWindow(80, 100)
+	v.Render(w)
+	joined := strings.Join(w.lines, "\n")
+	if !strings.Contains(joined, "Down Ctrl+n") || strings.Contains(joined, "j Down") {
+		t.Errorf("expected move_down listed as \"Down Ctrl+n\" (j was rebound), got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "B j") {
+		t.Errorf("expected show_blame listed as \"B j\", got:\n%s", joined)
+	}
+}
+
+func TestSectionsFollowScopesWithExtrasPlaced(t *testing.T) {
+	keymaps := map[string]map[string]string{}
+	for _, sc := range testScopes {
+		keymaps[sc.Name] = sc.Actions.Resolve(nil)
+	}
+	var titles []string
+	for _, s := range buildSections(testScopes, func(name string) map[string]string { return keymaps[name] }) {
+		titles = append(titles, s.Title)
+	}
+	// Extras for sections no scope here has (File Tree, Find & Replace)
+	// still show, at the end.
+	want := []string{"Global", "Splits", "Editor", "Editor — mouse", "Editor — git", "Finder", "Help", "File Tree", "Find & Replace"}
+	if strings.Join(titles, "|") != strings.Join(want, "|") {
+		t.Errorf("sections = %v, want %v", titles, want)
 	}
 }
