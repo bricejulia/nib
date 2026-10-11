@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -43,6 +42,7 @@ import (
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 	"github.com/bricejulia/nib/internal/vcs/watch"
 	"github.com/bricejulia/nib/internal/version"
+	"github.com/bricejulia/nib/internal/workspace"
 )
 
 // watchDebounce is the quiet period after the last observed filesystem
@@ -144,7 +144,7 @@ var globalDefaultKeybinds = config.Defaults{
 	{Trigger: "Ctrl+e", Action: "split_down"},
 	{Trigger: "Ctrl+x", Action: "close_pane"},
 	// Moves the active tab into the next/previous editor pane (see
-	// moveTabToPane). NOT Alt+]/Alt+[ (the obvious pairing with
+	// Workspace.MoveActiveTab). NOT Alt+]/Alt+[ (the obvious pairing with
 	// next_tab/prev_tab's own "]"/"["): outside the kitty keyboard
 	// protocol, Alt+<printable> degrades to the classic "ESC then the
 	// literal character" meta encoding (the same one Alt+b/Alt+f already
@@ -181,14 +181,6 @@ var globalDefaultKeybinds = config.Defaults{
 	{Trigger: "Ctrl+j", Action: "open_action_popup"},
 }
 
-// editorPane pairs an editor pane's window-tree leaf with its View, so
-// split/close/open-file logic can look either up from the other. Multiple
-// editorPanes can exist at once once the editor has been split.
-type editorPane struct {
-	leaf *layout.LeafNode
-	view *editor.View
-}
-
 // rebuildAndFocus recomputes focus traversal order after the tree's
 // leaves change, then immediately refocuses id — bundled into one call so
 // the two can't accidentally be split apart. FocusManager.Rebuild's own
@@ -215,6 +207,16 @@ func mergedLSPServers(cfg *config.Config) map[string][]string {
 		debuglog.Info("lsp: %s server configured as %v", lang, command)
 	}
 	return servers
+}
+
+// paneConfig is the part of cfg every editor pane applies — see
+// workspace.PaneConfig.
+func paneConfig(cfg *config.Config) workspace.PaneConfig {
+	return workspace.PaneConfig{
+		Keymap:         cfg.Overrides("editor"),
+		TabModes:       derivedTabModes(cfg),
+		ShowWhitespace: cfg.ShowWhitespace(),
+	}
 }
 
 // derivedTabModes merges the user config's "tabmode" lines over nib's
@@ -329,19 +331,8 @@ func run() error {
 	treeView := filetree.New(absRoot)
 	treeView.SetKeymap(cfg.Overrides("filetree"))
 	treeView.SetShowIcons(cfg.ShowIcons())
-	// bufferStore is shared by every editor pane (this one and any created
-	// by trySplit below), so opening the same file in two panes gives them
-	// the SAME Buffer — edits, dirty state, and undo are shared exactly
-	// like vim's buffers-vs-windows model, instead of each pane silently
-	// keeping its own independent copy. See editor.BufferStore.
-	bufferStore := editor.NewBufferStore()
 
-	// yankRegister is likewise shared by every editor pane, so a line cut
-	// with "dd" in one pane can be put with "p" in another — vim's registers
-	// are global to the session, not per-window. See editor.Register.
-	yankRegister := editor.NewRegister()
-
-	// lspManager is likewise shared by every editor pane: one language
+	// lspManager is shared by every editor pane: one language
 	// server per language for the whole session, with each open file
 	// announced to it exactly once no matter how many panes show it. Servers
 	// are spawned lazily on the first file of their language, and a language
@@ -351,13 +342,6 @@ func run() error {
 	lspManager.SetServers(mergedLSPServers(cfg))
 	defer lspManager.Shutdown()
 
-	editorView := editor.NewView()
-	editorView.SetKeymap(cfg.Overrides("editor"))
-	editorView.SetTabModeDefaults(derivedTabModes(cfg))
-	editorView.SetShowWhitespace(cfg.ShowWhitespace())
-	editorView.SetBufferStore(bufferStore)
-	editorView.SetRegister(yankRegister)
-	editorView.SetLSPManager(lspManager)
 	statusBarView := statusbar.New()
 	statusBarView.Hint = mainShortcutsHint
 
@@ -366,68 +350,50 @@ func run() error {
 	// out to on every render, which would run `git` on every keystroke.
 	var gitBranch, gitSummary string
 
-	// applyWelcomeInfo wires up the empty-pane welcome screen (see
-	// editor.View.SetWelcomeInfo): the opened folder's base name, plus a
-	// closure over gitBranch above so a pane sitting empty still reflects the
-	// current branch after refreshGitStatus updates it. Applied to every
-	// editor pane, not just the first — see trySplit below, which can leave
-	// a freshly split pane with no tab open too.
-	applyWelcomeInfo := func(v *editor.View) {
-		v.SetWelcomeInfo(version.Version, filepath.Base(absRoot), func() string { return gitBranch }, welcomeKeybinds)
-	}
-	applyWelcomeInfo(editorView)
+	// app needs the layout tree, and the tree needs the workspace's panes,
+	// so it's assigned just below; everything here that reads it only runs
+	// once the app exists.
+	var app *ui.App
+
+	// highlighter is shared by every editor pane, like the buffers it
+	// highlights: a highlight belongs to the Buffer, so a file open in two
+	// panes is parsed once and both show the result. It exists at all
+	// because a tree-sitter re-parse is far too slow to run on a keystroke
+	// (236ms per key on an 1800-line Go file), so edits queue the work here
+	// and it lands back through Post like everything else off the UI
+	// goroutine. See editor.Highlighter.
+	highlighter := editor.NewHighlighter(func(ev interface{}) { app.Post(ev) })
+
+	// ws holds every editor pane — see internal/workspace. Opening the same
+	// file in two panes gives them the SAME Buffer, and a yank in one can be
+	// put in another, like vim's buffers and registers.
+	ws := workspace.New(workspace.Options{
+		Root:        absRoot,
+		FirstLeafID: 3, // 1 and 2 are the file tree and status bar
+		Config:      paneConfig(cfg),
+		LSP:         lspManager,
+		Highlighter: highlighter,
+		LineStatus: func(path string) (map[int]gitstatus.LineStatus, error) {
+			return gitstatus.FileHunks(absRoot, path)
+		},
+		Welcome: workspace.Welcome{
+			Version:  version.Version,
+			Folder:   filepath.Base(absRoot),
+			Branch:   func() string { return gitBranch },
+			Keybinds: welcomeKeybinds,
+		},
+		Focused: func() (layout.LeafID, bool) { return app.FocusedLeaf() },
+		Rects:   func() map[layout.LeafID]layout.Rect { return app.Rects() },
+	})
 
 	fileTreeLeaf := &layout.LeafNode{ID: 1, View: treeView}
-	editorLeaf := &layout.LeafNode{ID: 2, View: editorView}
-	statusBarLeaf := &layout.LeafNode{ID: 3, View: statusBarView}
-
-	// editorPanes tracks every currently open editor pane (more than one
-	// once the editor has been split); activeEditorPane is the last one
-	// that genuinely had focus, kept in sync via SetFocusChangeHandler
-	// below — needed because opening a file from the tree/finder fires
-	// while focus is still on the tree/finder itself, never on an editor
-	// pane directly.
-	editorPanes := map[layout.LeafID]*editorPane{
-		editorLeaf.ID: {leaf: editorLeaf, view: editorView},
-	}
-	activeEditorPane := editorPanes[editorLeaf.ID]
-	nextLeafID := layout.LeafID(4) // 1/2/3 are already taken by the static tree above
-
-	// refreshLineStatusFor recomputes path's git-diff gutter markers (see
-	// gitstatus.FileHunks) and applies them to every editor pane that has
-	// it open (path may be open in more than one pane at once — see
-	// trySplit below). Cheap enough (one `git diff` shellout) to call
-	// right after a file is opened, rather than waiting for the
-	// debounced refresh from refreshAllLineStatus to catch up.
-	refreshLineStatusFor := func(path string) {
-		lines, err := gitstatus.FileHunks(absRoot, path)
-		if err != nil {
-			return // not a git repo, path outside it, or git unavailable
-		}
-		for _, p := range editorPanes {
-			p.view.ApplyLineStatus(path, lines)
-		}
-	}
-	// refreshAllLineStatus re-runs refreshLineStatusFor for every path
-	// currently open in any editor pane — used whenever something not
-	// scoped to a single just-opened file may have invalidated the
-	// diffs: a git change (staging, commit, checkout) or any filesystem
-	// change, since FileHunks reads the working-tree file directly and
-	// so goes stale on a plain unstaged edit too (e.g. this app's own
-	// Save, which never touches .git/index or HEAD).
-	refreshAllLineStatus := func() {
-		for _, p := range editorPanes {
-			for _, path := range p.view.OpenPaths() {
-				refreshLineStatusFor(path)
-			}
-		}
-	}
+	statusBarLeaf := &layout.LeafNode{ID: 2, View: statusBarView}
 
 	panes := &layout.SplitNode{
 		Dir: layout.Horizontal,
 		Children: []layout.Child{
 			{Node: fileTreeLeaf, Hint: layout.Fixed(defaultTreeWidth)},
-			{Node: editorLeaf, Hint: layout.Ratio(1)},
+			{Node: ws.Root(), Hint: layout.Ratio(1)},
 		},
 	}
 	tree := &layout.SplitNode{
@@ -438,11 +404,14 @@ func run() error {
 		},
 	}
 
-	app, err := ui.NewApp(tree, nil)
+	app, err = ui.NewApp(tree, nil)
 	if err != nil {
 		return err
 	}
 	defer app.Close()
+	// Closed before the app, so no highlight result is posted to a closed
+	// event loop.
+	defer highlighter.Close()
 
 	statusBarView.TextFunc = func() string {
 		parts := make([]string, 0, 6)
@@ -455,16 +424,16 @@ func run() error {
 				parts = append(parts, notice)
 			}
 		}
-		if cursor := activeEditorPane.view.StatusText(); cursor != "" {
+		if cursor := ws.Active().StatusText(); cursor != "" {
 			parts = append(parts, cursor)
 		}
 		// The active file's indent style — see editor.View.TabModeStatus.
-		if tabMode := activeEditorPane.view.TabModeStatus(); tabMode != "" {
+		if tabMode := ws.Active().TabModeStatus(); tabMode != "" {
 			parts = append(parts, tabMode)
 		}
 		// The active file's language plus whether a language server is
 		// running for it — see editor.View.LanguageStatus.
-		if lang := activeEditorPane.view.LanguageStatus(); lang != "" {
+		if lang := ws.Active().LanguageStatus(); lang != "" {
 			parts = append(parts, lang)
 		}
 		if gitBranch != "" {
@@ -484,57 +453,28 @@ func run() error {
 	// the filesystem watcher and the finder's content search already use.
 	lspManager.Post = app.Post
 
-	// highlighter is shared by every editor pane, like bufferStore above and
-	// for the same reason: a highlight belongs to the Buffer, so a file open
-	// in two panes is parsed once and both show the result. It exists at all
-	// because a tree-sitter re-parse is far too slow to run on a keystroke
-	// (236ms per key on an 1800-line Go file), so edits queue the work here
-	// and it lands back through Post like everything else off the UI
-	// goroutine. See editor.Highlighter.
-	highlighter := editor.NewHighlighter(app.Post)
-	defer highlighter.Close()
-
-	// lastFocusedLeaf is only used to know which editor pane (if any) just
-	// LOST focus, immediately below — activeEditorPane (which pane last
-	// genuinely had focus, full stop) is a separate, longer-lived thing
-	// other callbacks below still need even once focus moves elsewhere
-	// (e.g. onto the file tree).
+	// lastFocusedLeaf is only used to know whether the file tree just LOST
+	// focus, immediately below; the workspace tracks the same for its panes.
 	var lastFocusedLeaf layout.LeafID
 	app.SetFocusChangeHandler(func(id layout.LeafID) {
-		// A pane left mid-Insert/Command-mode when focus moves away (e.g.
-		// a mouse click elsewhere, which — unlike Tab-cycling — never
-		// routes a key through the losing pane's own HandleKey) must not
-		// stay that way: with buffers now shared across panes (see
-		// editor.BufferStore), two panes simultaneously mid-edit on the
-		// same buffer would scramble undo history. See
-		// editor.View.ExitEditingModes.
-		if p, ok := editorPanes[lastFocusedLeaf]; ok && lastFocusedLeaf != id {
-			p.view.ExitEditingModes()
-		}
-		// Same reason, for the file tree's own create/rename/copy/delete prompt:
-		// a half-typed filename left behind by a click elsewhere would sit
-		// swallowing every key the next time the tree got focus back. See
-		// filetree.View.CancelPrompt.
+		// A pane losing focus leaves Insert/Command mode, and the one gaining
+		// it becomes the active pane — see Workspace.FocusChanged.
+		ws.FocusChanged(id)
+		// Same reason as a pane leaving Insert mode, for the file tree's own
+		// create/rename/copy/delete prompt: a half-typed filename left behind
+		// by a click elsewhere would sit swallowing every key the next time
+		// the tree got focus back. See filetree.View.CancelPrompt.
 		if lastFocusedLeaf == fileTreeLeaf.ID && lastFocusedLeaf != id {
 			treeView.CancelPrompt()
 		}
 		lastFocusedLeaf = id
-
-		// The only place activeEditorPane is ever written: keeps it
-		// pointed at whichever editor pane last genuinely had focus, for
-		// Tab-cycling, mouse clicks, and FocusLeaf calls alike.
-		if p, ok := editorPanes[id]; ok {
-			activeEditorPane = p
-		}
 	})
 
 	finderView := finder.New(absRoot)
 	finderView.SetKeymap(cfg.Overrides("finder"))
 	finderView.OnClose = app.CloseOverlay
 	finderView.OnSelect = func(absPath string, line int) {
-		activeEditorPane.view.OpenAtLine(absPath, line)
-		app.FocusLeaf(activeEditorPane.leaf.ID)
-		refreshLineStatusFor(absPath)
+		app.FocusLeaf(ws.OpenAtLine(absPath, line))
 	}
 	// Content search runs `git grep` on its own goroutine (can take real
 	// time on a large project) and delivers its result back through Post
@@ -570,9 +510,7 @@ func run() error {
 		if path == "" {
 			return
 		}
-		activeEditorPane.view.OpenAtLine(path, loc.Range.Start.Line+1)
-		app.FocusLeaf(activeEditorPane.leaf.ID)
-		refreshLineStatusFor(path)
+		app.FocusLeaf(ws.OpenAtLine(path, loc.Range.Start.Line+1))
 	}
 
 	debugView := debug.New()
@@ -587,8 +525,8 @@ func run() error {
 
 	// actionPopupView is the "Find Action" popup (Ctrl+j): type to
 	// filter a list of named commands, Enter to run the selected one. Its
-	// OnExecute is wired up further down, once both the actions map and
-	// targetPane exist (see there for why).
+	// OnExecute is wired up further down, once the actions map exists
+	// (see there for why).
 	actionPopupView := actionpopup.New()
 	actionPopupView.SetKeymap(cfg.Overrides("actionpopup"))
 	actionPopupView.OnClose = app.CloseOverlay
@@ -600,13 +538,12 @@ func run() error {
 		app.ShowOverlay(actionPopupView)
 	}
 
-	// findPane and refreshGitStatus are defined further down (both need
-	// editorPanes/finderView/etc. that exist by then), but caView.OnExecute
-	// just below and wireEditorPane's LSP callbacks (see OnApplyWorkspaceEdit/
-	// OnCodeActions there) only ever run later, from a user action — by
-	// which point both are assigned. Forward-declared so those closures can
-	// close over them now; same trick reloadConfig uses below.
-	var findPane func(absPath string) (*editor.View, bool)
+	// refreshGitStatus is defined further down (it needs finderView/etc.
+	// that exist by then), but caView.OnExecute just below and the editor
+	// panes' LSP callbacks (see OnApplyWorkspaceEdit in ws.Wire) only ever
+	// run later, from a user action — by which point it's assigned.
+	// Forward-declared so those closures can close over it now; same trick
+	// reloadConfig uses below.
 	var refreshGitStatus func()
 
 	// caView is the code-actions popup ("A" in an editor pane): a list of
@@ -620,7 +557,7 @@ func run() error {
 		if action.Edit == nil {
 			return
 		}
-		res := editor.ApplyWorkspaceEdit(*action.Edit, findPane, activeEditorPane.view)
+		res := editor.ApplyWorkspaceEdit(*action.Edit, ws.FindView, ws.Active())
 		for path, err := range res.Failed {
 			debuglog.Error("apply code action: %s: %v", path, err)
 		}
@@ -755,35 +692,17 @@ func run() error {
 		onConflictsResolved = nil
 	}
 	reloadconfirmView.OnKeepMine = func() {
-		c := pendingConflicts[0]
-		if err := c.Buf.Save(); err != nil {
-			debuglog.Error("save %s: %v", c.Path, err)
-		} else {
-			// Save just cleared ExternallyModified (disk now matches the
-			// buffer), which is what unblocks ApplyLineStatus from
-			// accepting a fresh gutter — nothing else re-triggers this on
-			// its own, so ask for it explicitly, mirroring
-			// OnReloadFromDisk below.
-			refreshLineStatusFor(c.Path)
-		}
+		ws.KeepMine(pendingConflicts[0])
 		advanceConflictQueue()
 	}
 	reloadconfirmView.OnReloadFromDisk = func() {
-		c := pendingConflicts[0]
-		if err := c.Buf.Reload(); err != nil {
-			debuglog.Error("reload %s: %v", c.Path, err)
-		} else {
-			for _, p := range editorPanes {
-				p.view.RefreshBuffer(c.Buf)
-			}
-			refreshLineStatusFor(c.Path)
-		}
+		ws.ReloadFromDisk(pendingConflicts[0])
 		advanceConflictQueue()
 	}
 	// queueConflicts shows the first of conflicts (if any) and calls onDone
 	// once every one of them has been resolved (immediately, if conflicts
 	// is empty). The single code path both an interactive single-file save
-	// (via wireEditorPane's OnSaveConflict, below) and a save-all's batch
+	// (via the panes' OnSaveConflict, in ws.Wire below) and a save-all's batch
 	// of conflicts (via saveAllDirty, further down) route through, so
 	// there's exactly one queue-draining implementation.
 	queueConflicts := func(conflicts []editor.SaveConflict, onDone func()) {
@@ -801,8 +720,8 @@ func run() error {
 	// closetabconfirmView offers to save or discard one or more dirty tabs
 	// before closing them — shown when a mouse-driven close (middle-click
 	// on a tab, or "Close Others"/"Close All" from its context menu)
-	// targets at least one dirty tab, via wireEditorPane's
-	// OnRequestCloseDirtyTabs below. Unlike ":q"/":qa" on a dirty buffer,
+	// targets at least one dirty tab, via the panes'
+	// OnRequestCloseDirtyTabs in ws.Wire below. Unlike ":q"/":qa" on a dirty buffer,
 	// which just refuse silently in the debug log, a mouse action that
 	// visibly does nothing reads as broken rather than refused, so this
 	// offers a real choice instead. OnSaveAll/OnDiscardAll are re-pointed
@@ -811,102 +730,12 @@ func run() error {
 	closetabconfirmView := closetabconfirm.New()
 	closetabconfirmView.OnCancel = app.CloseOverlay
 
-	// orderedEditorPaneIDs returns every editor pane's leaf ID in the same
-	// left-to-right/top-to-bottom order FocusManager cycles through (see
-	// layout.Leaves), filtered down to editor panes — the canonical
-	// "next/previous pane" order the move-tab action below uses, kept in
-	// exactly the order Tab/Shift+Tab already use so the two stay
-	// consistent.
-	orderedEditorPaneIDs := func() []layout.LeafID {
-		var ids []layout.LeafID
-		for _, leaf := range layout.Leaves(tree) {
-			if _, ok := editorPanes[leaf.ID]; ok {
-				ids = append(ids, leaf.ID)
-			}
-		}
-		return ids
-	}
-	// findPaneForView reverse-looks-up which editorPane owns v — needed by
-	// OnMoveTabToNextPane below, which only gets handed the *editor.View*
-	// that raised the callback, not the pane/leaf wrapping it.
-	findPaneForView := func(v *editor.View) (*editorPane, bool) {
-		for _, p := range editorPanes {
-			if p.view == v {
-				return p, true
-			}
-		}
-		return nil, false
-	}
-	// moveTabToPane moves tabs[index] out of source and into the next
-	// (dir=+1) or previous (dir=-1) editor pane in orderedEditorPaneIDs'
-	// order, wrapping around, then focuses wherever it landed — the shared
-	// implementation behind both Alt+]/Alt+[ (acting on the active tab)
-	// and the tab bar's own "Move to next pane" context-menu item (acting
-	// on whichever tab was right-clicked). A no-op if source is the only
-	// editor pane open.
-	moveTabToPane := func(source *editorPane, index, dir int) {
-		ids := orderedEditorPaneIDs()
-		if len(ids) < 2 {
-			return
-		}
-		pos := -1
-		for i, id := range ids {
-			if id == source.leaf.ID {
-				pos = i
-				break
-			}
-		}
-		if pos < 0 {
-			return
-		}
-		dest := editorPanes[ids[(pos+dir+len(ids))%len(ids)]]
-		source.view.TransferTabTo(index, dest.view)
-		app.FocusLeaf(dest.leaf.ID)
-	}
-
-	// findPaneInDirection resolves the editor pane geometrically adjacent to
-	// source in direction dir (Horizontal = right, Vertical = down when
-	// forward; left/up when !forward) — the screen-geometry counterpart to
-	// orderedEditorPaneIDs' tree-order-based moveTabToPane, used by "Move
-	// Right"/"Move Down" (and CanMoveRight/CanMoveDown below) rather than
-	// "next/previous pane" cycling.
-	findPaneInDirection := func(source *editorPane, dir layout.Direction, forward bool) (*editorPane, bool) {
-		id, ok := layout.Neighbor(app.Rects(), source.leaf.ID, dir, forward)
-		if !ok {
-			return nil, false
-		}
-		p, ok := editorPanes[id]
-		return p, ok // false if the geometric neighbor isn't an editor pane (e.g. the file tree)
-	}
-	// moveTabDirection moves tabs[index] out of source and into whichever
-	// editor pane sits geometrically in direction dir/forward from it, then
-	// focuses wherever it landed. A no-op if there's no such pane — see
-	// CanMoveRight/CanMoveDown, which is why the menu hides the item instead
-	// of leaving it present-but-inert.
-	moveTabDirection := func(source *editorPane, index int, dir layout.Direction, forward bool) {
-		dest, ok := findPaneInDirection(source, dir, forward)
-		if !ok {
-			return
-		}
-		source.view.TransferTabTo(index, dest.view)
-		app.FocusLeaf(dest.leaf.ID)
-	}
-	// splitAndMoveTab is forward-declared here (assigned for real once
-	// createSplitPane exists to share, next to trySplit further down) so
-	// wireEditorPane's OnSplitAndMoveRight/OnSplitAndMoveDown callbacks can
-	// close over it now; same trick findPane/refreshGitStatus and
-	// reloadConfig use elsewhere in this function.
-	var splitAndMoveTab func(source *editorPane, index int, dir layout.Direction)
-
-	// wireEditorPane attaches every callback an editor pane needs to reach
-	// the rest of the application. Called for the initial pane below and for
-	// each pane trySplit creates, so a new split is never quietly missing a
-	// feature — which is exactly what a third hand-maintained copy of this
-	// list would eventually do.
-	wireEditorPane := func(v *editor.View) {
-		// Keystrokes hand their re-highlighting to the shared worker rather
-		// than parsing inline — see editor.View.SetHighlighter.
-		v.SetHighlighter(highlighter)
+	// ws.Wire attaches every callback an editor pane needs to reach the
+	// rest of the application — dialogs, git, the clipboard — to every pane,
+	// including each one a split or session restore creates later, so a new
+	// pane is never quietly missing a feature. Moving tabs between panes is
+	// the workspace's own wiring.
+	ws.Wire(func(v *editor.View) {
 		// Closing a pane's last tab (via ":q"/":qa"/etc.) leaves it showing
 		// the "No file open" placeholder with nothing left to do in it, so
 		// hand focus back to the file tree.
@@ -967,59 +796,6 @@ func run() error {
 			}
 			app.ShowOverlay(closetabconfirmView)
 		}
-		// "Move to next pane" from the tab bar's context menu: this package
-		// has no notion of sibling panes, so it hands off the index and
-		// lets moveTabToPane (above) do the actual cross-pane move.
-		v.OnMoveTabToNextPane = func(index int) {
-			if p, ok := findPaneForView(v); ok {
-				moveTabToPane(p, index, 1)
-			}
-		}
-		// "Split Right"/"Split Down" from the tab bar's context menu: unlike
-		// the global split_right/split_down actions (trySplit, which
-		// duplicates the active file into the new pane), these move the ONE
-		// tab the menu was opened for — see splitAndMoveTab below.
-		v.OnSplitAndMoveRight = func(index int) {
-			if p, ok := findPaneForView(v); ok {
-				splitAndMoveTab(p, index, layout.Horizontal)
-			}
-		}
-		v.OnSplitAndMoveDown = func(index int) {
-			if p, ok := findPaneForView(v); ok {
-				splitAndMoveTab(p, index, layout.Vertical)
-			}
-		}
-		// "Move Right"/"Move Down" from the tab bar's context menu: like
-		// OnMoveTabToNextPane above, but to the pane geometrically adjacent
-		// rather than next in tab-cycle order — see moveTabDirection.
-		v.OnMoveRight = func(index int) {
-			if p, ok := findPaneForView(v); ok {
-				moveTabDirection(p, index, layout.Horizontal, true)
-			}
-		}
-		v.OnMoveDown = func(index int) {
-			if p, ok := findPaneForView(v); ok {
-				moveTabDirection(p, index, layout.Vertical, true)
-			}
-		}
-		// CanMoveRight/CanMoveDown gate whether the tab menu even shows
-		// "Move Right"/"Move Down" — see openTabMenu.
-		v.CanMoveRight = func() bool {
-			p, ok := findPaneForView(v)
-			if !ok {
-				return false
-			}
-			_, ok = findPaneInDirection(p, layout.Horizontal, true)
-			return ok
-		}
-		v.CanMoveDown = func() bool {
-			p, ok := findPaneForView(v)
-			if !ok {
-				return false
-			}
-			_, ok = findPaneInDirection(p, layout.Vertical, true)
-			return ok
-		}
 		// Copying a mouse selection reaches the system clipboard through
 		// here — the editor pane speaks no OSC 52 itself, same arrangement
 		// as the git callbacks above. The yank register (SetRegister) is what
@@ -1029,15 +805,15 @@ func run() error {
 		v.CopyFunc = app.CopyToClipboard
 		// Rename ("R") and code actions ("A") both resolve to an
 		// lsp.WorkspaceEdit that can span files this pane never opened, so
-		// applying it needs findPane (which pane, if any, has each affected
-		// path open) — something only main.go's pane registry can answer.
+		// applying it needs ws.FindView (which pane, if any, has each affected
+		// path open) — something only the workspace can answer.
 		// Same "hand it back out, don't own it" split finderView's own
 		// replace-all logic already makes (see OnReplaceAll below). v itself
 		// is passed as the triggerView: whichever file ApplyWorkspaceEdit
 		// can't find already open gets opened as a new tab right here, in
 		// the pane the rename/action was actually invoked from.
 		v.OnApplyWorkspaceEdit = func(edit lsp.WorkspaceEdit) {
-			res := editor.ApplyWorkspaceEdit(edit, findPane, v)
+			res := editor.ApplyWorkspaceEdit(edit, ws.FindView, v)
 			for path, err := range res.Failed {
 				debuglog.Error("apply rename: %s: %v", path, err)
 			}
@@ -1051,8 +827,10 @@ func run() error {
 			caView.Open(actions)
 			app.ShowOverlay(caView)
 		}
-	}
-	wireEditorPane(editorView)
+	})
+	// A tab-menu move or split inside a pane hands back where the tab
+	// landed.
+	ws.OnLayoutChanged = func(focus layout.LeafID) { rebuildAndFocus(app, focus) }
 
 	// reloadConfig is forward-declared here (assigned for real once
 	// everything it re-wires exists, near the actions map below) so
@@ -1084,19 +862,6 @@ func run() error {
 		reloadConfig()
 	}
 
-	// targetPane resolves the editor pane an action driven by CURRENT focus
-	// should act on: the one currently focused, or activeEditorPane (the
-	// last editor pane that genuinely had focus) when focus is elsewhere
-	// entirely (e.g. the file tree) — so Ctrl+W/E/X and Ctrl+F act on "the
-	// editor pane you were just in" rather than silently no-op'ing.
-	targetPane := func() (*editorPane, bool) {
-		if id, ok := app.FocusedLeaf(); ok {
-			if p, ok := editorPanes[id]; ok {
-				return p, true
-			}
-		}
-		return activeEditorPane, true
-	}
 	// openFindReferences is Ctrl+F's global handler (see
 	// globalDefaultKeybinds): tries the language server's real references
 	// first (opening refView on a non-empty answer), and falls back to the
@@ -1104,17 +869,18 @@ func run() error {
 	// cursor, exactly as this always behaved — both when no server could
 	// take the request at all and when it answered with nothing found.
 	// Same LSP-then-fallback shape goToDefinition uses (navigate.go).
+	//
+	// Like every focus-driven action, it acts on the workspace's target
+	// pane: the focused one, or the last one focused when focus is
+	// elsewhere (e.g. the file tree) — see Workspace.Target.
 	openFindReferences := func() {
-		p, ok := targetPane()
-		if !ok {
-			return
-		}
-		word := p.view.WordUnderCursor()
+		v := ws.Target()
+		word := v.WordUnderCursor()
 		fallback := func() {
 			finderView.OpenWithQuery(word)
 			app.ShowOverlay(finderView)
 		}
-		dispatched := p.view.FindReferences(func(locs []lsp.Location, ok bool) {
+		dispatched := v.FindReferences(func(locs []lsp.Location, ok bool) {
 			if !ok {
 				fallback()
 				return
@@ -1131,11 +897,7 @@ func run() error {
 	// same-named file from the finder (e.g. one of several index.tsx)
 	// shows exactly which one.
 	revealInTree := func() {
-		p, ok := targetPane()
-		if !ok {
-			return
-		}
-		path := p.view.ActivePath()
+		path := ws.Target().ActivePath()
 		if path == "" {
 			return
 		}
@@ -1143,105 +905,23 @@ func run() error {
 			app.FocusLeaf(fileTreeLeaf.ID)
 		}
 	}
-	// newEditorView creates an editor view configured and wired exactly
-	// like the initial one — shared by createSplitPane and the session
-	// restore below, which both need fresh panes beyond the first.
-	newEditorView := func() *editor.View {
-		v := editor.NewView()
-		v.SetKeymap(cfg.Overrides("editor"))
-		v.SetTabModeDefaults(derivedTabModes(cfg))
-		v.SetShowWhitespace(cfg.ShowWhitespace())
-		v.SetBufferStore(bufferStore)
-		v.SetRegister(yankRegister)
-		v.SetLSPManager(lspManager)
-		applyWelcomeInfo(v)
-		wireEditorPane(v)
-		return v
+	// splitPane and closePane are the split_right/split_down and close_pane
+	// handlers; moveActiveTab is Alt+]/Alt+['s. Each acts on the target
+	// pane and then focuses wherever the workspace says.
+	splitPane := func(dir layout.Direction) {
+		if id, ok := ws.Split(dir); ok {
+			rebuildAndFocus(app, id)
+		}
 	}
-	// createSplitPane creates a new editor pane wired exactly like every
-	// other one (see wireEditorPane) and splices it into the tree beside
-	// target's leaf in direction dir — the shared first half of trySplit
-	// (which then duplicates target's active file into it) and
-	// splitAndMoveTab (which instead moves one specific tab into it).
-	// Returns ok=false if target has no parent in the tree (target IS root
-	// — see layout.Split), which can't currently happen since root always
-	// wraps more than just the editor, but is checked rather than assumed.
-	createSplitPane := func(target *editorPane, dir layout.Direction) (*editorPane, bool) {
-		newLeaf := &layout.LeafNode{ID: nextLeafID, View: newEditorView()}
-		if !layout.Split(tree, target.leaf, dir, newLeaf) {
-			return nil, false
+	closePane := func() {
+		if id, ok := ws.ClosePane(); ok {
+			rebuildAndFocus(app, id)
 		}
-		nextLeafID++
-		p := &editorPane{leaf: newLeaf, view: newLeaf.View.(*editor.View)}
-		editorPanes[newLeaf.ID] = p
-		return p, true
 	}
-	trySplit := func(dir layout.Direction) {
-		target, ok := targetPane()
-		if !ok {
-			return
+	moveActiveTab := func(dir int) {
+		if id, ok := ws.MoveActiveTab(dir); ok {
+			app.FocusLeaf(id)
 		}
-		newPane, ok := createSplitPane(target, dir)
-		if !ok {
-			return
-		}
-		path := target.view.ActivePath()
-		if path != "" {
-			newPane.view.Open(path) // new pane starts on the same file — the SAME Buffer, via bufferStore
-			refreshLineStatusFor(path)
-		}
-		rebuildAndFocus(app, newPane.leaf.ID)
-	}
-	// splitAndMoveTab is trySplit's counterpart for "Split Right"/"Split
-	// Down" in the tab bar's context menu: instead of duplicating source's
-	// active file into the new pane, it moves the specific right-clicked
-	// tab there. No refreshLineStatusFor call needed here — unlike Open,
-	// TransferTabTo carries the tab's existing gutter markers with it (see
-	// View.ApplyLineStatus/TransferTabTo).
-	splitAndMoveTab = func(source *editorPane, index int, dir layout.Direction) {
-		newPane, ok := createSplitPane(source, dir)
-		if !ok {
-			return
-		}
-		source.view.TransferTabTo(index, newPane.view)
-		rebuildAndFocus(app, newPane.leaf.ID)
-	}
-	closeFocusedPane := func() {
-		target, ok := targetPane()
-		if !ok || len(editorPanes) == 1 {
-			return // not in an editor pane, or it's the last one: no-op
-		}
-		// Refuse exactly like ":qa" would (see View.closeAllTabsCmd):
-		// closing the pane releases these tabs' Buffer references, and an
-		// unsaved buffer not held open by another pane loses its edits for
-		// good.
-		if dirty := target.view.DirtyPaths(); len(dirty) > 0 {
-			debuglog.Warn("close pane: %d unsaved file(s) (save first): %s", len(dirty), strings.Join(dirty, ", "))
-			return
-		}
-		// Release every open tab's Buffer reference before the pane
-		// itself is discarded — otherwise bufferStore would keep each of
-		// them alive (and, worse, hand back their now-orphaned stale
-		// content instead of a fresh Load) forever, since nothing would
-		// ever call Release for them again.
-		target.view.CloseAllTabs()
-		survivor, ok := layout.Close(tree, target.leaf)
-		if !ok {
-			return
-		}
-		delete(editorPanes, target.leaf.ID)
-		rebuildAndFocus(app, layout.Leaves(survivor)[0].ID)
-	}
-	// moveActiveTabToPane is Alt+]/Alt+['s handler: moves targetPane()'s
-	// active tab (see moveTabToPane) rather than a specific index, since a
-	// keybinding — unlike the context menu's "Move to next pane" — has no
-	// clicked tab to act on.
-	moveActiveTabToPane := func(dir int) {
-		p, ok := targetPane()
-		if !ok {
-			return
-		}
-		moveTabToPane(p, p.view.ActiveIndex(), dir)
 	}
 
 	refreshGitStatus = func() {
@@ -1259,28 +939,9 @@ func run() error {
 		if branch, err := gitstatus.CurrentBranch(absRoot); err == nil {
 			gitBranch = branch
 		}
-		refreshAllLineStatus()
+		ws.RefreshAllLineStatus()
 	}
 	refreshGitStatus()
-
-	// findPane answers "is absPath open in some editor pane, and which
-	// one" for editor.Apply, without that package needing to know about
-	// panes, leaves, or the window tree at all — the same fan-out idiom
-	// refreshLineStatusFor/refreshAllLineStatus already use (looping
-	// editorPanes + OpenPaths), just stopping at the first match instead
-	// of visiting every pane, since editor.View.ReplaceLines mutates the
-	// buffer's own shared Lines rather than per-tab display state (see its
-	// doc comment) and so must only ever be called once per path.
-	findPane = func(absPath string) (*editor.View, bool) {
-		for _, p := range editorPanes {
-			for _, path := range p.view.OpenPaths() {
-				if path == absPath {
-					return p.view, true
-				}
-			}
-		}
-		return nil, false
-	}
 
 	// Search-and-replace is finder.View's third mode (Tab-cycled, alongside
 	// filename/content search), so it shares finderView's own overlay
@@ -1291,7 +952,7 @@ func run() error {
 	// see finder.ReplaceView.refilter.
 	finderView.Replace().Post = app.Post
 	finderView.Replace().OnReplaceAll = func(search, replacement string, occs []editor.Occurrence) {
-		res := editor.Apply(search, replacement, occs, findPane)
+		res := editor.Apply(search, replacement, occs, ws.FindView)
 		for path, err := range res.Failed {
 			debuglog.Error("replace in path %s: %v", path, err)
 		}
@@ -1313,96 +974,11 @@ func run() error {
 		app.ShowOverlay(finderView)
 	}
 
-	// dirtyPaths lists every currently-open file with unsaved changes,
-	// across every editor pane, deduplicated (the same Buffer can be open
-	// as a tab in more than one pane — see bufferStore above) and sorted
-	// for a stable, scannable order in the quit-confirm dialog below.
-	dirtyPaths := func() []string {
-		seen := map[string]bool{}
-		var paths []string
-		for _, p := range editorPanes {
-			for _, path := range p.view.DirtyPaths() {
-				if seen[path] {
-					continue
-				}
-				seen[path] = true
-				paths = append(paths, path)
-			}
-		}
-		sort.Strings(paths)
-		return paths
-	}
-
-	// openPathsNotYetDetached lists every currently-open file, across
-	// every editor pane, deduplicated, EXCEPT ones already flagged
-	// detached (see editor.View.CloseTabsUnder) — those are already known
-	// to be gone, so there's no need to stat them again on every fsnotify
-	// refresh. Used to find files an external delete (see
-	// watch.RefreshEvent below) removed out from under an open tab; the
-	// tree's own delete flow doesn't need this, since it already knows
-	// exactly which path it removed.
-	openPathsNotYetDetached := func() []string {
-		seen := map[string]bool{}
-		var paths []string
-		for _, p := range editorPanes {
-			detached := map[string]bool{}
-			for _, path := range p.view.DetachedPaths() {
-				detached[path] = true
-			}
-			for _, path := range p.view.OpenPaths() {
-				if seen[path] || detached[path] {
-					continue
-				}
-				seen[path] = true
-				paths = append(paths, path)
-			}
-		}
-		return paths
-	}
-
-	// bufferForPath returns the open *editor.Buffer for path across every
-	// pane (they'd all share the same one if more than one pane has it
-	// open — see editor.BufferStore), or nil if it isn't open anywhere —
-	// used by the fsnotify handler below to decide whether an external
-	// change is safe to auto-reload.
-	bufferForPath := func(path string) *editor.Buffer {
-		for _, p := range editorPanes {
-			if buf := p.view.BufferForPath(path); buf != nil {
-				return buf
-			}
-		}
-		return nil
-	}
-
-	// largestOpenBuffer returns the path and byte size of the single
-	// largest buffer open across every editor pane, or ("", 0) if none
-	// are open — used by the memory watchdog below to name which open
-	// file is most likely responsible for high memory use.
-	largestOpenBuffer := func() (path string, sizeBytes int) {
-		for _, p := range editorPanes {
-			if pPath, pSize := p.view.LargestBuffer(); pSize > sizeBytes {
-				path, sizeBytes = pPath, pSize
-			}
-		}
-		return path, sizeBytes
-	}
-
-	// saveAllDirty saves every unsaved file across every editor pane, then
-	// calls onDone — immediately if nothing conflicted, or once every
-	// conflict found along the way has been resolved through
-	// reloadconfirmView (see queueConflicts). A buffer shared by two panes
-	// is simply no longer Dirty by the time the second pane's
-	// SaveDirtyTabs runs, so this never double-writes.
+	// saveAllDirty saves every unsaved file, then calls onDone — immediately
+	// if nothing conflicted, or once every conflict found along the way has
+	// been resolved through reloadconfirmView (see queueConflicts).
 	saveAllDirty := func(onDone func()) {
-		var conflicts []editor.SaveConflict
-		for _, p := range editorPanes {
-			res := p.view.SaveDirtyTabs()
-			for path, err := range res.Failed {
-				debuglog.Error("save %s: %v", path, err)
-			}
-			conflicts = append(conflicts, res.Conflicts...)
-		}
-		queueConflicts(conflicts, onDone)
+		queueConflicts(ws.SaveAll(), onDone)
 	}
 
 	// quitConfirmView warns before quitting would silently discard unsaved
@@ -1423,7 +999,7 @@ func run() error {
 		app.Quit()
 	}
 	confirmQuit := func() {
-		dirty := dirtyPaths()
+		dirty := ws.DirtyPaths()
 		rel := make([]string, len(dirty))
 		for i, p := range dirty {
 			rel[i] = p
@@ -1456,11 +1032,7 @@ func run() error {
 	memPromptView.OnConfirmClose = func() {
 		snoozeUntil = time.Now().Add(memPromptSnooze)
 		app.CloseOverlay()
-		for _, p := range editorPanes {
-			if p.view.CloseTabByPath(targetPath) {
-				return
-			}
-		}
+		ws.CloseTabByPath(targetPath)
 	}
 	promptToFreeMemory := func(heapBytes uint64) {
 		if app.OverlayActive() {
@@ -1469,7 +1041,7 @@ func run() error {
 		if time.Now().Before(snoozeUntil) {
 			return // user already saw and handled this recently
 		}
-		path, size := largestOpenBuffer()
+		path, size := ws.LargestBuffer()
 		if path == "" {
 			return
 		}
@@ -1491,12 +1063,12 @@ func run() error {
 		"open_help":            openHelp,
 		"open_config":          openConfig,
 		"open_action_popup":    openActionPopup,
-		"split_right":          func() { trySplit(layout.Horizontal) },
-		"split_down":           func() { trySplit(layout.Vertical) },
-		"close_pane":           closeFocusedPane,
+		"split_right":          func() { splitPane(layout.Horizontal) },
+		"split_down":           func() { splitPane(layout.Vertical) },
+		"close_pane":           closePane,
 		"reveal_in_tree":       revealInTree,
-		"move_tab_next_pane":   func() { moveActiveTabToPane(1) },
-		"move_tab_prev_pane":   func() { moveActiveTabToPane(-1) },
+		"move_tab_next_pane":   func() { moveActiveTab(1) },
+		"move_tab_prev_pane":   func() { moveActiveTab(-1) },
 	}
 
 	// actionPopupView.OnExecute closes the popup first — restoring
@@ -1504,18 +1076,16 @@ func run() error {
 	// ShowOverlay/CloseOverlay never touch the FocusManager — then
 	// dispatches the selected command: global commands run straight
 	// through the actions map just built, editor commands through
-	// editor.View.ExecuteAction on targetPane(), the same "act on the
-	// editor pane you were just in" fallback openFindReferences/
-	// revealInTree above already rely on.
+	// editor.View.ExecuteAction on the workspace's target pane, the same
+	// "act on the editor pane you were just in" fallback
+	// openFindReferences/revealInTree above already rely on.
 	actionPopupView.OnExecute = func(id string) {
 		app.CloseOverlay()
 		if fn, ok := actions[id]; ok {
 			fn()
 			return
 		}
-		if p, ok := targetPane(); ok {
-			p.view.ExecuteAction(id)
-		}
+		ws.Target().ExecuteAction(id)
 	}
 
 	// rebuildGlobalKeymap resolves globalDefaultKeybinds against cfg's
@@ -1555,11 +1125,7 @@ func run() error {
 
 		treeView.SetKeymap(cfg.Overrides("filetree"))
 		treeView.SetShowIcons(cfg.ShowIcons())
-		for _, p := range editorPanes {
-			p.view.SetKeymap(cfg.Overrides("editor"))
-			p.view.SetTabModeDefaults(derivedTabModes(cfg))
-			p.view.SetShowWhitespace(cfg.ShowWhitespace())
-		}
+		ws.ApplyConfig(paneConfig(cfg))
 		finderView.SetKeymap(cfg.Overrides("finder"))
 		finderView.Replace().SetKeymap(cfg.Overrides("replace"))
 		debugView.SetKeymap(cfg.Overrides("debug"))
@@ -1577,9 +1143,7 @@ func run() error {
 	rebuildGlobalKeymap()
 
 	treeView.OnOpen = func(path string) {
-		activeEditorPane.view.Open(path)
-		app.FocusLeaf(activeEditorPane.leaf.ID)
-		refreshLineStatusFor(path)
+		app.FocusLeaf(ws.Open(path))
 	}
 
 	// OnPathMoved/OnPathDeleted are how the file tree's own create/rename/
@@ -1587,45 +1151,16 @@ func run() error {
 	// goroutine AFTER the filesystem operation succeeded, with absolute
 	// paths, and either path may be a directory — a folder rename moves
 	// every file under it, which editor.View.Repath handles by prefix
-	// itself, so nothing here does path arithmetic.
-	//
-	// Fanned out over every editor pane for the same reason
-	// refreshLineStatusFor and ApplyDiagnostics are: the same file can be
-	// open in several panes, and each pane owns its own tab for it. The
-	// store-level work (re-keying the shared Buffer) still happens exactly
-	// once — see editor.BufferStore.Rekey. The file tree updates its own
-	// node tree, so neither of these calls Refresh.
-	treeView.OnPathMoved = func(oldPath, newPath string) {
-		for _, p := range editorPanes {
-			p.view.Repath(oldPath, newPath)
-		}
-	}
-	// closeDeletedPath fans CloseTabsUnder out over every editor pane for
-	// a path known to be gone from disk — closing clean tabs outright,
-	// leaving a dirty one open but detached. Shared by the tree's own
-	// delete flow (which already knows exactly which path it removed) and
-	// by the fsnotify-driven watch.RefreshEvent handler below (which
-	// doesn't, and has to find out by statting every open path — see
-	// openPathsNotYetDetached).
-	closeDeletedPath := func(path string) {
-		var detached []string
-		for _, p := range editorPanes {
-			detached = append(detached, p.view.CloseTabsUnder(path)...)
-		}
-		if len(detached) > 0 {
-			// The durable record of what happened; the panes themselves show
-			// it as "-- DELETED --" and a ✗ in the tab bar.
-			debuglog.Warn("deleted %s: %d open buffer(s) with unsaved changes stay open (\":w\" recreates the file, \":q!\" discards): %s",
-				path, len(detached), strings.Join(detached, ", "))
-		}
-	}
-	treeView.OnPathDeleted = closeDeletedPath
+	// itself, so nothing here does path arithmetic. The file tree updates
+	// its own node tree, so neither of these calls Refresh.
+	treeView.OnPathMoved = ws.Repath
+	treeView.OnPathDeleted = ws.CloseDeleted
 	treeView.OnShowHistory = openFileHistory
 	// The context menu's "Copy Path" items — same clipboard route as the
 	// editor panes' CopyFunc.
 	treeView.CopyFunc = app.CopyToClipboard
 	// Run last, after the tabs are carrying their new paths: refreshGitStatus
-	// ends in refreshAllLineStatus, and ApplyLineStatus matches on a tab's
+	// ends in ws.RefreshAllLineStatus, and ApplyLineStatus matches on a tab's
 	// path — so doing this first would leave a moved file's gutter blank
 	// until something else invalidated it.
 	treeView.OnMutated = refreshGitStatus
@@ -1644,48 +1179,11 @@ func run() error {
 			debuglog.Debug("fsnotify refresh: gitChanged=%v fsChanged=%v", e.GitChanged, e.FSChanged)
 			if e.FSChanged {
 				treeView.Refresh()
-				// RefreshEvent only says "something changed", never what —
-				// so a file open in an editor pane that an external delete
-				// (from outside nib) just removed is only found by statting
-				// every open path against disk, same as the tree's own
-				// re-scan just did for the paths it knows about. A path that
-				// still exists but whose mtime/size no longer matches what
-				// nib last synced with (see editor.Buffer.NoteDiskStat) gets
-				// flagged live in its tab(s) — the save-time conflict check
-				// (see editor.View.saveTab) does its own fresh stat later,
-				// so this is purely the proactive indicator, not the guard.
-				for _, path := range openPathsNotYetDetached() {
-					info, err := os.Stat(path)
-					if os.IsNotExist(err) {
-						closeDeletedPath(path)
-						continue
-					}
-					if err != nil {
-						continue // unreadable for some other reason; leave state as-is
-					}
-					for _, p := range editorPanes {
-						p.view.NoteDiskStat(path, info)
-					}
-					// A buffer with no local edits has nothing to lose, so
-					// there's no real conflict to ask about (unlike the
-					// dirty case, resolved via OnSaveConflict) — silently
-					// pull in the external change rather than leave it
-					// merely flagged. RefreshBuffer/MarkJustReloaded are
-					// fanned out over every pane the same way
-					// reloadconfirmView's own OnReloadFromDisk does, since
-					// this buffer may be shared (see BufferStore).
-					if buf := bufferForPath(path); buf != nil && buf.ExternallyModified && !buf.Dirty {
-						if err := buf.Reload(); err != nil {
-							debuglog.Warn("auto-reload %s: %v", path, err)
-						} else {
-							for _, p := range editorPanes {
-								p.view.RefreshBuffer(buf)
-								p.view.MarkJustReloaded(buf)
-							}
-							refreshLineStatusFor(path)
-						}
-					}
-				}
+				// RefreshEvent only says "something changed", never what, so
+				// every open file is checked against disk: deleted ones close
+				// (or detach, if dirty), changed clean ones reload, changed
+				// dirty ones are flagged. See Workspace.SyncWithDisk.
+				ws.SyncWithDisk()
 			}
 			// A plain unstaged edit (including this app's own Save) never
 			// touches .git/index or HEAD, so it's only ever reported as
@@ -1693,7 +1191,7 @@ func run() error {
 			// file's porcelain status (clean -> modified, i.e. the marker
 			// the file tree and finder show) and its line-level diff, so a
 			// bare FSChanged has to re-run the same refresh a GitChanged
-			// does. refreshGitStatus ends by calling refreshAllLineStatus,
+			// does. refreshGitStatus ends by calling ws.RefreshAllLineStatus,
 			// so the line-level gutters are covered by this too.
 			if e.GitChanged || e.FSChanged {
 				refreshGitStatus()
@@ -1705,13 +1203,7 @@ func run() error {
 		case finder.FileListResult:
 			finderView.ApplyFileListResult(e)
 		case lsp.DiagnosticsEvent:
-			// Fanned out to every pane, exactly like refreshLineStatusFor
-			// does for git line status: ApplyDiagnostics is a no-op in panes
-			// that don't have this file open, and a file open in two panes
-			// needs the markers in both.
-			for _, p := range editorPanes {
-				p.view.ApplyDiagnostics(e.Path, e.Diagnostics)
-			}
+			ws.ApplyDiagnostics(e.Path, e.Diagnostics)
 		case editor.HighlightResult:
 			// Like DiagnosticsEvent, but with no fan-out to do: a highlight
 			// belongs to the shared Buffer, not to a pane, so storing it
@@ -1733,7 +1225,7 @@ func run() error {
 	// memWatchThreshold, posts memoryThresholdEvent onto the event loop —
 	// see internal/memwatch and promptToFreeMemory above. Mirrors the
 	// fsnotify watcher goroutine just below: a background goroutine that
-	// only ever talks to the UI by posting, never touching editorPanes or
+	// only ever talks to the UI by posting, never touching the workspace or
 	// any View directly.
 	memThreshold := memWatchThreshold
 	if mib := cfg.MemWatchThresholdMiB(); mib > 0 {
@@ -1765,9 +1257,7 @@ func run() error {
 	}
 
 	if openOnStart != "" {
-		activeEditorPane.view.Open(openOnStart)
-		app.FocusLeaf(activeEditorPane.leaf.ID)
-		refreshLineStatusFor(openOnStart)
+		app.FocusLeaf(ws.Open(openOnStart))
 		treeView.Reveal(openOnStart)
 	}
 
@@ -1784,34 +1274,12 @@ func run() error {
 				if sess.TreeWidth > 0 {
 					panes.Children[0].Hint = layout.Fixed(sess.TreeWidth)
 				}
-				first := true
-				root, focused := session.Build(sess, func(sp session.Pane) *layout.LeafNode {
-					states, active := existingTabs(absRoot, sp)
-					if len(states) == 0 {
-						return nil
-					}
-					// The first surviving pane reuses the initial (still
-					// empty) editor pane rather than orphaning it.
-					p := activeEditorPane
-					if !first {
-						p = &editorPane{leaf: &layout.LeafNode{ID: nextLeafID, View: newEditorView()}}
-						p.view = p.leaf.View.(*editor.View)
-						editorPanes[p.leaf.ID] = p
-						nextLeafID++
-					}
-					first = false
-					p.view.RestoreTabs(states, active)
-					for _, st := range states {
-						refreshLineStatusFor(st.Path)
-					}
-					return p.leaf
-				})
-				if root == nil {
+				focused, ok := ws.Restore(sess)
+				if !ok {
 					return
 				}
-				panes.Children[1].Node = root
-				rebuildAndFocus(app, focused.ID)
-				if path := editorPanes[focused.ID].view.ActivePath(); path != "" {
+				rebuildAndFocus(app, focused)
+				if path := ws.Active().ActivePath(); path != "" {
 					treeView.Reveal(path)
 				}
 			})
@@ -1844,13 +1312,7 @@ func run() error {
 
 	runErr := app.Run()
 	if trusted {
-		sess := session.Capture(tree, func(l *layout.LeafNode) (*session.Pane, bool) {
-			p, ok := editorPanes[l.ID]
-			if !ok {
-				return nil, false
-			}
-			return capturePane(absRoot, p.view)
-		}, activeEditorPane.leaf.ID)
+		sess := ws.Capture()
 		// A dragged tree width is worth keeping even with nothing open.
 		if w := panes.Children[0].Hint.Fixed; w != defaultTreeWidth {
 			if sess == nil {
@@ -1886,38 +1348,4 @@ func restoreSession(root string, apply func(*session.Session)) {
 	if sess != nil {
 		apply(sess)
 	}
-}
-
-// existingTabs converts a saved pane's tabs into editor.TabStates with
-// absolute paths, skipping files that no longer exist (deleted or renamed
-// since the session was saved) and remapping the active index onto what's
-// left — falling back to the first tab if the active one was skipped.
-func existingTabs(root string, sp session.Pane) ([]editor.TabState, int) {
-	var states []editor.TabState
-	active := 0
-	for i, t := range sp.Tabs {
-		path := session.AbsPath(root, t.Path)
-		if info, err := os.Stat(path); err != nil || info.IsDir() {
-			continue
-		}
-		if i == sp.Active {
-			active = len(states)
-		}
-		states = append(states, editor.TabState{Path: path, Line: t.Line, Col: t.Col, TopLine: t.Top})
-	}
-	return states, active
-}
-
-// capturePane is existingTabs' inverse, for saving: ok is false for a pane
-// with nothing open, which session.Capture then leaves out.
-func capturePane(root string, v *editor.View) (*session.Pane, bool) {
-	states, active := v.TabStates()
-	if len(states) == 0 {
-		return nil, false
-	}
-	sp := &session.Pane{Active: active, Tabs: make([]session.Tab, len(states))}
-	for i, st := range states {
-		sp.Tabs[i] = session.Tab{Path: session.RelPath(root, st.Path), Line: st.Line, Col: st.Col, Top: st.TopLine}
-	}
-	return sp, true
 }
