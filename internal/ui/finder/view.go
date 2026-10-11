@@ -33,7 +33,7 @@ var Scope = config.Scope{Name: "finder", Title: "Finder", Actions: config.Action
 	{ID: "open_selection", Keys: []string{"Enter"}, Desc: "Open selection"},
 	{ID: "move_down", Keys: []string{"Down"}, Desc: "Move selection down"},
 	{ID: "move_up", Keys: []string{"Up"}, Desc: "Move selection up"},
-	// Jumps focus into (or back out of) the folder-scope field below the
+	// Jumps focus into (or back out of) the scope field below the
 	// query prompt — see focusScope, Render, and HandleKey. Not Ctrl+g
 	// (editor's own "go to parent node") or Ctrl+l (global's own
 	// "reload_config"): the finder overlay owns all input while shown, so
@@ -44,7 +44,7 @@ var Scope = config.Scope{Name: "finder", Title: "Finder", Actions: config.Action
 }}
 
 // viewFocus is which field a keystroke currently goes to: the search
-// query (the default) or the folder-scope field below it. A distinct type
+// query (the default) or the scope field below it. A distinct type
 // from ReplaceView's own inputFocus (focusFind/focusReplace/focusResults)
 // even though the concept is the same — the two views' focus states don't
 // overlap enough to share one enum.
@@ -191,9 +191,9 @@ func (v *View) SetKeymap(overrides map[string]string) {
 	v.keymap = Scope.Actions.Resolve(overrides)
 }
 
-// scopeLabel prefixes the folder-scope field, mirroring ReplaceView's own
+// scopeLabel prefixes the scope field, mirroring ReplaceView's own
 // findLabel/replaceLabel convention.
-const scopeLabel = "Folder: "
+const scopeLabel = "Scope: "
 
 func (v *View) Title() string {
 	base := "Find File"
@@ -226,7 +226,7 @@ func (v *View) Open() {
 	v.openScoped("")
 }
 
-// OpenScoped is like Open, but pre-fills the folder-scope field with
+// OpenScoped is like Open, but pre-fills the scope field with
 // absDir (converted to a path relative to the project root) instead of
 // leaving it empty. The field stays editable once the popup is open (see
 // scopeField, HandleKey's "focus_scope" action) — this is only a starting
@@ -254,7 +254,18 @@ func (v *View) openScoped(scope string) {
 // editor.View.WordUnderCursor) so the user doesn't have to retype the
 // identifier under their cursor.
 func (v *View) OpenWithQuery(query string) {
-	v.Open()
+	v.openWithQuery(query, "")
+}
+
+// OpenWithQueryScoped is OpenWithQuery limited to absPath — a folder, or a
+// single file (a scope is a git pathspec, so either works): e.g. the file
+// the editor pane it was opened from is showing.
+func (v *View) OpenWithQueryScoped(query, absPath string) {
+	v.openWithQuery(query, relScope(v.root, absPath))
+}
+
+func (v *View) openWithQuery(query, scope string) {
+	v.openScoped(scope)
 	v.mode = modeContent
 	v.query = textfield.New(query)
 	v.refilter()
@@ -267,11 +278,19 @@ func (v *View) OpenReplace() {
 	v.openReplace("")
 }
 
-// OpenReplaceScoped is OpenReplace with the folder-scope field (both this
+// OpenReplaceScoped is OpenReplace with the scope field (both this
 // View's own and the embedded ReplaceView's — see SetScope) pre-filled
 // from absDir, mirroring OpenScoped.
 func (v *View) OpenReplaceScoped(absDir string) {
 	v.openReplace(relScope(v.root, absDir))
+}
+
+// OpenReplaceWithQueryScoped is OpenReplaceScoped with the Find field
+// pre-filled with query — e.g. Ctrl+R from an editor pane: the word under
+// the cursor, limited to that pane's file.
+func (v *View) OpenReplaceWithQueryScoped(query, absPath string) {
+	v.openReplace(relScope(v.root, absPath))
+	v.replace.SetQuery(query)
 }
 
 func (v *View) openReplace(scope string) {
@@ -507,7 +526,7 @@ func (v *View) CursorPosition() (int, int, bool) {
 	return len(v.promptPrefix()) + v.query.Caret(), 0, true
 }
 
-// scopeRowSegments builds the folder-scope field's row: a dim placeholder
+// scopeRowSegments builds the scope field's row: a dim placeholder
 // when empty and unfocused, so it doesn't visually compete with an active
 // search; the real path otherwise, bolded while focused — the same
 // on/unfocused convention ReplaceView's fieldStyle uses for Find/Replace.

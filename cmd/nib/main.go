@@ -854,12 +854,24 @@ func run() error {
 		reloadConfig()
 	}
 
+	// focusedEditorFile is the file an editor pane shows, when an editor
+	// pane has focus and a file open — what search and replace start
+	// limited to when opened from one.
+	focusedEditorFile := func() (string, bool) {
+		id, ok := app.FocusedLeaf()
+		if !ok || !ws.IsPane(id) {
+			return "", false
+		}
+		path := ws.Target().ActivePath()
+		return path, path != ""
+	}
 	// openFindReferences is Ctrl+F's global handler (see
 	// globalScope): tries the language server's real references
 	// first (opening refView on a non-empty answer), and falls back to the
 	// finder's content search — pre-filled with the word under the
-	// cursor, exactly as this always behaved — both when no server could
-	// take the request at all and when it answered with nothing found.
+	// cursor, and limited to the current file when an editor pane has
+	// focus — both when no server could take the request at all and when
+	// it answered with nothing found.
 	// Same LSP-then-fallback shape goToDefinition uses (navigate.go).
 	//
 	// Like every focus-driven action, it acts on the workspace's target
@@ -868,8 +880,15 @@ func run() error {
 	openFindReferences := func() {
 		v := ws.Target()
 		word := v.WordUnderCursor()
+		// Read now, not in fallback: the language server may answer after
+		// focus has moved on.
+		file, inEditor := focusedEditorFile()
 		fallback := func() {
-			finderView.OpenWithQuery(word)
+			if inEditor {
+				finderView.OpenWithQueryScoped(word, file)
+			} else {
+				finderView.OpenWithQuery(word)
+			}
 			app.ShowOverlay(finderView)
 		}
 		dispatched := v.FindReferences(func(locs []lsp.Location, ok bool) {
@@ -955,10 +974,14 @@ func run() error {
 	}
 	// openReplace jumps straight into replace mode, the same direct-to-mode
 	// shortcut openFindReferences gives content-search mode — scoped to the
-	// selected folder when the file tree is focused, mirroring openFinder.
+	// selected folder when the file tree is focused, mirroring openFinder,
+	// and to the current file, with the word under the cursor as the Find
+	// text, when an editor pane is.
 	openReplace := func() {
 		if id, ok := app.FocusedLeaf(); ok && id == fileTreeLeaf.ID {
 			finderView.OpenReplaceScoped(treeView.SelectedDir())
+		} else if file, ok := focusedEditorFile(); ok {
+			finderView.OpenReplaceWithQueryScoped(ws.Target().WordUnderCursor(), file)
 		} else {
 			finderView.OpenReplace()
 		}

@@ -58,7 +58,7 @@ var Scope = config.Scope{Name: "editor", Title: "Editor", Actions: config.Action
 	{ID: "insert_mode", Keys: []string{"i"}, Desc: "Enter Insert mode"},
 	{ID: "append_mode", Keys: []string{"a"}, Desc: "Enter Insert mode, after the cursor"},
 	{ID: "append_new_line_mode", Keys: []string{"o"}, Desc: "Open a new line below and enter Insert mode"},
-	{ID: "normal_mode", Keys: []string{"Esc"}, Desc: "Return to Normal mode, or dismiss the mouse selection"},
+	{ID: "normal_mode", Keys: []string{"Esc"}, Desc: "Return to Normal mode, or dismiss the mouse selection, or hide search highlights"},
 	{ID: "delete_char_forward", Keys: []string{"x"}, Desc: "Delete the character under the cursor"},
 	{ID: "delete_char_backward", Keys: []string{"X"}, Desc: "Delete the character before the cursor"},
 	// "r" is vim's replace-char-under-cursor ("r<char>"): the key
@@ -92,7 +92,7 @@ var Scope = config.Scope{Name: "editor", Title: "Editor", Actions: config.Action
 	// the "tabmode" directive in internal/config.
 	{ID: "toggle_tab_mode", Keys: []string{"Ctrl+Alt+t"}, Desc: "Toggle this file between spaces and tabs", InPopup: true},
 	{ID: "command_mode", Keys: []string{":"}, Desc: "Command line: :<N> goes to a line, :w :q :wq …"},
-	{ID: "search_mode", Keys: []string{"/"}, Desc: "Search in this file: type, Enter to jump, Esc to cancel"},
+	{ID: "search_mode", Keys: []string{"/"}, Desc: "Search in this file: jumps as you type, Enter keeps it (empty Enter repeats the last), Esc cancels"},
 	{ID: "search_next", Keys: []string{"n"}, Desc: "Next search match", InPopup: true},
 	{ID: "search_prev", Keys: []string{"N"}, Desc: "Previous search match", InPopup: true},
 	{ID: "go_to_parent", Keys: []string{"Ctrl+g"}, Desc: "Go to parent (syntax tree)", InPopup: true},
@@ -452,6 +452,16 @@ type View struct {
 	searchPattern                   string
 	searchMatches                   []searchMatch
 	searchOriginLn, searchOriginCol int
+	searchOriginTop                 int
+	// searchFor/searchForRev are the tab and buffer revision searchMatches
+	// was computed for — see syncSearchMatches. searchHidden is set by Esc
+	// in Normal mode (vim's :noh) and cleared by the next search or n/N.
+	// searchNotice is a one-key-long status message ("No match: …",
+	// "Search wrapped").
+	searchFor    *tab
+	searchForRev uint64
+	searchHidden bool
+	searchNotice string
 
 	// jumpStack holds positions saved by any jump-like action (see
 	// pushJump's doc comment in navigate.go for the full list), popped by
@@ -1555,7 +1565,12 @@ func (v *View) StatusText() string {
 	if t.justReloaded {
 		prefix += "-- RELOADED -- "
 	}
-	return fmt.Sprintf("%sLn %d, Col %d", prefix, t.cursorLn+1, t.cursorCol+1)
+	status := fmt.Sprintf("%sLn %d, Col %d", prefix, t.cursorLn+1, t.cursorCol+1)
+	v.syncSearchMatches()
+	if search := v.searchStatus(); search != "" {
+		status += "   " + search
+	}
+	return status
 }
 
 // Glyphs for the language-server indicator in LanguageStatus. A filled dot
@@ -1689,7 +1704,8 @@ func (v *View) Render(w layout.Window) {
 	// tab bar; layout.Window has no sub-window primitive of its own (that
 	// lives one level down, on the real vaxis.Window), so the offset is
 	// applied directly to the row index passed to Println instead.
-	renderBody(w, t, tabWidthOf(t), cols, bodyRows, 1, v.searchMatches, v.showWhitespace)
+	v.syncSearchMatches()
+	renderBody(w, t, tabWidthOf(t), cols, bodyRows, 1, v.visibleSearchMatches(), v.showWhitespace)
 
 	// Popups draw last so they sit on top of the file content. Only one can
 	// be up at a time: the tab menu takes priority over everything (it's
@@ -2516,6 +2532,7 @@ func (v *View) HandleKey(k layout.Key) bool {
 	v.gitPopup = nil
 	v.hoverText = ""
 	v.signatureHelp = nil
+	v.searchNotice = ""
 	// Same lifetime, but per-tab rather than pane-wide — see
 	// tab.justReloaded's doc comment.
 	for _, t := range v.tabs {
@@ -2591,14 +2608,20 @@ func (v *View) HandleKey(k layout.Key) bool {
 
 	if action == "normal_mode" {
 		// Esc in Normal mode has no mode to leave, but it does dismiss a
-		// selection. Deliberately only consumed when there IS one: an Esc
-		// with nothing to dismiss has always bubbled to the global keymap,
-		// and swallowing it here would quietly break that.
-		if t == nil || !t.hasSel {
-			return false
+		// selection, or else hide the search highlights (vim's :noh — n/N
+		// bring them back). Deliberately only consumed when there IS
+		// something to dismiss: an Esc with nothing to dismiss has always
+		// bubbled to the global keymap, and swallowing it here would quietly
+		// break that.
+		if t != nil && t.hasSel {
+			t.clearSelection()
+			return true
 		}
-		t.clearSelection()
-		return true
+		if !v.searchHidden && len(v.searchMatches) > 0 {
+			v.searchHidden = true
+			return true
+		}
+		return false
 	}
 	return v.runAction(action, count)
 }
@@ -2759,7 +2782,7 @@ func (v *View) HandlePaste(s string) bool {
 		return true
 	case modeSearch:
 		v.searchField.InsertText(strings.ReplaceAll(s, "\n", ""))
-		v.refreshSearchHighlights()
+		v.searchTextChanged()
 		return true
 	case modeRename:
 		v.renameField.InsertText(strings.ReplaceAll(s, "\n", ""))
@@ -3625,8 +3648,8 @@ func (v *View) onBufferEdited(t *tab) {
 	// keystroke, not just once the edit completes. Cheap enough to redo
 	// every time — a linear substring scan, the same cost stepSearch
 	// already pays on every n/N.
-	if v.searchPattern != "" {
-		v.refreshSearchMatchesForPattern()
+	if v.searchText() != "" {
+		v.recomputeSearchMatches()
 	}
 	// Deliberately NOT while typing: mid-edit code is almost always
 	// momentarily unparseable, so refreshing here would flag an error under

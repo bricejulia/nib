@@ -234,3 +234,52 @@ func TestReplaceViewScopeFieldNarrowsResultsToSubtree(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenWithQueryScopedToAFileSearchesOnlyThatFile(t *testing.T) {
+	dir := newScopedTestRepo(t)
+	v := New(dir)
+
+	v.OpenWithQueryScoped("needle", filepath.Join(dir, "top.go"))
+
+	if v.mode != modeContent {
+		t.Fatalf("mode = %v, want content search", v.mode)
+	}
+	if got := v.scopeField.String(); got != "top.go" {
+		t.Errorf("scope field = %q, want %q", got, "top.go")
+	}
+	if len(v.contentMatches) != 1 || v.contentMatches[0].path != "top.go" {
+		t.Fatalf("contentMatches = %+v, want only top.go's match", v.contentMatches)
+	}
+}
+
+func TestOpenReplaceWithQueryScopedPrefillsFindAndScope(t *testing.T) {
+	dir := newScopedTestRepo(t)
+	v := New(dir)
+
+	v.OpenReplaceWithQueryScoped("needle", filepath.Join(dir, "sub", "inner.go"))
+
+	if v.mode != modeReplace {
+		t.Fatalf("mode = %v, want replace", v.mode)
+	}
+	if got := v.replace.find.String(); got != "needle" {
+		t.Errorf("Find = %q, want %q", got, "needle")
+	}
+	if got := v.replace.find.Caret(); got != len("needle") {
+		t.Errorf("Find caret = %d, want at the end", got)
+	}
+	if got := v.replace.scopeField.String(); got != "sub/inner.go" {
+		t.Errorf("replace scope = %q, want %q", got, "sub/inner.go")
+	}
+	if files, occs := v.replace.counts(); files != 1 || occs != 1 {
+		t.Errorf("counts = %d files, %d occurrences; want 1, 1 (only sub/inner.go)", files, occs)
+	}
+}
+
+func TestScopeRowIsLabelledScope(t *testing.T) {
+	v := New("/project")
+	v.OpenScoped("/project/sub")
+	segs := v.scopeRowSegments()
+	if len(segs) == 0 || segs[0].Text != "Scope: sub" {
+		t.Errorf("scope row = %+v, want %q", segs, "Scope: sub")
+	}
+}

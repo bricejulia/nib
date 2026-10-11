@@ -278,24 +278,134 @@ func TestSearchEscRestoresCursorAndClearsHighlights(t *testing.T) {
 	}
 }
 
-func TestSearchHighlightsUpdateWhileTypingWithoutMovingCursor(t *testing.T) {
-	v, tb := searchView()
-	startLn, startCol := tb.cursorLn, tb.cursorCol
+func TestSearchJumpsLiveWhileTyping(t *testing.T) {
+	v, tb := searchView() // cursor at (0,0)
 
 	v.HandleKey(layout.Key{Text: "/"})
 	v.HandleKey(layout.Key{Text: "a"})
-	if len(v.searchMatches) == 0 {
-		t.Fatal("expected highlights while typing")
-	}
-	if tb.cursorLn != startLn || tb.cursorCol != startCol {
-		t.Error("the cursor must not move until Enter")
+	if tb.cursorLn != 0 || tb.cursorCol != 4 {
+		t.Errorf("after /a cursor = (%d,%d), want the first match after the origin, (0,4)", tb.cursorLn, tb.cursorCol)
 	}
 
-	// Narrowing the pattern narrows the match set.
-	before := len(v.searchMatches)
-	v.HandleKey(layout.Key{Text: "l"}) // "al"
-	if len(v.searchMatches) >= before {
-		t.Errorf("expected fewer matches for a longer pattern, got %d then %d", before, len(v.searchMatches))
+	typeSearch(v, "lp") // "alp": (0,0) is the origin itself, so the next one
+	if tb.cursorLn != 2 || tb.cursorCol != 0 {
+		t.Errorf("after /alp cursor = (%d,%d), want (2,0)", tb.cursorLn, tb.cursorCol)
+	}
+
+	v.HandleKey(layout.Key{Text: "z"}) // "alpz": no match
+	if tb.cursorLn != 0 || tb.cursorCol != 0 {
+		t.Errorf("with no match cursor = (%d,%d), want back at the origin", tb.cursorLn, tb.cursorCol)
+	}
+	if len(v.jumpStack) != 0 {
+		t.Errorf("typing pushed %d jumps, want none until Enter", len(v.jumpStack))
+	}
+}
+
+func typeSearch(v *View, s string) {
+	for _, r := range s {
+		v.HandleKey(layout.Key{Text: string(r)})
+	}
+}
+
+func commit(v *View, pattern string) {
+	v.HandleKey(layout.Key{Text: "/"})
+	typeSearch(v, pattern)
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+}
+
+func TestSearchEscInPromptBringsBackThePreviousSearch(t *testing.T) {
+	v, tb := searchView()
+	commit(v, "beta")
+	tb.cursorLn, tb.cursorCol = 0, 0
+
+	v.HandleKey(layout.Key{Text: "/"})
+	typeSearch(v, "alpha")
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+
+	if tb.cursorLn != 0 || tb.cursorCol != 0 {
+		t.Errorf("cursor = (%d,%d), want restored to (0,0)", tb.cursorLn, tb.cursorCol)
+	}
+	if len(v.searchMatches) != 1 || v.searchMatches[0].ln != 1 {
+		t.Errorf("matches = %+v, want beta's single match back", v.searchMatches)
+	}
+}
+
+func TestEscInNormalModeHidesHighlightsUntilN(t *testing.T) {
+	v, _ := searchView()
+	commit(v, "alpha")
+
+	if !v.HandleKey(layout.Key{Named: layout.KeyEsc}) {
+		t.Fatal("Esc with highlights showing should be consumed")
+	}
+	if v.visibleSearchMatches() != nil || strings.Contains(v.StatusText(), "/alpha") {
+		t.Error("Esc should hide the highlights and the search status")
+	}
+	if v.HandleKey(layout.Key{Named: layout.KeyEsc}) {
+		t.Error("Esc with nothing to hide should bubble, not be consumed")
+	}
+
+	v.HandleKey(layout.Key{Text: "n"})
+	if len(v.visibleSearchMatches()) != 2 {
+		t.Errorf("n should bring the highlights back, got %+v", v.visibleSearchMatches())
+	}
+}
+
+func TestEmptyEnterRepeatsTheLastSearch(t *testing.T) {
+	v, tb := searchView()
+	commit(v, "alpha")
+	tb.cursorLn, tb.cursorCol = 0, 0
+
+	commit(v, "")
+
+	if tb.cursorLn != 2 || tb.cursorCol != 0 {
+		t.Errorf("cursor = (%d,%d), want the next alpha at (2,0)", tb.cursorLn, tb.cursorCol)
+	}
+	if v.searchPattern != "alpha" || len(v.searchMatches) != 2 {
+		t.Errorf("pattern %q with %d matches, want alpha's 2", v.searchPattern, len(v.searchMatches))
+	}
+}
+
+func TestSearchStatusShowsWhichMatchOutOfHowMany(t *testing.T) {
+	v, tb := searchView()
+	commit(v, "alpha") // lands on (2,0), the second match
+
+	if got := v.StatusText(); !strings.HasSuffix(got, "/alpha [2/2]") {
+		t.Errorf("StatusText = %q, want it to end with %q", got, "/alpha [2/2]")
+	}
+	tb.cursorLn = 1
+	if got := v.StatusText(); !strings.HasSuffix(got, "/alpha [2]") {
+		t.Errorf("off a match, StatusText = %q, want it to end with %q", got, "/alpha [2]")
+	}
+}
+
+func TestSearchNoticesShowUntilTheNextKey(t *testing.T) {
+	v, _ := searchView()
+	commit(v, "zzz")
+	if got := v.StatusText(); !strings.Contains(got, "No match: zzz") {
+		t.Errorf("StatusText = %q, want a no-match notice", got)
+	}
+	v.HandleKey(layout.Key{Text: "j"})
+	if got := v.StatusText(); strings.Contains(got, "No match") {
+		t.Errorf("StatusText = %q, want the notice gone after the next key", got)
+	}
+
+	commit(v, "alpha") // from (1,0): lands on (2,0)
+	v.HandleKey(layout.Key{Text: "n"})
+	if got := v.StatusText(); !strings.Contains(got, "Search wrapped") {
+		t.Errorf("StatusText = %q, want a wrap notice after n past the last match", got)
+	}
+}
+
+func TestSwitchingTabsRecomputesHighlights(t *testing.T) {
+	v, _ := searchView()
+	v.tabs = append(v.tabs, &tab{path: "u.txt", buf: &Buffer{Path: "u.txt", Lines: []string{"no match here", "but alpha here"}}})
+	commit(v, "alpha")
+
+	v.NextTab()
+	v.Render(newFakeWindow(80, 10))
+
+	if len(v.searchMatches) != 1 || v.searchMatches[0].ln != 1 || v.searchMatches[0].start != 4 {
+		t.Errorf("matches after switching tab = %+v, want u.txt's single match at (1,4)", v.searchMatches)
 	}
 }
 
