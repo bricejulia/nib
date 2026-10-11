@@ -480,6 +480,57 @@ func TestSaveWritesSourceAndClearsDirty(t *testing.T) {
 	}
 }
 
+func TestSaveKeepsWhetherTheFileEndedWithANewline(t *testing.T) {
+	for _, tc := range []struct{ name, original, want string }{
+		{"LF with final newline", "one\ntwo\n", "one!\ntwo\n"},
+		{"CRLF with final newline", "one\r\ntwo\r\n", "one!\r\ntwo\r\n"},
+		{"no final newline", "one\ntwo", "one!\ntwo"},
+		{"only a newline", "\n", "!\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "f.txt")
+			if err := os.WriteFile(path, []byte(tc.original), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			buf, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			buf.InsertText(0, len([]rune(buf.Lines[0])), "!")
+			if err := buf.Save(); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("file contents = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReloadPicksUpAChangedFinalNewline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(path, []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	buf, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := buf.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if !buf.FinalEOL {
+		t.Error("Reload should pick up the file's new final newline")
+	}
+}
+
 func TestSavePreservesFileMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "script.sh")
@@ -630,11 +681,8 @@ func TestLoadStripsCRLFAndSaveWritesItBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No trailing "\r\n" on the last line: nib already drops a file's
-	// final newline on save regardless of EOL style (a pre-existing,
-	// unrelated behavior — see Buffer.Save's doc comment) — this just
-	// confirms CRLF is used between lines instead of "\n".
-	if string(got) != "one!\r\ntwo\r\nthree" {
+	// CRLF between lines and after the last one, as the file had it.
+	if string(got) != "one!\r\ntwo\r\nthree\r\n" {
 		t.Fatalf("saved file = %q, want CRLF preserved", got)
 	}
 }

@@ -216,8 +216,8 @@ func TestDirtyPathsIsDeduplicatedAndSorted(t *testing.T) {
 
 func TestSaveAllWritesOnceAndReturnsConflicts(t *testing.T) {
 	f := newFixture(t, Options{})
-	a := f.file("a.txt", "a")
-	b := f.file("b.txt", "b")
+	a := f.file("a.txt", "a\n")
+	b := f.file("b.txt", "b\n")
 	f.ws.Open(b)
 	f.ws.Open(a)
 	f.edit(a)
@@ -230,7 +230,7 @@ func TestSaveAllWritesOnceAndReturnsConflicts(t *testing.T) {
 	if len(conflicts) != 1 || conflicts[0].Path != b {
 		t.Fatalf("conflicts = %v, want exactly %s", conflicts, b)
 	}
-	if got := readFile(t, a); got != "edited a" {
+	if got := readFile(t, a); got != "edited a\n" {
 		t.Errorf("a.txt = %q, want the saved edit", got)
 	}
 	if got := f.ws.DirtyPaths(); !slices.Equal(got, []string{b}) {
@@ -238,7 +238,7 @@ func TestSaveAllWritesOnceAndReturnsConflicts(t *testing.T) {
 	}
 
 	f.ws.KeepMine(conflicts[0])
-	if got := readFile(t, b); got != "edited b" {
+	if got := readFile(t, b); got != "edited b\n" {
 		t.Errorf("after KeepMine b.txt = %q, want the buffer's content", got)
 	}
 }
