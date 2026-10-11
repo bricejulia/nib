@@ -1011,9 +1011,17 @@ func run() error {
 		app.ShowOverlay(quitConfirmView)
 	}
 
+	// memThreshold is the heap size past which memWatcher (started near the
+	// end of this function) prompts: memWatchThreshold unless the config
+	// sets its own.
+	memThreshold := memWatchThreshold
+	if mib := cfg.MemWatchThresholdMiB(); mib > 0 {
+		memThreshold = uint64(mib) << 20
+	}
+
 	// memPromptView offers to close whichever open file is using the most
-	// memory, shown when memWatcher (started near the end of this
-	// function) reports nib's own heap crossing memWatchThreshold — see
+	// memory, shown when memWatcher reports nib's own heap crossing
+	// memThreshold — see
 	// internal/memwatch and internal/ui/memprompt. targetPath is captured
 	// by promptToFreeMemory below and read back by OnConfirmClose, since
 	// the file being offered up isn't necessarily the one the user is
@@ -1021,7 +1029,7 @@ func run() error {
 	memPromptView := memprompt.New()
 	var targetPath string
 	// snoozeUntil is set whenever the user dismisses the prompt (either
-	// button), so a noisy heap sample bouncing back above memWatchThreshold
+	// button), so a noisy heap sample bouncing back above memThreshold
 	// a few seconds later doesn't immediately reopen it — see
 	// promptToFreeMemory below.
 	var snoozeUntil time.Time
@@ -1047,7 +1055,7 @@ func run() error {
 		}
 		targetPath = path
 		debuglog.Warn("memory: heap ~%d MiB exceeds ~%d MiB, prompting to close %s (~%d MiB)",
-			heapBytes>>20, memWatchThreshold>>20, path, size>>20)
+			heapBytes>>20, memThreshold>>20, path, size>>20)
 		memPromptView.Show(path, size, int(heapBytes))
 		app.ShowOverlay(memPromptView)
 	}
@@ -1222,15 +1230,11 @@ func run() error {
 	})
 
 	// memWatcher periodically samples nib's own heap and, past
-	// memWatchThreshold, posts memoryThresholdEvent onto the event loop —
+	// memThreshold, posts memoryThresholdEvent onto the event loop —
 	// see internal/memwatch and promptToFreeMemory above. Mirrors the
 	// fsnotify watcher goroutine just below: a background goroutine that
 	// only ever talks to the UI by posting, never touching the workspace or
 	// any View directly.
-	memThreshold := memWatchThreshold
-	if mib := cfg.MemWatchThresholdMiB(); mib > 0 {
-		memThreshold = uint64(mib) << 20
-	}
 	memWatcher := memwatch.New(memThreshold, memWatchInterval, func(heap uint64) {
 		app.Post(memoryThresholdEvent{heapBytes: heap})
 	})
