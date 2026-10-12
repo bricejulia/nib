@@ -218,14 +218,44 @@ func (v *View) activeRoot() *Node {
 // it mirrors the project's directory structure but pruned to only the
 // paths that are actually dirty. Rebuilt wholesale on every call — direct
 // is small enough that this is simpler than diffing it against the
-// previous tree — so, unlike the disk tree, a ModeChanges directory never
-// carries Expanded state across a refresh. Always marks the pane dirty,
-// mirroring ApplyStatus, so the tree is current the moment the user
-// switches to ModeChanges even if it was rebuilt while ModeFiles was
-// active.
+// previous tree — but a directory the user collapsed stays collapsed (a
+// newly dirty one comes up expanded), and when ModeChanges is showing, the
+// cursor stays on the same path rather than the same row index. Always
+// marks the pane dirty, mirroring ApplyStatus, so the tree is current the
+// moment the user switches to ModeChanges even if it was rebuilt while
+// ModeFiles was active.
 func (v *View) ApplyChanges(direct map[string]gitstatus.Status) {
-	v.changesRoot = buildChangesTree(v.root.Path, direct)
+	collapsed := map[string]bool{}
+	var walk func(n *Node)
+	walk = func(n *Node) {
+		for _, c := range n.Children {
+			if c.IsDir {
+				if !c.Expanded {
+					collapsed[c.Path] = true
+				}
+				walk(c)
+			}
+		}
+	}
+	walk(v.changesRoot)
+
+	selected := ""
+	if v.mode == ModeChanges && v.cursor >= 0 && v.cursor < len(v.rows) {
+		selected = v.rows[v.cursor].Node.Path
+	}
+
+	v.changesRoot = buildChangesTree(v.root.Path, direct, collapsed)
 	v.dirty = true
+
+	if selected != "" {
+		v.ensureFresh()
+		for i, row := range v.rows {
+			if row.Node.Path == selected {
+				v.cursor = i
+				break
+			}
+		}
+	}
 }
 
 // SetMode switches which tree the pane displays, restoring that mode's own

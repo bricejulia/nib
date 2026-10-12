@@ -390,3 +390,37 @@ func TestViewChangesModeIsNavigateAndOpenOnly(t *testing.T) {
 		t.Error("delete (\"d\") should be a no-op in ModeChanges")
 	}
 }
+
+func TestViewChangesModeCollapseSurvivesRefresh(t *testing.T) {
+	v := New(fixtureRoot(t))
+	direct := map[string]gitstatus.Status{
+		"a.txt":     gitstatus.Modified,
+		"sub/c.txt": gitstatus.Untracked,
+	}
+	v.ApplyChanges(direct)
+	v.SetMode(ModeChanges)
+	v.Render(newFakeWindow(40, 10))
+
+	// Rows: sub, sub/c.txt, a.txt — collapse sub from its own row.
+	v.HandleKey(leftKey())
+	v.ApplyChanges(direct)
+	v.Render(newFakeWindow(40, 10))
+
+	if len(v.rows) != 2 || v.rows[0].Node.Name != "sub" || v.rows[0].Node.Expanded {
+		t.Fatalf("sub should still be collapsed after a refresh, got rows %+v", v.rows)
+	}
+	if v.cursor != 0 {
+		t.Fatalf("cursor should stay on sub, got %d", v.cursor)
+	}
+
+	// A directory that only now becomes dirty comes up expanded.
+	direct["new/d.txt"] = gitstatus.Untracked
+	v.ApplyChanges(direct)
+	v.Render(newFakeWindow(40, 10))
+	if n := v.changesRoot.child("new"); n == nil || !n.Expanded {
+		t.Fatalf("a newly dirty directory should come up expanded, got %+v", n)
+	}
+	if v.rows[v.cursor].Node.Name != "sub" {
+		t.Fatalf("cursor should follow sub across the rebuild, got %s", v.rows[v.cursor].Node.Name)
+	}
+}

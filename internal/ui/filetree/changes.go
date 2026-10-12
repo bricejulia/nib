@@ -14,11 +14,15 @@ import (
 // forward-slash path — see gitstatus.RunPorcelain) and their ancestor
 // directories.
 //
+// Every directory comes up expanded except those whose absolute path is in
+// collapsed, which is how ApplyChanges carries the user's collapses across
+// a rebuild (nil collapses nothing).
+//
 // Unlike EnsureLoaded, this never touches disk. It's built purely from the
 // path strings git reports, which is what lets a deleted-but-still-tracked
 // file show up here even though it has nothing left on disk to os.Stat —
 // something ModeFiles, which lists real directory entries, can't do.
-func buildChangesTree(rootAbsPath string, direct map[string]gitstatus.Status) *Node {
+func buildChangesTree(rootAbsPath string, direct map[string]gitstatus.Status, collapsed map[string]bool) *Node {
 	root := &Node{Name: filepath.Base(rootAbsPath), Path: rootAbsPath, IsDir: true, Expanded: true, Loaded: true}
 	if len(direct) == 0 {
 		return root
@@ -39,11 +43,12 @@ func buildChangesTree(rootAbsPath string, direct map[string]gitstatus.Status) *N
 			parentRel = ""
 		}
 		parent := dirNode(parentRel)
+		abs := filepath.Join(rootAbsPath, filepath.FromSlash(rel))
 		n := &Node{
 			Name:     path.Base(rel),
-			Path:     filepath.Join(rootAbsPath, filepath.FromSlash(rel)),
+			Path:     abs,
 			IsDir:    true,
-			Expanded: true,
+			Expanded: !collapsed[abs],
 			Loaded:   true,
 			Parent:   parent,
 			Status:   rolled[rel],

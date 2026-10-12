@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuildChangesTreeEmpty(t *testing.T) {
-	root := buildChangesTree("/proj", map[string]gitstatus.Status{})
+	root := buildChangesTree("/proj", map[string]gitstatus.Status{}, nil)
 	if root.Name != "proj" || !root.IsDir || len(root.Children) != 0 {
 		t.Fatalf("empty direct map should yield a childless root, got %+v", root)
 	}
@@ -20,7 +20,7 @@ func TestBuildChangesTreePrunesToOnlyDirtyPaths(t *testing.T) {
 		// "sub/clean.txt" is deliberately absent: a directory with no dirty
 		// descendants (or a clean file inside a dirty one) must not appear.
 	}
-	root := buildChangesTree("/proj", direct)
+	root := buildChangesTree("/proj", direct, nil)
 
 	if len(root.Children) != 2 {
 		t.Fatalf("want 2 top-level entries (a.txt, sub), got %d: %+v", len(root.Children), root.Children)
@@ -57,7 +57,7 @@ func TestBuildChangesTreeIncludesDeletedFiles(t *testing.T) {
 	// the reason buildChangesTree works from git's reported paths alone.
 	root := buildChangesTree("/proj", map[string]gitstatus.Status{
 		"gone.txt": gitstatus.Deleted,
-	})
+	}, nil)
 	gone := root.child("gone.txt")
 	if gone == nil || gone.Status != gitstatus.Deleted {
 		t.Fatalf("want a Deleted leaf for gone.txt, got %+v", gone)
@@ -69,7 +69,7 @@ func TestBuildChangesTreeSortsDirsFirstThenAlphabetically(t *testing.T) {
 		"z.txt":       gitstatus.Modified,
 		"a_dir/f.txt": gitstatus.Modified,
 		"a.txt":       gitstatus.Modified,
-	})
+	}, nil)
 	if len(root.Children) != 3 {
 		t.Fatalf("want 3 top-level entries, got %d", len(root.Children))
 	}
@@ -85,12 +85,25 @@ func TestBuildChangesTreeSharesDirectoryAcrossMultipleDirtyFiles(t *testing.T) {
 	root := buildChangesTree("/proj", map[string]gitstatus.Status{
 		"sub/one.txt": gitstatus.Modified,
 		"sub/two.txt": gitstatus.Added,
-	})
+	}, nil)
 	if len(root.Children) != 1 {
 		t.Fatalf("want a single shared sub directory, got %+v", root.Children)
 	}
 	sub := root.Children[0]
 	if len(sub.Children) != 2 {
 		t.Fatalf("want both dirty files under the one sub node, got %+v", sub.Children)
+	}
+}
+
+func TestBuildChangesTreeKeepsCollapsedDirectoriesCollapsed(t *testing.T) {
+	root := buildChangesTree("/proj", map[string]gitstatus.Status{
+		"sub/one.txt":   gitstatus.Modified,
+		"other/two.txt": gitstatus.Modified,
+	}, map[string]bool{"/proj/sub": true})
+	if sub := root.child("sub"); sub == nil || sub.Expanded {
+		t.Fatalf("sub was in collapsed, want it collapsed, got %+v", sub)
+	}
+	if other := root.child("other"); other == nil || !other.Expanded {
+		t.Fatalf("other was not in collapsed, want it expanded, got %+v", other)
 	}
 }
