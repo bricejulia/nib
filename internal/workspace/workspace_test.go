@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/session"
 	"github.com/bricejulia/nib/internal/ui/editor"
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 )
@@ -480,5 +481,51 @@ func TestRestoreWithNothingLeftChangesNothing(t *testing.T) {
 	}
 	if g.Root() != root || len(layout.Leaves(root)) != 1 {
 		t.Error("Restore with nothing left should keep the single empty pane")
+	}
+}
+
+func TestSplitRefusesBeyondMaxPanes(t *testing.T) {
+	f := newFixture(t, Options{})
+	a := f.file("a.txt", "a\n")
+	f.ws.Open(a)
+	for range MaxPanes - 1 {
+		f.split(layout.Horizontal)
+	}
+
+	if _, ok := f.ws.Split(layout.Vertical); ok {
+		t.Error("Split should refuse at MaxPanes")
+	}
+	var changed []layout.LeafID
+	f.ws.OnLayoutChanged = func(id layout.LeafID) { changed = append(changed, id) }
+	f.ws.Active().OnSplitAndMoveRight(0)
+	if len(changed) != 0 {
+		t.Errorf("tab menu split at MaxPanes changed the layout: %v", changed)
+	}
+	if n := len(layout.Leaves(f.ws.Root())); n != MaxPanes {
+		t.Errorf("%d panes, want %d", n, MaxPanes)
+	}
+}
+
+func TestRestoreCapsPaneCount(t *testing.T) {
+	f := newFixture(t, Options{})
+	f.file("a.txt", "a\n")
+	sess := &session.Session{Layout: &session.Node{Split: "horizontal"}}
+	for range MaxPanes + 5 {
+		sess.Layout.Children = append(sess.Layout.Children,
+			&session.Node{Pane: &session.Pane{Tabs: []session.Tab{{Path: "a.txt"}}}})
+	}
+
+	focus, ok := f.ws.Restore(sess)
+	if !ok {
+		t.Fatal("Restore failed")
+	}
+	if n := len(layout.Leaves(f.ws.Root())); n != MaxPanes {
+		t.Errorf("restored %d panes, want %d", n, MaxPanes)
+	}
+	if !f.ws.IsPane(focus) {
+		t.Errorf("Restore focused %d, which is not a pane", focus)
+	}
+	if _, ok := f.ws.Split(layout.Vertical); ok {
+		t.Error("Split should refuse after restoring MaxPanes panes")
 	}
 }

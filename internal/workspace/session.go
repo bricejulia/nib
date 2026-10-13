@@ -3,6 +3,7 @@ package workspace
 import (
 	"os"
 
+	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/session"
 	"github.com/bricejulia/nib/internal/ui/editor"
@@ -14,26 +15,35 @@ import (
 // first surviving pane reuses the initial, still-empty one rather than
 // orphaning it, so Restore is meant for startup. Returns the leaf to focus
 // — the saved focused pane if it survived — or ok=false, with nothing
-// changed, if no pane did.
+// changed, if no pane did. Panes past the first MaxPanes are dropped, tabs
+// and all, so a session saved before the cap (or by a runaway split) comes
+// back usable.
 func (w *Workspace) Restore(sess *session.Session) (layout.LeafID, bool) {
-	first := true
+	built, dropped := 0, 0
 	root, focused := session.Build(sess, func(sp session.Pane) *layout.LeafNode {
 		states, active := existingTabs(w.opts.Root, sp)
 		if len(states) == 0 {
 			return nil
 		}
+		if built >= MaxPanes {
+			dropped++
+			return nil
+		}
 		p := w.active
-		if !first {
+		if built > 0 {
 			p = w.newPane()
 			w.add(p)
 		}
-		first = false
+		built++
 		p.view.RestoreTabs(states, active)
 		for _, st := range states {
 			w.refreshLineStatus(st.Path)
 		}
 		return p.leaf
 	})
+	if dropped > 0 {
+		debuglog.Warn("restore session: dropped %d pane(s) beyond the max of %d", dropped, MaxPanes)
+	}
 	if root == nil {
 		return 0, false
 	}

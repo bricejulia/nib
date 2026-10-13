@@ -62,9 +62,20 @@ func (w *Workspace) MoveActiveTab(dir int) (layout.LeafID, bool) {
 	return w.moveTabToPane(p, p.view.ActiveIndex(), dir)
 }
 
+// MaxPanes caps how many editor panes a session can hold. Past a handful
+// they're too narrow to use anyway, and without a cap a held-down (or
+// misdecoded — tmux can deliver Ctrl+Down as Ctrl+w) split key splits
+// until the layout breaks, a layout the saved session then brings back on
+// every launch. Restore applies the same cap, which heals such a session.
+const MaxPanes = 8
+
 // splitPane creates a new pane and splices it into the layout beside
-// target in direction dir.
+// target in direction dir. Refuses once there are MaxPanes panes.
 func (w *Workspace) splitPane(target *pane, dir layout.Direction) (*pane, bool) {
+	if len(w.panes) >= MaxPanes {
+		debuglog.Warn("split: already %d panes (max %d)", len(w.panes), MaxPanes)
+		return nil, false
+	}
 	np := w.newPane()
 	if !layout.Split(w.root, target.leaf, dir, np.leaf) {
 		return nil, false
