@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# nib-open-with: let macOS open text files with nib.
+#
+# nib is a terminal app, so macOS can't hand it files directly. This builds a
+# tiny wrapper app (~/Applications/Nib.app) that Finder can open files with;
+# it writes a throwaway .command script running `nib <file>…` and opens it,
+# so it lands in whichever terminal macOS opens scripts with.
+#
+# Usage:
+#   nib-open-with                    build/refresh Nib.app
+#   nib-open-with --terminal NAME    always use this terminal (e.g. Ghostty,
+#                                    iTerm, Terminal) instead of the default
+#   nib-open-with --set-default      ...and make it the default for EXTENSIONS (needs duti)
+#   nib-open-with --nib PATH         use this nib binary (default: the one on PATH)
+#   nib-open-with --uninstall        remove Nib.app
+#
+# Without --set-default, pick it per type in Finder:
+#   Get Info -> Open with -> Nib -> Change All…
+#
+# macOS has no real "default terminal" setting: it's whichever app opens
+# .command files, which is Terminal.app unless something changed it. To make
+# that Ghostty system-wide (needs duti):
+#   duti -s com.mitchellh.ghostty com.apple.terminal.shell-script all
+#
+# Downloaded files: Nib.app is only signed locally, not notarized, so macOS
+# refuses to open a quarantined file (one a browser downloaded) with it —
+# "Apple could not verify … is free of malware". Clear that one file with
+#   xattr -d com.apple.quarantine <file>
+# or allow it under System Settings -> Privacy & Security -> Open Anyway.
+set -euo pipefail
+
+APP="$HOME/Applications/Nib.app"
+BUNDLE_ID="com.bricejulia.nib-opener"
+EXTENSIONS=(txt csv tsv json xml md yaml yml toml log ini conf)
+UTIS=(
+  public.plain-text
+  public.comma-separated-values-text
+  public.tab-separated-values-text
+  public.json
+  public.xml
+  net.daringfireball.markdown
+  public.yaml
+  public.log
+  public.source-code
+)
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+PB=/usr/libexec/PlistBuddy
+
+nib=""
+terminal=""
+set_default=false
+uninstall=false
+
+die() { echo "nib-open-with: $*" >&2; exit 1; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --set-default) set_default=true ;;
+    --nib) [[ $# -ge 2 ]] || die "--nib needs a path"; nib="$2"; shift ;;
+    --terminal) [[ $# -ge 2 ]] || die "--terminal needs an app name"; terminal="$2"; shift ;;
+    --uninstall) uninstall=true ;;
+    -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
+    *) die "unknown option: $1 (see --help)" ;;
+  esac
+  shift
+done
+
+[[ "$(uname)" == Darwin ]] || die "macOS only"
+
+if $uninstall; then
+  if [[ -d "$APP" ]]; then
+    "$LSREGISTER" -u "$APP" 2>/dev/null || true
+    rm -rf "$APP"
+    echo "Removed $APP"
+  else
+    echo "Nothing to remove: $APP doesn't exist"
+  fi
+  exit 0
+fi
+
+if [[ -z "$nib" ]]; then
+  nib="$(command -v nib || true)"
+  [[ -n "$nib" ]] || die "nib not found on PATH; pass --nib /path/to/nib"
+fi
+[[ -x "$nib" ]] || die "$nib is not an executable"
+nib="$(cd "$(dirname "$nib")" && pwd)/$(basename "$nib")"
+
+if [[ -n "$terminal" ]]; then
+  open -Ra "$terminal" 2>/dev/null || die "terminal app not found: $terminal"
+fi
+
+# default_terminal prints the app macOS currently opens .command files with.
+default_terminal() {
+  local probe
+  probe="$(mktemp -d)/probe.command"
+  printf '#!/bin/sh\n' > "$probe"
+  chmod +x "$probe"
+  osascript -l JavaScript -e "ObjC.import('AppKit');
+    var u = \$.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL(\$.NSURL.fileURLWithPath('$probe'));
+    u.isNil() ? '' : u.path.js" 2>/dev/null || true
+  rm -rf "$(dirname "$probe")"
+}
+
+# The AppleScript droplet: every file Finder hands it becomes one quoted
+# argument to the launcher below.
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+cat > "$tmp/nib-opener.applescript" <<'EOF'
+on open theFiles
+  set launcher to POSIX path of (path to me) & "Contents/Resources/launch.sh"
+  set args to ""
+  repeat with f in theFiles
+    set args to args & " " & quoted form of POSIX path of f
+  end repeat
+  do shell script quoted form of launcher & args
+end open
+EOF
+
+mkdir -p "$(dirname "$APP")"
+rm -rf "$APP"
+osacompile -o "$APP" "$tmp/nib-opener.applescript"
+
+# The launcher writes a one-shot .command script (it deletes itself as its
+# first step) and opens it: with --terminal's app, or otherwise whichever
+# terminal macOS opens scripts with.
+{
+  echo '#!/bin/bash'
+  printf 'NIB=%q\n' "$nib"
+  printf 'TERMINAL_APP=%q\n' "$terminal"
+  cat <<'EOF'
+set -e
+script="${TMPDIR:-/tmp}/nib-$$-$RANDOM.command"
+{
+  echo '#!/bin/bash'
+  echo 'rm -f "$0"'
+  printf 'exec %q' "$NIB"
+  printf ' %q' "$@"
+  echo
+} > "$script"
+chmod +x "$script"
+if [[ -n "$TERMINAL_APP" ]]; then
+  open -a "$TERMINAL_APP" "$script"
+else
+  open "$script"
+fi
+EOF
+} > "$APP/Contents/Resources/launch.sh"
+chmod +x "$APP/Contents/Resources/launch.sh"
+
+# Give it a stable bundle ID and declare the file types it can open, so it
+# shows up in Finder's "Open with" and can be made a default.
+plist="$APP/Contents/Info.plist"
+$PB -c "Delete :CFBundleIdentifier" "$plist" 2>/dev/null || true
+$PB -c "Add :CFBundleIdentifier string $BUNDLE_ID" "$plist"
+$PB -c "Delete :CFBundleName" "$plist" 2>/dev/null || true
+$PB -c "Add :CFBundleName string Nib" "$plist"
+$PB -c "Delete :CFBundleDocumentTypes" "$plist" 2>/dev/null || true
+$PB -c "Add :CFBundleDocumentTypes array" "$plist"
+$PB -c "Add :CFBundleDocumentTypes:0 dict" "$plist"
+$PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeName string Text" "$plist"
+$PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeRole string Editor" "$plist"
+$PB -c "Add :CFBundleDocumentTypes:0:LSHandlerRank string Alternate" "$plist"
+$PB -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes array" "$plist"
+for uti in "${UTIS[@]}"; do
+  $PB -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes: string $uti" "$plist"
+done
+
+# Editing Info.plist breaks osacompile's signature; re-sign ad hoc so
+# Gatekeeper still runs it, then tell LaunchServices about the new types.
+codesign --force --deep -s - "$APP" >/dev/null 2>&1
+"$LSREGISTER" -f "$APP"
+
+echo "Built $APP (runs: $nib)"
+if [[ -n "$terminal" ]]; then
+  echo "Terminal: $terminal"
+else
+  current="$(default_terminal)"
+  echo "Terminal: the default for .command scripts, currently ${current:-unknown}"
+  if [[ "$current" == */Terminal.app ]]; then
+    echo "  To use another one: rerun with --terminal Ghostty (or iTerm, …)"
+  fi
+fi
+
+if $set_default; then
+  if ! command -v duti >/dev/null; then
+    echo "duti not found; install it with 'brew install duti', or set defaults in Finder (Get Info -> Open with -> Change All…)" >&2
+    exit 1
+  fi
+  for ext in "${EXTENSIONS[@]}"; do
+    duti -s "$BUNDLE_ID" ".$ext" all
+    echo "  .$ext -> Nib"
+  done
+else
+  echo "To make it the default: Finder -> Get Info -> Open with -> Nib -> Change All…"
+  echo "  (or rerun with --set-default, which needs 'brew install duti')"
+fi
