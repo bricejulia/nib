@@ -84,6 +84,11 @@ Opening files rather than a folder is single-file mode: each file gets a tab,
 only their own folder is watched for outside edits, and closing the last tab
 quits, like `vim file`.
 
+On macOS, `scripts/nib-open-with` builds a small `~/Applications/Nib.app` so
+Finder can open text files (.txt, .csv, .json, .xml, .md, …) in nib, in your
+default terminal or the one you pick with `--terminal`. See
+`scripts/nib-open-with --help`.
+
 Requires Go 1.24+. For LSP features, install the relevant language server —
 `gopls` for Go, `intelephense` or `phpactor` for PHP,
 `typescript-language-server` for TypeScript/JavaScript/JSX/TSX, and any other
