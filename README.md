@@ -76,8 +76,13 @@ You can also download the latest binaries from the [release page](https://github
 
 ```sh
 make build          # or: go build -o nib cmd/nib/main.go
-./nib [directory]  # defaults to the current directory
+./nib [directory]   # defaults to the current directory
+./nib file [file…]  # just these files: no file tree, session or project scan
 ```
+
+Opening files rather than a folder is single-file mode: each file gets a tab,
+only their own folder is watched for outside edits, and closing the last tab
+quits, like `vim file`.
 
 Requires Go 1.24+. For LSP features, install the relevant language server —
 `gopls` for Go, `intelephense` or `phpactor` for PHP,

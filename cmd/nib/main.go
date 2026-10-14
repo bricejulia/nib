@@ -297,26 +297,52 @@ func preferredEditor() string {
 	return "vi"
 }
 
-func run() error {
-	root := "."
-	if len(os.Args) > 1 {
-		root = os.Args[1]
+// launchTarget turns nib's command-line arguments into the workspace root
+// and the files to open on start. No argument or a single directory is
+// folder mode: files is empty. One or more regular files is single-file
+// mode: the root is the first file's directory and no file tree is shown.
+// A single missing path falls through to folder mode, as it always has;
+// anything else that isn't a regular file — a directory among several
+// arguments, a missing one — is an error.
+func launchTarget(args []string) (root string, files []string, err error) {
+	if len(args) == 0 {
+		args = []string{"."}
 	}
-	absRoot, err := filepath.Abs(root)
+	if len(args) == 1 {
+		abs, err := filepath.Abs(args[0])
+		if err != nil {
+			return "", nil, err
+		}
+		if info, statErr := os.Stat(abs); statErr != nil || info.IsDir() {
+			return abs, nil, nil
+		}
+	}
+	for _, arg := range args {
+		abs, err := filepath.Abs(arg)
+		if err != nil {
+			return "", nil, err
+		}
+		info, err := os.Stat(abs)
+		if err != nil {
+			return "", nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return "", nil, fmt.Errorf("%s: not a regular file (open a folder on its own: nib <dir>)", arg)
+		}
+		files = append(files, abs)
+	}
+	return filepath.Dir(files[0]), files, nil
+}
+
+func run() error {
+	absRoot, openOnStart, err := launchTarget(os.Args[1:])
 	if err != nil {
 		return err
 	}
-
-	// If the given path is a file rather than a directory, open the
-	// workspace at its parent directory instead and remember the file so
-	// it can be opened automatically once the editor is constructed. A
-	// missing path (os.Stat error) or a directory falls through
-	// unchanged — today's behavior for both is preserved exactly.
-	var openOnStart string
-	if info, statErr := os.Stat(absRoot); statErr == nil && !info.IsDir() {
-		openOnStart = absRoot
-		absRoot = filepath.Dir(absRoot)
-	}
+	// singleFile is `nib <file>…`: just those files, with no file tree,
+	// session, or project-wide watching and git status — the folder they
+	// sit in (often $HOME or ~/Downloads) isn't a project.
+	singleFile := len(openOnStart) > 0
 
 	// A missing or unloadable config just means every scope falls back
 	// to its built-in defaults — cfg is safe to use as nil throughout
@@ -399,10 +425,16 @@ func run() error {
 			{Node: ws.Root(), Hint: layout.Ratio(1)},
 		},
 	}
+	// Single-file mode leaves the file tree off screen entirely; treeView
+	// still exists, so everything wired to it below works unchanged.
+	var body layout.Node = panes
+	if singleFile {
+		body = ws.Root()
+	}
 	tree := &layout.SplitNode{
 		Dir: layout.Vertical,
 		Children: []layout.Child{
-			{Node: panes, Hint: layout.Ratio(1)},
+			{Node: body, Hint: layout.Ratio(1)},
 			{Node: statusBarLeaf, Hint: layout.Fixed(1)},
 		},
 	}
@@ -730,8 +762,23 @@ func run() error {
 	ws.Wire(func(v *editor.View) {
 		// Closing a pane's last tab (via ":q"/":qa"/etc.) leaves it showing
 		// the "No file open" placeholder with nothing left to do in it, so
-		// hand focus back to the file tree.
-		v.OnAllTabsClosed = func() { app.FocusLeaf(fileTreeLeaf.ID) }
+		// hand focus back to the file tree. Single-file mode has no tree to
+		// go back to: the emptied pane closes instead, and closing the last
+		// one quits, the way `vim file` does on :q.
+		v.OnAllTabsClosed = func() {
+			if singleFile {
+				if ws.Target() != v {
+					return
+				}
+				if id, ok := ws.ClosePane(); ok {
+					rebuildAndFocus(app, id)
+				} else {
+					app.Quit()
+				}
+				return
+			}
+			app.FocusLeaf(fileTreeLeaf.ID)
+		}
 		// The git tooltips ("B" blame, "H" current-line diff): the editor
 		// pane never shells out to git itself, so it asks through these,
 		// exactly as its gutter markers arrive via ApplyLineStatus.
@@ -909,7 +956,7 @@ func run() error {
 	// shows exactly which one.
 	revealInTree := func() {
 		path := ws.Target().ActivePath()
-		if path == "" {
+		if path == "" || singleFile {
 			return
 		}
 		if treeView.Reveal(path) {
@@ -936,6 +983,16 @@ func run() error {
 	}
 
 	refreshGitStatus = func() {
+		// Single-file mode has no tree or project to mark up, so skip the
+		// repo-wide status scan: the branch and the open files' own gutter
+		// markers are all it shows.
+		if singleFile {
+			if branch, err := gitstatus.CurrentBranch(absRoot); err == nil {
+				gitBranch = branch
+			}
+			ws.RefreshAllLineStatus()
+			return
+		}
 		direct, err := gitstatus.RunPorcelain(absRoot)
 		if err != nil {
 			return // not a git repo, or git unavailable: leave markers as-is
@@ -1288,8 +1345,21 @@ func run() error {
 	memWatcher.Start()
 	defer memWatcher.Close()
 
-	if watcher, err := watch.New(absRoot, watchDebounce); err == nil {
+	// Single-file mode watches only the files' own directory, so external
+	// edits to them still reach ws.SyncWithDisk without walking a folder
+	// that may well be $HOME.
+	newWatcher := watch.New
+	if singleFile {
+		newWatcher = watch.NewDir
+	}
+	if watcher, err := newWatcher(absRoot, watchDebounce); err == nil {
 		defer func() { _ = watcher.Close() }()
+
+		// Files given from other folders than the first one's get their
+		// own folder watched too.
+		for _, path := range openOnStart {
+			_ = watcher.AddDir(filepath.Dir(path))
+		}
 
 		// A directory reachable only through a symlink was never walked by
 		// the watcher's startup scan (see watch.Watcher.AddDir) — ask it to
@@ -1307,9 +1377,13 @@ func run() error {
 		debuglog.Warn("filesystem watcher unavailable: %v", err)
 	}
 
-	if openOnStart != "" {
-		app.FocusLeaf(ws.Open(openOnStart))
-		treeView.Reveal(openOnStart)
+	if singleFile {
+		// Opened in argument order, then the first one again: re-opening
+		// an open file just makes its tab active.
+		for _, path := range openOnStart {
+			ws.Open(path)
+		}
+		app.FocusLeaf(ws.Open(openOnStart[0]))
 	}
 
 	// Per-project sessions (see internal/session): only when nib was
@@ -1318,7 +1392,7 @@ func run() error {
 	// A trusted folder gets its last session back now and saved again on
 	// exit; an untrusted one is asked about, every launch until trusted.
 	trusted := false
-	if openOnStart == "" {
+	if !singleFile {
 		trusted = session.Trusted(absRoot)
 		if trusted {
 			restoreSession(absRoot, func(sess *session.Session) {
