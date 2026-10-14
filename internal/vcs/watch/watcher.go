@@ -27,8 +27,11 @@ type Watcher struct {
 	fsw      *fsnotify.Watcher
 	debounce time.Duration
 	ignored  map[string]bool
-	events   chan RefreshEvent
-	done     chan struct{}
+	// flat is set by NewDir: only root itself is watched, so directories
+	// created under it are never added to the watch set.
+	flat   bool
+	events chan RefreshEvent
+	done   chan struct{}
 }
 
 // New starts watching root. debounce is the quiet period after the last
@@ -36,32 +39,52 @@ type Watcher struct {
 // default). If root is not a git repository, git-status refresh events are
 // simply never produced — the file-tree watch still works.
 func New(root string, debounce time.Duration) (*Watcher, error) {
-	fsw, err := fsnotify.NewWatcher()
-	if err != nil {
-		return nil, err
-	}
-
 	ignored, err := ignoredDirs(root)
 	if err != nil {
 		ignored = map[string]bool{}
 	}
+	return start(root, debounce, ignored, false, func(w *Watcher) error {
+		if err := w.addProjectTree(root); err != nil {
+			return err
+		}
+		_ = w.fsw.Add(w.gitDir) // no .git directory: fine, just no git-change events
+		return nil
+	})
+}
 
+// NewDir starts watching dir alone — not its subdirectories, and not its
+// .git — for single-file mode, where only the open files' own directory
+// matters and walking it (it may well be $HOME) would be wasted work.
+// Watching the directory rather than the files themselves still catches
+// an editor that saves by writing a temp file and renaming it over the
+// original. Only FSChanged events are ever produced.
+func NewDir(dir string, debounce time.Duration) (*Watcher, error) {
+	return start(dir, debounce, map[string]bool{}, true, func(w *Watcher) error {
+		return w.fsw.Add(dir)
+	})
+}
+
+// start is New and NewDir's shared setup: add registers the initial
+// watches, and the event loop only starts once it has succeeded.
+func start(root string, debounce time.Duration, ignored map[string]bool, flat bool, add func(*Watcher) error) (*Watcher, error) {
+	fsw, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
 	w := &Watcher{
 		root:     root,
 		gitDir:   filepath.Join(root, ".git"),
 		fsw:      fsw,
 		debounce: debounce,
 		ignored:  ignored,
+		flat:     flat,
 		events:   make(chan RefreshEvent, 1),
 		done:     make(chan struct{}),
 	}
-
-	if err := w.addProjectTree(root); err != nil {
+	if err := add(w); err != nil {
 		_ = fsw.Close()
 		return nil, err
 	}
-	_ = fsw.Add(w.gitDir) // no .git directory: fine, just no git-change events
-
 	go w.loop()
 	return w, nil
 }
@@ -178,7 +201,7 @@ func (w *Watcher) classify(ev fsnotify.Event, pending *RefreshEvent) {
 
 	pending.FSChanged = true
 
-	if ev.Has(fsnotify.Create) {
+	if ev.Has(fsnotify.Create) && !w.flat {
 		if fi, err := os.Stat(ev.Name); err == nil && fi.IsDir() {
 			if rel, ok := relPath(w.root, ev.Name); !ok || !w.ignored[rel] {
 				_ = w.fsw.Add(ev.Name)

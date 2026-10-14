@@ -18,6 +18,8 @@ The domain language of nib. Use these words in code, comments, commits and revie
 
 **Save conflict**: a save that found its file changed on disk since nib last synced with it. Resolved by the user: keep mine, or reload from disk.
 
+**Single-file mode**: nib launched on one or more files (`nib a.json b.csv`) instead of a folder. No file tree, no Session, no trust prompt, no repo-wide git status; only the files' own folders are watched, and closing the last tab quits. The files' first folder is still the root for LSP and git.
+
 **Session**: the panes' layout and open tabs for a trusted project folder, saved in its `.nib` folder on exit and restored on the next launch.
 
 **Action**: a named command a key can be bound to, such as `save` or `move_down`. Declared once, with its default keys and a description, in its scope (see `config.Action`). Help, the action popup and the generated config file are all built from these declarations. _Avoid_: command (except for `:` commands), binding (that's the key-to-action pair).

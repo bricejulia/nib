@@ -170,3 +170,45 @@ func TestNewOnNonRepoStillWatchesFilesystem(t *testing.T) {
 		t.Errorf("got %+v, want FSChanged=true, GitChanged=false", ev)
 	}
 }
+
+func TestNewDirWatchesOnlyThatDirectory(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewDir(dir, testDebounce)
+	if err != nil {
+		t.Fatalf("NewDir: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// A file inside an existing subdirectory is out of scope.
+	if err := os.WriteFile(filepath.Join(sub, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	expectNoEvent(t, w, testDebounce*3)
+
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ev, ok := waitForEvent(t, w)
+	if !ok {
+		t.Fatal("expected a RefreshEvent for a file written directly in the watched directory")
+	}
+	if !ev.FSChanged {
+		t.Errorf("expected FSChanged=true, got %+v", ev)
+	}
+
+	// A directory created after startup is not added to the watch set.
+	newDir := filepath.Join(dir, "later")
+	if err := os.Mkdir(newDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, w)
+	if err := os.WriteFile(filepath.Join(newDir, "c.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	expectNoEvent(t, w, testDebounce*3)
+}
