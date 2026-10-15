@@ -467,6 +467,9 @@ func (v *View) positionAt(t *tab, m layout.Mouse) (ln, col int) {
 	if bodyRows < 1 {
 		bodyRows = 1
 	}
+	if v.wrap {
+		return v.wrappedPositionAt(t, m, bodyRows)
+	}
 
 	switch {
 	case m.Row < 1:
@@ -493,6 +496,36 @@ func (v *View) positionAt(t *tab, m layout.Mouse) (ln, col int) {
 	}
 	displayCol := m.Col - gutter + t.leftCol
 	expanded := string(currentLineRunes(t, ln, tabWidthOf(t)))
+	return ln, textwidth.RuneIndexForDisplayColumn(expanded, displayCol)
+}
+
+// wrappedPositionAt is positionAt with soft wrap on: screen rows are visual
+// rows (see wrap.go), counted from (topLine, topSub), and a column maps into
+// whichever slice of the line that row shows. A row outside the pane maps
+// to the visual row just past that edge — the same auto-scroll-by-one-step
+// rule as the unwrapped case.
+func (v *View) wrappedPositionAt(t *tab, m layout.Mouse, bodyRows int) (ln, col int) {
+	tabWidth, width := tabWidthOf(t), wrapWidth(t, v.lastWidth)
+	steps := m.Row - 1
+	switch {
+	case m.Row < 1:
+		steps = -1
+	case m.Row > bodyRows:
+		steps = bodyRows
+	}
+	ln, sub := stepVisualRows(t, t.topLine, t.topSub, steps, tabWidth, width)
+	starts := lineWrapStarts(t, ln, tabWidth, width)
+	sub = min(sub, len(starts)-1)
+
+	// A click in the gutter reads as the start of that row, as it reads as
+	// the start of the line unwrapped.
+	displayCol := starts[sub] + max(0, m.Col-gutterWidthFor(t))
+	// Past the end of a row that isn't the line's last: its last
+	// character, not the first one of the row below.
+	if sub+1 < len(starts) && displayCol >= starts[sub+1] {
+		displayCol = starts[sub+1] - 1
+	}
+	expanded := string(currentLineRunes(t, ln, tabWidth))
 	return ln, textwidth.RuneIndexForDisplayColumn(expanded, displayCol)
 }
 

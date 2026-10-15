@@ -529,3 +529,50 @@ func TestRestoreCapsPaneCount(t *testing.T) {
 		t.Error("Split should refuse after restoring MaxPanes panes")
 	}
 }
+
+// wrapStates is Wrap() of every pane, for asserting they all agree.
+func (f *fixture) wrapStates() []bool {
+	var out []bool
+	for _, p := range f.ws.panes {
+		out = append(out, p.view.Wrap())
+	}
+	return out
+}
+
+func TestToggleWrapAppliesToEveryPaneAndNewOnes(t *testing.T) {
+	f := newFixture(t, Options{})
+	f.ws.Open(f.file("a.txt", "alpha\n"))
+	f.split(layout.Horizontal)
+
+	if !f.ws.ToggleWrap() {
+		t.Fatal("ToggleWrap should report wrap now on")
+	}
+	f.focus(f.split(layout.Vertical))
+	if got := f.wrapStates(); len(got) != 3 || slices.Contains(got, false) {
+		t.Errorf("pane wrap states = %v, want all three on", got)
+	}
+
+	f.ws.ToggleWrap()
+	if slices.Contains(f.wrapStates(), true) {
+		t.Errorf("pane wrap states = %v, want all off", f.wrapStates())
+	}
+}
+
+func TestApplyConfigKeepsToggledWrapUnlessTheConfigChangedIt(t *testing.T) {
+	f := newFixture(t, Options{Config: PaneConfig{Wrap: true}})
+	if !f.ws.Wrap() || !f.ws.Active().Wrap() {
+		t.Fatal(`"wrap = true" should start panes wrapped`)
+	}
+
+	f.ws.ToggleWrap()
+	f.ws.ApplyConfig(PaneConfig{Wrap: true}) // a reload after some other edit
+	if f.ws.Active().Wrap() {
+		t.Error("reloading an unchanged wrap line should not undo the toggle")
+	}
+
+	f.ws.ApplyConfig(PaneConfig{Wrap: false})
+	f.ws.ApplyConfig(PaneConfig{Wrap: true}) // the line itself was edited
+	if !f.ws.Active().Wrap() {
+		t.Error("changing the wrap line should apply it")
+	}
+}

@@ -182,7 +182,7 @@ func (v *View) enterSearchMode() {
 	}
 	v.mode = modeSearch
 	v.searchField = textfield.TextField{}
-	v.searchOriginLn, v.searchOriginCol, v.searchOriginTop = t.cursorLn, t.cursorCol, t.topLine
+	v.searchOriginLn, v.searchOriginCol, v.searchOriginTop, v.searchOriginTopSub = t.cursorLn, t.cursorCol, t.topLine, t.topSub
 	v.recomputeSearchMatches()
 }
 
@@ -281,7 +281,7 @@ func (v *View) restoreSearchOrigin() {
 	if t == nil {
 		return
 	}
-	t.cursorLn, t.cursorCol, t.topLine = v.searchOriginLn, v.searchOriginCol, v.searchOriginTop
+	t.cursorLn, t.cursorCol, t.topLine, t.topSub = v.searchOriginLn, v.searchOriginCol, v.searchOriginTop, v.searchOriginTopSub
 	v.clampToLastChar(t)
 }
 

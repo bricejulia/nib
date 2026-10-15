@@ -276,6 +276,19 @@ func TestParseWhitespaceDirective(t *testing.T) {
 	}
 }
 
+func TestParseWrapDirective(t *testing.T) {
+	if got := Parse(strings.NewReader("wrap = true\n")).Wrap(); !got {
+		t.Errorf("Wrap() = %v, want true", got)
+	}
+	if got := Parse(strings.NewReader("wrap = on\n")).Wrap(); got {
+		t.Errorf(`Wrap() = %v, want false for "on"`, got)
+	}
+	var cfg *Config
+	if cfg.Wrap() {
+		t.Error("Wrap() on a nil *Config should be false")
+	}
+}
+
 func TestShowWhitespaceOnNilConfig(t *testing.T) {
 	var cfg *Config
 	if got := cfg.ShowWhitespace(); got {

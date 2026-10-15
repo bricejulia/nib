@@ -154,6 +154,17 @@ func Template(scopes []Scope) string {
 # "editor_whitespace" role, overridable like any other color = line above.
 
 
+# --- soft wrap ---
+#
+# Start every editor pane with long lines wrapped onto the next rows,
+# instead of scrolling sideways:
+#
+#   wrap = true
+#
+# Any other value (or omitting the line) leaves it off. Toggle it for every
+# pane at once with Alt+z, without touching this config.
+
+
 # --- file icons ---
 #
 # Show Nerd Font file-type icons in the file tree (needs a Nerd Font

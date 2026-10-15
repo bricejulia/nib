@@ -169,6 +169,12 @@ var globalScope = config.Scope{Name: "global", Title: "Global", Actions: config.
 	// works the same from Insert mode as everywhere else, and "tree" is
 	// free of collisions with every other pane's own keymap.
 	{ID: "reveal_in_tree", Keys: []string{"Ctrl+t"}, Desc: "Locate the active file in the file tree", InPopup: true},
+	// Global rather than editor-scoped because it applies to every editor
+	// pane at once (see Workspace.ToggleWrap) — narrow split panes are what
+	// make wrapping worth having. Alt+z is VS Code's binding for the same
+	// thing; like Alt+b/Alt+f, it degrades to ESC+"z" on terminals without
+	// the kitty keyboard protocol, which is still unambiguous for a letter.
+	{ID: "toggle_wrap", Keys: []string{"Alt+z"}, Desc: "Toggle soft wrap of long lines in every editor pane", InPopup: true},
 	// Bare Ctrl+j, not Ctrl+Shift+A (JetBrains' own "Find Action" mnemonic,
 	// tried first here): outside the kitty keyboard protocol, a terminal
 	// has no way to report Shift held alongside Ctrl+<letter> — Ctrl+Shift+A
@@ -215,6 +221,7 @@ func paneConfig(cfg *config.Config) workspace.PaneConfig {
 		Keymap:         cfg.Overrides("editor"),
 		TabModes:       derivedTabModes(cfg),
 		ShowWhitespace: cfg.ShowWhitespace(),
+		Wrap:           cfg.Wrap(),
 	}
 }
 
@@ -1149,6 +1156,7 @@ func run() error {
 		"split_down":           func() { splitPane(layout.Vertical) },
 		"close_pane":           closePane,
 		"reveal_in_tree":       revealInTree,
+		"toggle_wrap":          func() { ws.ToggleWrap() },
 		"move_tab_next_pane":   func() { moveActiveTab(1) },
 		"move_tab_prev_pane":   func() { moveActiveTab(-1) },
 	}
