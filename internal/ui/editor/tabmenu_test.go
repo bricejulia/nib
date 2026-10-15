@@ -228,3 +228,58 @@ func TestRequestCloseTabsSaveAllLeavesAFailedSaveOpen(t *testing.T) {
 		t.Error("the failed tab's unsaved change must not be discarded")
 	}
 }
+
+func TestTabMenuOpenInDefaultAppTargetsClickedTab(t *testing.T) {
+	v := multiTabView("a.go", "b.go", "c.go")
+	var opened []string
+	v.OpenFunc = func(p string) error { opened = append(opened, p); return nil }
+	spans := tabBarSpans(v.tabs)
+	v.HandleMouse(rightClick(spans[2].start+1, 0))
+
+	for v.tabMenu.items[v.tabMenu.selected] != tabMenuOpenExternal {
+		v.HandleKey(layout.Key{Named: layout.KeyDown})
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyEnter})
+	if len(opened) != 1 || opened[0] != "c.go" {
+		t.Errorf("opened = %q, want [c.go] (the clicked tab, not the active one)", opened)
+	}
+}
+
+func TestTabMenuHidesOpenInDefaultAppWithoutOpenFunc(t *testing.T) {
+	v := multiTabView("a.go")
+	v.HandleMouse(rightClick(tabBarSpans(v.tabs)[0].start+1, 0))
+	for _, it := range v.tabMenu.items {
+		if it == tabMenuOpenExternal {
+			t.Error("Open in Default App should be hidden when nothing can open files")
+		}
+	}
+}
+
+func TestOpenExternalActionOpensActiveTab(t *testing.T) {
+	v := multiTabView("a.go", "b.go")
+	v.active = 1
+	var opened []string
+	v.OpenFunc = func(p string) error { opened = append(opened, p); return nil }
+
+	if !v.ExecuteAction("open_external") {
+		t.Fatal("open_external should be handled")
+	}
+	if len(opened) != 1 || opened[0] != "b.go" {
+		t.Errorf("opened = %q, want [b.go]", opened)
+	}
+	if v.notice != "Opened b.go" {
+		t.Errorf("notice = %q", v.notice)
+	}
+
+	v.tabs[1].buf.Dirty = true
+	v.ExecuteAction("open_external")
+	if v.notice != "Opened b.go (unsaved changes not included)" {
+		t.Errorf("notice = %q for a dirty tab", v.notice)
+	}
+
+	v.OpenFunc = func(string) error { return os.ErrNotExist }
+	v.ExecuteAction("open_external")
+	if v.notice != "Open failed: "+os.ErrNotExist.Error() {
+		t.Errorf("notice = %q for a failed open", v.notice)
+	}
+}

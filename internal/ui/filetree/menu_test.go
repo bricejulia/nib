@@ -1,6 +1,7 @@
 package filetree
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -138,7 +139,7 @@ func TestMenuDeleteOpensConfirm(t *testing.T) {
 	}
 }
 
-func TestMenuInChangesModeOnlyCopies(t *testing.T) {
+func TestMenuInChangesModeOnlyOpensAndCopies(t *testing.T) {
 	v, _, w, _ := menuFixture(t)
 	v.ApplyChanges(map[string]gitstatus.Status{"a.txt": gitstatus.Modified})
 	v.SetMode(ModeChanges)
@@ -148,8 +149,8 @@ func TestMenuInChangesModeOnlyCopies(t *testing.T) {
 	if v.menu == nil {
 		t.Fatal("expected the menu to open")
 	}
-	if len(v.menu.items) != 2 {
-		t.Errorf("items = %v, want only the two copy actions", v.menu.items)
+	if len(v.menu.items) != 3 {
+		t.Errorf("items = %v, want only open and the two copy actions", v.menu.items)
 	}
 }
 
@@ -163,8 +164,9 @@ func TestMenuKeyboard(t *testing.T) {
 	}
 	v.HandleKey(downKey())
 	v.HandleKey(downKey())
-	if v.menu.selected != 1 {
-		t.Errorf("selected = %d, want 1", v.menu.selected)
+	v.HandleKey(downKey())
+	if v.menu.selected != 2 {
+		t.Errorf("selected = %d, want 2", v.menu.selected)
 	}
 	v.HandleKey(enterKey())
 	if len(*copied) != 1 || (*copied)[0] != "a.txt" {
@@ -205,5 +207,54 @@ func TestCancelPromptClosesMenu(t *testing.T) {
 	v.CancelPrompt()
 	if v.menu != nil {
 		t.Error("CancelPrompt should close the menu too")
+	}
+}
+
+func TestMenuOpenInDefaultApp(t *testing.T) {
+	v, root, w, _ := menuFixture(t)
+	var opened []string
+	v.OpenFunc = func(p string) error { opened = append(opened, p); return nil }
+
+	clickItem(t, v, w, "c.txt", "Open in Default App")
+	if want := filepath.Join(root, "sub", "c.txt"); len(opened) != 1 || opened[0] != want {
+		t.Errorf("opened = %q, want [%q]", opened, want)
+	}
+	if v.Notice() != "opened sub/c.txt" {
+		t.Errorf("Notice = %q", v.Notice())
+	}
+}
+
+func TestOpenExternalKey(t *testing.T) {
+	v, root, _, _ := menuFixture(t)
+	var opened []string
+	v.OpenFunc = func(p string) error { opened = append(opened, p); return nil }
+
+	selectRow(t, v, "sub")
+	v.HandleKey(layout.Key{Text: "o"})
+	if want := filepath.Join(root, "sub"); len(opened) != 1 || opened[0] != want {
+		t.Errorf("opened = %q, want the directory itself [%q]", opened, want)
+	}
+	if v.rows[rowIndex(t, v, "sub")].Node.Expanded != true {
+		t.Error("opening externally should not toggle the directory")
+	}
+}
+
+func TestOpenExternalReportsFailure(t *testing.T) {
+	v, _, _, _ := menuFixture(t)
+	v.OpenFunc = func(string) error { return errors.New("xdg-open not found") }
+
+	selectRow(t, v, "a.txt")
+	v.HandleKey(layout.Key{Text: "o"})
+	if v.Notice() != "open failed: xdg-open not found" {
+		t.Errorf("Notice = %q", v.Notice())
+	}
+}
+
+func TestOpenExternalWithoutOpenFuncIsNoOp(t *testing.T) {
+	v, _, _, _ := menuFixture(t)
+	selectRow(t, v, "a.txt")
+	v.HandleKey(layout.Key{Text: "o"})
+	if v.Notice() != "" {
+		t.Errorf("Notice = %q, want nothing", v.Notice())
 	}
 }

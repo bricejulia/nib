@@ -795,6 +795,9 @@ func run() error {
 		// terminal that ignores OSC 52 costs only the crossing-out-of-nib
 		// half of the copy.
 		v.CopyFunc = app.CopyToClipboard
+		// open_external ("Open in Default App"): an .html file in the
+		// browser, and so on — see App.OpenExternal.
+		v.OpenFunc = app.OpenExternal
 		// Rename ("R") and code actions ("A") both resolve to an
 		// lsp.WorkspaceEdit that can span files this pane never opened, so
 		// applying it needs ws.FindView (which pane, if any, has each affected
@@ -1214,6 +1217,7 @@ func run() error {
 	// The context menu's "Copy Path" items — same clipboard route as the
 	// editor panes' CopyFunc.
 	treeView.CopyFunc = app.CopyToClipboard
+	treeView.OpenFunc = app.OpenExternal
 	// Run last, after the tabs are carrying their new paths: refreshGitStatus
 	// ends in ws.RefreshAllLineStatus, and ApplyLineStatus matches on a tab's
 	// path — so doing this first would leave a moved file's gutter blank
