@@ -9,10 +9,11 @@
 //	color   = <role>             = <color name>
 //	tabmode = <language|default> = <spaces|tabs>[:<width>]
 //
-// plus four two-field directives:
+// plus five two-field directives:
 //
 //	theme      = <name>
 //	whitespace = true
+//	wrap       = true
 //	icons      = true
 //	memwatch   = <MiB>
 //
@@ -43,6 +44,11 @@
 // The "whitespace" directive turns on rendering of spaces and tab-fill as
 // visible glyphs in the editor, e.g. "whitespace = true". Any other value
 // (or omitting the directive) leaves it off.
+//
+// The "wrap" directive starts every editor pane with soft wrap on, e.g.
+// "wrap = true": long lines continue onto the next rows instead of
+// scrolling sideways. The toggle_wrap action flips it at runtime. Any other
+// value (or omitting the directive) leaves it off.
 //
 // The "icons" directive turns on Nerd Font file-type icons in the file
 // tree, e.g. "icons = true". It's off by default because the glyphs need
@@ -133,6 +139,7 @@ type Config struct {
 	colors      map[string]layout.Color      // role name (as typed, lowercased) -> validated color
 	tabModes    map[string]TabMode           // language (or "default") -> indent style
 	whitespace  bool                         // "whitespace = true" was set
+	wrap        bool                         // "wrap = true" was set
 	icons       bool                         // "icons = true" was set
 	memWatchMiB int                          // "memwatch = <MiB>" value; 0 means unset
 }
@@ -198,6 +205,15 @@ func (c *Config) ShowWhitespace() bool {
 	return c.whitespace
 }
 
+// Wrap returns whether "wrap = true" was set. Safe to call on a nil
+// *Config.
+func (c *Config) Wrap() bool {
+	if c == nil {
+		return false
+	}
+	return c.wrap
+}
+
 // ShowIcons returns whether "icons = true" was set. Safe to call on a nil
 // *Config.
 func (c *Config) ShowIcons() bool {
@@ -238,7 +254,7 @@ func Parse(r io.Reader) *Config {
 
 		fields := strings.SplitN(line, "=", 3)
 
-		// "theme = <name>", "whitespace = true", "icons = true" and
+		// "theme = <name>", "whitespace = true", "wrap = true", "icons = true" and
 		// "memwatch = <MiB>" are the directives with a single value
 		// rather than this format's usual <directive> = <key> = <value>
 		// triplet, so they're handled before the three-field shape below.
@@ -250,6 +266,8 @@ func Parse(r io.Reader) *Config {
 				}
 			case "whitespace":
 				cfg.whitespace = strings.TrimSpace(fields[1]) == "true"
+			case "wrap":
+				cfg.wrap = strings.TrimSpace(fields[1]) == "true"
 			case "icons":
 				cfg.icons = strings.TrimSpace(fields[1]) == "true"
 			case "memwatch":

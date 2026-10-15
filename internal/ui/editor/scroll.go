@@ -60,7 +60,7 @@ func (v *View) ScrollTo(top int) {
 	if top > maxTop {
 		top = maxTop
 	}
-	t.topLine = top
+	t.topLine, t.topSub = top, 0
 
 	if viewport > 0 {
 		moved := false

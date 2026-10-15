@@ -24,12 +24,13 @@ import (
 )
 
 // PaneConfig is the part of the user's config every editor pane applies:
-// its keybinding overrides, per-language indent style, and whether
-// whitespace is drawn. See Workspace.ApplyConfig.
+// its keybinding overrides, per-language indent style, whether whitespace
+// is drawn, and whether soft wrap starts on. See Workspace.ApplyConfig.
 type PaneConfig struct {
 	Keymap         map[string]string
 	TabModes       map[string]config.TabMode
 	ShowWhitespace bool
+	Wrap           bool
 }
 
 // Welcome is what an empty pane's welcome screen shows — see
@@ -80,8 +81,12 @@ type Workspace struct {
 	// instead.
 	OnLayoutChanged func(focus layout.LeafID)
 
-	opts     Options
-	cfg      PaneConfig
+	opts Options
+	cfg  PaneConfig
+	// wrap is whether soft wrap is on in every pane: cfg.Wrap at startup,
+	// then flipped by ToggleWrap. Kept apart from cfg so a config reload
+	// that didn't change the "wrap" line doesn't undo a toggle.
+	wrap     bool
 	store    *editor.BufferStore
 	register *editor.Register
 	wire     func(*editor.View)
@@ -107,6 +112,7 @@ func New(opts Options) *Workspace {
 	w := &Workspace{
 		opts:     opts,
 		cfg:      opts.Config,
+		wrap:     opts.Config.Wrap,
 		store:    editor.NewBufferStore(),
 		register: editor.NewRegister(),
 		panes:    map[layout.LeafID]*pane{},
@@ -184,7 +190,14 @@ func (w *Workspace) Wire(fn func(*editor.View)) {
 
 // ApplyConfig re-applies cfg to every pane, and to every pane created
 // from here on — e.g. after the config file is reloaded.
+//
+// Soft wrap is the exception: it follows cfg.Wrap only when that changed
+// since the last config, so that reloading after an unrelated edit keeps
+// whatever ToggleWrap last set.
 func (w *Workspace) ApplyConfig(cfg PaneConfig) {
+	if cfg.Wrap != w.cfg.Wrap {
+		w.wrap = cfg.Wrap
+	}
 	w.cfg = cfg
 	for _, p := range w.panes {
 		w.configure(p.view)
@@ -246,7 +259,23 @@ func (w *Workspace) configure(v *editor.View) {
 	v.SetKeymap(w.cfg.Keymap)
 	v.SetTabModeDefaults(w.cfg.TabModes)
 	v.SetShowWhitespace(w.cfg.ShowWhitespace)
+	if v.Wrap() != w.wrap {
+		v.SetWrap(w.wrap)
+	}
 }
+
+// ToggleWrap turns soft wrap on or off in every editor pane, and in every
+// pane created from here on. Returns the new state.
+func (w *Workspace) ToggleWrap() bool {
+	w.wrap = !w.wrap
+	for _, p := range w.panes {
+		p.view.SetWrap(w.wrap)
+	}
+	return w.wrap
+}
+
+// Wrap reports whether soft wrap is on.
+func (w *Workspace) Wrap() bool { return w.wrap }
 
 func (w *Workspace) paneForView(v *editor.View) (*pane, bool) {
 	for _, p := range w.panes {

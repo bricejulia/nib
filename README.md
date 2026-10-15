@@ -223,6 +223,7 @@ Press `?` in nib for this list at runtime. Every binding is rebindable
 | `Ctrl+O` | Open the config file in `$EDITOR` |
 | `Ctrl+W` / `Ctrl+E` | Split the focused (or last-focused) editor pane right / down |
 | `Ctrl+X` | Close the focused (or last-focused) editor pane |
+| `Alt+Z` | Toggle soft wrap of long lines in every editor pane |
 
 ### Editor — moving
 
@@ -449,6 +450,18 @@ keybind = editor:ctrl+y = jump_back
 
 A malformed line is skipped rather than fatal, so a typo can't stop nib from
 starting. Changes take effect on the next launch.
+
+### Soft wrap
+
+`Alt+Z` wraps long lines onto the following rows in every editor pane, instead
+of scrolling sideways — handy with several narrow split panes. Lines break
+after a space where they can; continuation rows have a blank gutter, so line
+numbers still count file lines, and `j`/`k` still move a whole file line. To
+start with it on:
+
+```
+wrap = true
+```
 
 ### Language servers
 

@@ -209,11 +209,17 @@ type editGroup struct {
 // way topLine is derived from cursorLn. This is what naturally bounds how
 // far the pane can scroll horizontally: since cursorCol itself is clamped
 // to the line's length, there is nothing "past the end" to scroll to.
+//
+// topSub is the soft-wrap counterpart of leftCol: with wrap on (see
+// View.wrap and wrap.go), the visual row of topLine the viewport starts at,
+// so a line taller than the pane can still be scrolled through. Always 0
+// with wrap off, when leftCol is used instead.
 type tab struct {
 	path      string
 	buf       *Buffer
 	err       error
 	topLine   int
+	topSub    int
 	leftCol   int
 	cursorLn  int
 	cursorCol int
@@ -311,6 +317,10 @@ type View struct {
 	// showWhitespace is true when the user config has "whitespace = true"
 	// — see SetShowWhitespace and renderBody's dot/arrow substitution.
 	showWhitespace bool
+
+	// wrap is soft wrap: long lines continue onto the following rows
+	// instead of scrolling sideways — see SetWrap and wrap.go.
+	wrap bool
 
 	lastWidth, lastHeight int
 
@@ -457,6 +467,7 @@ type View struct {
 	searchMatches                   []searchMatch
 	searchOriginLn, searchOriginCol int
 	searchOriginTop                 int
+	searchOriginTopSub              int
 	// searchFor/searchForRev are the tab and buffer revision searchMatches
 	// was computed for — see syncSearchMatches. searchHidden is set by Esc
 	// in Normal mode (vim's :noh) and cleared by the next search or n/N.
@@ -778,6 +789,20 @@ func (v *View) tabModeFor(lang string) config.TabMode {
 func (v *View) SetShowWhitespace(show bool) {
 	v.showWhitespace = show
 }
+
+// SetWrap turns soft wrap on or off — see wrap.go. Set for every pane at
+// once by workspace.Workspace, from the user config's "wrap = true" line or
+// the toggle_wrap action. Every tab's sideways scroll is reset either way:
+// leftCol means nothing while wrapped, and topSub nothing while not.
+func (v *View) SetWrap(wrap bool) {
+	v.wrap = wrap
+	for _, t := range v.tabs {
+		t.leftCol, t.topSub = 0, 0
+	}
+}
+
+// Wrap reports whether soft wrap is on.
+func (v *View) Wrap() bool { return v.wrap }
 
 // SetWelcomeInfo supplies the context shown centered in this pane whenever
 // it has no tabs open (see renderWelcome): nibVersion and folder, fixed for
@@ -1685,8 +1710,22 @@ func (v *View) CursorPosition() (int, int, bool) {
 // itself can't be reused there, since during modeRename it reports the popup's
 // caret instead — see above).
 func (v *View) cursorAnchor(t *tab) (col, row int) {
-	col = gutterWidthFor(t) + cursorDisplayColumn(t, tabWidthOf(t)) - t.leftCol
-	row = 1 + (t.cursorLn - t.topLine) // +1: row 0 is the tab bar
+	if !v.wrap || t.buf == nil {
+		col = gutterWidthFor(t) + cursorDisplayColumn(t, tabWidthOf(t)) - t.leftCol
+		row = 1 + (t.cursorLn - t.topLine) // +1: row 0 is the tab bar
+		return col, row
+	}
+	tabWidth, width := tabWidthOf(t), wrapWidth(t, v.lastWidth)
+	starts := lineWrapStarts(t, t.cursorLn, tabWidth, width)
+	displayCol := cursorDisplayColumn(t, tabWidth)
+	sub := rowOf(starts, displayCol)
+	col = gutterWidthFor(t) + displayCol - starts[sub]
+	// A cursor just past the end of a line that fills its last row exactly
+	// (Insert mode, at end of line) would sit one column outside the pane.
+	if v.lastWidth > 0 && col > v.lastWidth-1 {
+		col = v.lastWidth - 1
+	}
+	row = 1 + visualRowsBetween(t, t.topLine, t.topSub, t.cursorLn, sub, v.lastHeight, tabWidth, width)
 	return col, row
 }
 
@@ -1722,7 +1761,7 @@ func (v *View) Render(w layout.Window) {
 	// lives one level down, on the real vaxis.Window), so the offset is
 	// applied directly to the row index passed to Println instead.
 	v.syncSearchMatches()
-	renderBody(w, t, tabWidthOf(t), cols, bodyRows, 1, v.visibleSearchMatches(), v.showWhitespace)
+	renderBody(w, t, tabWidthOf(t), cols, bodyRows, 1, v.visibleSearchMatches(), v.showWhitespace, v.wrap)
 
 	// Popups draw last so they sit on top of the file content. Only one can
 	// be up at a time: the tab menu takes priority over everything (it's
@@ -2244,7 +2283,12 @@ func clipSegmentsForRender(segs []layout.Segment) (clipped []layout.Segment, tru
 // its tail.
 var renderTruncationMarker = layout.Segment{Text: "…", Style: layout.Style{Attr: layout.AttrDim}}
 
-func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, searchMatches []searchMatch, showWhitespace bool) {
+// renderBody draws t's text into rows screen rows starting at rowOffset,
+// first moving t's viewport to keep the cursor in view. With wrap on, a line
+// wider than the pane continues onto the following rows (see wrap.go) and
+// there is no horizontal scrolling; with it off, each line is one row and
+// leftCol scrolls.
+func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, searchMatches []searchMatch, showWhitespace, wrap bool) {
 	if t == nil {
 		return
 	}
@@ -2261,25 +2305,30 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 		contentWidth = 0
 	}
 
-	if t.cursorLn < t.topLine {
-		t.topLine = t.cursorLn
-	}
-	if t.cursorLn >= t.topLine+rows {
-		t.topLine = t.cursorLn - rows + 1
-	}
-	if t.topLine < 0 {
-		t.topLine = 0
-	}
+	if wrap {
+		scrollWrapped(t, tabWidth, contentWidth, rows)
+	} else {
+		t.topSub = 0
+		if t.cursorLn < t.topLine {
+			t.topLine = t.cursorLn
+		}
+		if t.cursorLn >= t.topLine+rows {
+			t.topLine = t.cursorLn - rows + 1
+		}
+		if t.topLine < 0 {
+			t.topLine = 0
+		}
 
-	cursorCol := cursorDisplayColumn(t, tabWidth)
-	if cursorCol < t.leftCol {
-		t.leftCol = cursorCol
-	}
-	if cursorCol >= t.leftCol+contentWidth {
-		t.leftCol = cursorCol - contentWidth + 1
-	}
-	if t.leftCol < 0 {
-		t.leftCol = 0
+		cursorCol := cursorDisplayColumn(t, tabWidth)
+		if cursorCol < t.leftCol {
+			t.leftCol = cursorCol
+		}
+		if cursorCol >= t.leftCol+contentWidth {
+			t.leftCol = cursorCol - contentWidth + 1
+		}
+		if t.leftCol < 0 {
+			t.leftCol = 0
+		}
 	}
 
 	// The selection is read off the tab rather than passed in, like the
@@ -2288,11 +2337,8 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 	// prompt does.
 	selStart, selEnd, hasSel := t.selectionSpan()
 
-	for i := 0; i < rows; i++ {
-		ln := t.topLine + i
-		if ln >= len(t.buf.Lines) {
-			break
-		}
+	row := 0
+	for ln := t.topLine; row < rows && ln < len(t.buf.Lines); ln++ {
 		// Bounded once per row, up front: everything below — the heuristic
 		// highlighter, the real tree-sitter output, and the search/selection
 		// range overlays — must never pay a cost proportional to this
@@ -2332,17 +2378,6 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 		} else {
 			expandedSegs = textwidth.ExpandTabsSegments(raw, tabWidth)
 		}
-		visible := textwidth.SliceSegmentsByDisplayColumn(expandedSegs, t.leftCol, contentWidth)
-		if selToEOL {
-			// A line whose selection runs past its last rune has the line
-			// break selected too, so the highlight continues to the right
-			// edge. This is also the only thing that renders a selected
-			// BLANK line: an empty line produces no segments at all, and
-			// applyHighlightRanges has nothing to split — so without this
-			// pad, a selection spanning a blank line would appear to skip it.
-			visible = padSelection(visible, contentWidth)
-		}
-
 		worst := worstSeverity(t.diagnostics[ln])
 		diagSeg := layout.Segment{
 			Text:  diagnosticMarker(worst),
@@ -2356,7 +2391,40 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 			Text:  fmt.Sprintf("%*d ", gutterWidth-3, ln+1),
 			Style: layout.Style{Attr: layout.AttrDim},
 		}
-		w.Println(rowOffset+i, append([]layout.Segment{diagSeg, diffSeg, gutterSeg}, visible...)...)
+		gutter := []layout.Segment{diagSeg, diffSeg, gutterSeg}
+
+		// Without wrap, one row showing the slice leftCol scrolled to; with
+		// it, a row per wrapStarts entry, each showing its own slice. Only
+		// the first row of a line has a gutter: continuation rows leave it
+		// blank, so line numbers keep counting file lines.
+		starts, sub := []int{t.leftCol}, 0
+		if wrap {
+			starts = lineWrapStarts(t, ln, tabWidth, contentWidth)
+			if ln == t.topLine {
+				sub = t.topSub
+			}
+		}
+		for ; sub < len(starts) && row < rows; sub++ {
+			width := contentWidth
+			if sub+1 < len(starts) {
+				width = starts[sub+1] - starts[sub]
+			}
+			visible := textwidth.SliceSegmentsByDisplayColumn(expandedSegs, starts[sub], width)
+			if selToEOL && sub == len(starts)-1 {
+				// A line whose selection runs past its last rune has the line
+				// break selected too, so the highlight continues to the right
+				// edge. This is also the only thing that renders a selected
+				// BLANK line: an empty line produces no segments at all, and
+				// applyHighlightRanges has nothing to split — so without this
+				// pad, a selection spanning a blank line would appear to skip it.
+				visible = padSelection(visible, contentWidth)
+			}
+			if sub > 0 && wrap {
+				gutter = []layout.Segment{{Text: strings.Repeat(" ", gutterWidth)}}
+			}
+			w.Println(rowOffset+row, append(gutter, visible...)...)
+			row++
+		}
 	}
 }
 
