@@ -36,6 +36,7 @@ var Scope = config.Scope{Name: "filetree", Title: "File Tree", Actions: config.A
 	{ID: "delete", Keys: []string{"d"}, Desc: "Delete (confirm y/N)"},
 	// "L" ("log"), the same key the editor uses for the file's history.
 	{ID: "show_history", Keys: []string{"L"}, Desc: "Show the selected file's git history"},
+	{ID: "open_external", Keys: []string{"o"}, Desc: "Open in the system default app (e.g. HTML in the browser)"},
 	{ID: "next_view", Keys: []string{"]"}, Desc: "Next view: files / changed files"},
 	{ID: "prev_view", Keys: []string{"["}, Desc: "Previous view: files / changed files"},
 }}
@@ -159,6 +160,12 @@ type View struct {
 	// same arrangement as editor.View.CopyFunc; nil (as in tests) makes
 	// those items no-ops.
 	CopyFunc func(string)
+
+	// OpenFunc opens a path in the OS's default app for it, for the
+	// open_external key and the context menu's "Open in Default App". Set
+	// by cmd/nib/main.go to App.OpenExternal; nil (as in tests) makes both
+	// no-ops.
+	OpenFunc func(path string) error
 
 	// menu is the right-click context menu, nil when closed — see menu.go.
 	menu *menuState
@@ -656,6 +663,8 @@ func (v *View) HandleKey(k layout.Key) bool {
 		v.beginDelete()
 	case "show_history":
 		v.showHistory()
+	case "open_external":
+		v.openExternal()
 	case "next_view":
 		v.NextView()
 	case "prev_view":
@@ -726,6 +735,31 @@ func (v *View) showHistory() {
 	if n := v.rows[v.cursor].Node; !n.IsDir {
 		v.OnShowHistory(n.Path)
 	}
+}
+
+// openExternal hands the selected entry — file or directory — to
+// OpenFunc, so an .html file opens in the browser and a directory in the
+// file manager. A broken or not-followed symlink is refused with the same
+// reason activate gives, rather than handed to an OS that would fail
+// somewhere nib can't report.
+func (v *View) openExternal() {
+	if v.cursor < 0 || v.cursor >= len(v.rows) || v.OpenFunc == nil {
+		return
+	}
+	n := v.rows[v.cursor].Node
+	if n.IsSymlink && n.LinkState != LinkOK {
+		v.reportBlocked(n)
+		return
+	}
+	name := n.Name
+	if rel, ok := relPath(v.root.Path, n.Path); ok {
+		name = rel
+	}
+	if err := v.OpenFunc(n.Path); err != nil {
+		v.notice = "open failed: " + err.Error()
+		return
+	}
+	v.notice = "opened " + name
 }
 
 // reportBlocked sets the one-shot status-bar message shown after activate

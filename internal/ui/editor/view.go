@@ -87,6 +87,10 @@ var Scope = config.Scope{Name: "editor", Title: "Editor", Actions: config.Action
 	{ID: "delete_word_backward", Keys: []string{"Alt+Backspace"}, Desc: "Delete the word before the cursor (Insert mode)"},
 	{ID: "insert_tab", Keys: []string{"Tab"}, Desc: "Insert a tab, or spaces per this file's indent style (Insert mode)"},
 	{ID: "save", Keys: []string{"Ctrl+s"}, Desc: "Save the active tab", InPopup: true},
+	// No default key: every free letter here is a vim gesture waiting to
+	// happen. Reachable from the action popup and the tab menu, and
+	// bindable from the config file.
+	{ID: "open_external", Desc: "Open this file in the system default app (e.g. HTML in the browser)", InPopup: true},
 	// Flips the current file's Tab behavior (spaces vs. a literal tab
 	// character) without touching the config's per-language default — see
 	// the "tabmode" directive in internal/config.
@@ -463,6 +467,11 @@ type View struct {
 	searchHidden bool
 	searchNotice string
 
+	// notice is a one-key-long status message for actions that report back
+	// without a mode of their own — what open_external opened, or why it
+	// couldn't. Same lifetime as searchNotice.
+	notice string
+
 	// jumpStack holds positions saved by any jump-like action (see
 	// pushJump's doc comment in navigate.go for the full list), popped by
 	// jumpBack (Ctrl+b). Per-pane, and each entry records a path as well as
@@ -487,6 +496,11 @@ type View struct {
 	// either. nil (the default) means a copy still fills the yank register,
 	// so "p" works and only the crossing-out-of-nib half is missing.
 	CopyFunc func(string)
+
+	// OpenFunc opens a path in the OS's default app for it — wired to
+	// App.OpenExternal in cmd/nib/main.go, the same arrangement as
+	// CopyFunc. nil (as in tests) makes open_external a no-op.
+	OpenFunc func(path string) error
 
 	// dragging is true between a left-button press in the text area and its
 	// release — the window during which pointer motion extends the
@@ -1570,6 +1584,9 @@ func (v *View) StatusText() string {
 	if search := v.searchStatus(); search != "" {
 		status += "   " + search
 	}
+	if v.notice != "" {
+		status += "   " + v.notice
+	}
 	return status
 }
 
@@ -2533,6 +2550,7 @@ func (v *View) HandleKey(k layout.Key) bool {
 	v.hoverText = ""
 	v.signatureHelp = nil
 	v.searchNotice = ""
+	v.notice = ""
 	// Same lifetime, but per-tab rather than pane-wide — see
 	// tab.justReloaded's doc comment.
 	for _, t := range v.tabs {
@@ -2671,6 +2689,9 @@ func (v *View) runAction(action string, count int) bool {
 		return true
 	case "save":
 		v.saveActive()
+		return true
+	case "open_external":
+		v.openExternal(v.active)
 		return true
 	}
 
@@ -4032,5 +4053,23 @@ func (v *View) clampCursor(t *tab, allowOnePastEnd bool) {
 		} else if t.cursorCol >= expandedLen {
 			t.cursorCol = expandedLen - 1
 		}
+	}
+}
+
+// openExternal hands tabs[i]'s file to OpenFunc, so an .html file opens in
+// the browser. It opens what's on disk, so a tab with unsaved edits says
+// as much rather than leaving the user wondering where their change went.
+func (v *View) openExternal(i int) {
+	if v.OpenFunc == nil || i < 0 || i >= len(v.tabs) || v.tabs[i].path == "" {
+		return
+	}
+	t := v.tabs[i]
+	if err := v.OpenFunc(t.path); err != nil {
+		v.notice = "Open failed: " + err.Error()
+		return
+	}
+	v.notice = "Opened " + filepath.Base(t.path)
+	if t.buf != nil && t.buf.Dirty {
+		v.notice += " (unsaved changes not included)"
 	}
 }

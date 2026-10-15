@@ -317,6 +317,11 @@ terminals bypass this while a modifier is held (`Option` on macOS).
 | `:qa` / `:qa!` | Close all tabs |
 | `:wq` | Save then close |
 
+To open the current file in the system default app (e.g. an `.html` file in
+the browser), pick "Open this file in the system default app" from the
+`Ctrl+j` action popup, or "Open in Default App" from a tab's right-click menu.
+It has no default key; bind one with `keybind = editor:<key> = open_external`.
+
 ### File tree
 
 | Key | Action |
@@ -330,6 +335,7 @@ terminals bypass this while a modifier is held (`Option` on macOS).
 | `c` | Copy |
 | `d` | Delete |
 | `L` | Show the selected file's git history |
+| `o` | Open in the system default app — an `.html` file in the browser, a directory in the file manager |
 
 `a`, `r`, and `c` open a prompt on the pane's bottom row. What you type is a
 path relative to the project root — `a` prefills the selected folder, `r`

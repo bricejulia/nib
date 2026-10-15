@@ -9,6 +9,7 @@ const (
 	tabMenuClose tabMenuAction = iota
 	tabMenuCloseOthers
 	tabMenuCloseAll
+	tabMenuOpenExternal
 	tabMenuSplitRight
 	tabMenuSplitDown
 	tabMenuMoveRight
@@ -24,6 +25,8 @@ func (a tabMenuAction) label() string {
 		return "Close Others"
 	case tabMenuCloseAll:
 		return "Close All"
+	case tabMenuOpenExternal:
+		return "Open in Default App"
 	case tabMenuSplitRight:
 		return "Split Right"
 	case tabMenuSplitDown:
@@ -51,6 +54,8 @@ func (a tabMenuAction) icon() string {
 		return "⊠"
 	case tabMenuCloseAll:
 		return "⊗"
+	case tabMenuOpenExternal:
+		return "↗"
 	case tabMenuSplitRight:
 		return "◫"
 	case tabMenuSplitDown:
@@ -102,7 +107,11 @@ func (v *View) openTabMenu(i, anchorCol int) {
 	v.hoverText = ""
 	v.signatureHelp = nil
 	v.gitPopup = nil
-	items := []tabMenuAction{tabMenuClose, tabMenuCloseOthers, tabMenuCloseAll, tabMenuSplitRight, tabMenuSplitDown}
+	items := []tabMenuAction{tabMenuClose, tabMenuCloseOthers, tabMenuCloseAll}
+	if v.OpenFunc != nil {
+		items = append(items, tabMenuOpenExternal)
+	}
+	items = append(items, tabMenuSplitRight, tabMenuSplitDown)
 	if v.CanMoveRight != nil && v.CanMoveRight() {
 		items = append(items, tabMenuMoveRight)
 	}
@@ -132,6 +141,8 @@ func (v *View) activateTabMenuItem() {
 		v.requestCloseOtherTabs(menu.target)
 	case tabMenuCloseAll:
 		v.requestCloseAllTabs()
+	case tabMenuOpenExternal:
+		v.openExternal(menu.target)
 	case tabMenuSplitRight:
 		if v.OnSplitAndMoveRight != nil {
 			v.OnSplitAndMoveRight(menu.target)

@@ -12,6 +12,7 @@ import (
 	"github.com/bricejulia/nib/internal/clipboard"
 	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
+	"github.com/bricejulia/nib/internal/opener"
 	"github.com/bricejulia/nib/internal/theme"
 )
 
@@ -567,6 +568,19 @@ func (a *App) CopyToClipboard(s string) {
 	if err := a.clip.Copy(s); err != nil {
 		debuglog.Warn("clipboard: %v", err)
 	}
+}
+
+// OpenExternal hands path to the OS's default app for it — a browser for
+// an .html file, the file manager for a directory — via internal/opener.
+// The error is returned as well as logged so the pane that asked can say
+// why nothing opened. Panes reach this through a func field wired in
+// cmd/nib/main.go, like CopyToClipboard.
+func (a *App) OpenExternal(path string) error {
+	if err := opener.Open(path); err != nil {
+		debuglog.Warn("open: %v", err)
+		return err
+	}
+	return nil
 }
 
 // Rebuild recomputes focus traversal order after the tree's leaves change

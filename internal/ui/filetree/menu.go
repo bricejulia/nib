@@ -11,7 +11,8 @@ import (
 type menuAction int
 
 const (
-	menuCopyPath menuAction = iota
+	menuOpenExternal menuAction = iota
+	menuCopyPath
 	menuCopyRelPath
 	menuRename
 	menuDelete
@@ -19,6 +20,8 @@ const (
 
 func (a menuAction) label() string {
 	switch a {
+	case menuOpenExternal:
+		return "Open in Default App"
 	case menuCopyPath:
 		return "Copy Path"
 	case menuCopyRelPath:
@@ -38,6 +41,8 @@ func (a menuAction) label() string {
 // the box's column arithmetic.
 func (a menuAction) icon() string {
 	switch a {
+	case menuOpenExternal:
+		return "↗"
 	case menuCopyPath:
 		return "⎘"
 	case menuCopyRelPath:
@@ -83,7 +88,7 @@ func (v *View) openMenu(idx, col, row int) {
 		v.cursor = idx
 		v.hScroll = 0
 	}
-	items := []menuAction{menuCopyPath, menuCopyRelPath}
+	items := []menuAction{menuOpenExternal, menuCopyPath, menuCopyRelPath}
 	// ModeChanges is navigate-and-open only, not a file-op target — see
 	// beginRename/beginDelete, which refuse it anyway.
 	if v.mode == ModeFiles {
@@ -108,6 +113,10 @@ func (v *View) activateMenuItem() {
 		return
 	}
 	switch menu.items[menu.selected] {
+	case menuOpenExternal:
+		if v.selectPath(menu.target) {
+			v.openExternal()
+		}
 	case menuCopyPath:
 		v.copyToClipboard(menu.target)
 	case menuCopyRelPath:
