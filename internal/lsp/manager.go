@@ -81,6 +81,8 @@ type serverClient interface {
 	didOpen(path, languageID, text string, version int) error
 	didChange(path, text string, version int) error
 	didClose(path string) error
+	didSave(path string) error
+	didChangeWatchedFiles(changes []FileChange) error
 	definition(path string, line, character int) (Location, bool, error)
 	completion(path string, line, character int) ([]CompletionItem, error)
 	hover(path string, line, character int) (string, bool, error)
@@ -266,6 +268,43 @@ func (m *Manager) Change(path, text string) {
 	f.version++
 	if err := c.didChange(path, text, f.version); err != nil {
 		debuglog.Warn("lsp: didChange %s: %v", path, err)
+	}
+}
+
+// Save tells the server path was just written to disk. A no-op for a path
+// that isn't open (e.g. a language with no server).
+func (m *Manager) Save(path string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	f, ok := m.open[path]
+	if !ok {
+		return
+	}
+	if c := m.clients[f.language]; c != nil {
+		if err := c.didSave(path); err != nil {
+			debuglog.Warn("lsp: didSave %s: %v", path, err)
+		}
+	}
+}
+
+// FilesChanged reports on-disk changes (from the filesystem watcher) to
+// every running server, each of which only forwards the ones its server
+// registered an interest in — see Client.didChangeWatchedFiles. This is
+// how a server learns about edits to files nib doesn't have open (another
+// .go file in the same package, go.mod), which it otherwise never
+// re-reads.
+func (m *Manager) FilesChanged(changes []FileChange) {
+	if len(changes) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for lang, c := range m.clients {
+		if err := c.didChangeWatchedFiles(changes); err != nil {
+			debuglog.Warn("lsp: didChangeWatchedFiles to %s server: %v", lang, err)
+		}
 	}
 }
 

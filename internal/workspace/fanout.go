@@ -102,6 +102,7 @@ func (w *Workspace) SyncWithDisk() {
 				p.view.RefreshBuffer(buf)
 				p.view.MarkJustReloaded(buf)
 			}
+			w.resyncLanguageServer(buf)
 			w.refreshLineStatus(path)
 		}
 	}
@@ -180,6 +181,9 @@ func (w *Workspace) KeepMine(c editor.SaveConflict) {
 		debuglog.Error("save %s: %v", c.Path, err)
 		return
 	}
+	if w.opts.LSP != nil {
+		w.opts.LSP.Save(c.Path)
+	}
 	// Save just cleared ExternallyModified, which is what lets the gutter
 	// accept fresh markers again — nothing else would ask for them.
 	w.refreshLineStatus(c.Path)
@@ -195,7 +199,19 @@ func (w *Workspace) ReloadFromDisk(c editor.SaveConflict) {
 	for _, p := range w.panes {
 		p.view.RefreshBuffer(c.Buf)
 	}
+	w.resyncLanguageServer(c.Buf)
 	w.refreshLineStatus(c.Path)
+}
+
+// resyncLanguageServer tells the language server buf's reloaded content
+// — once, through whichever pane has it open first (see
+// editor.View.ResyncLanguageServer).
+func (w *Workspace) resyncLanguageServer(buf *editor.Buffer) {
+	for _, p := range w.panes {
+		if p.view.ResyncLanguageServer(buf) {
+			return
+		}
+	}
 }
 
 // LargestBuffer returns the path and byte size of the largest open buffer,

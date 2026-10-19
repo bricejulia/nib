@@ -7,6 +7,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/sourcegraph/jsonrpc2"
@@ -46,8 +50,8 @@ func (s stdio) Close() error {
 // newClient) — if the handshake fails, no Client exists at all, so any
 // Client a caller holds is usable.
 //
-// Safe for concurrent use: jsonrpc2.Conn is, and the only other mutable
-// state (onDiagnostics) is set once before any request is issued.
+// Safe for concurrent use: jsonrpc2.Conn is, onDiagnostics is set once
+// before any request is issued, and watchers is mutex-guarded.
 type Client struct {
 	cmd  *exec.Cmd
 	conn *jsonrpc2.Conn
@@ -58,6 +62,17 @@ type Client struct {
 	// non-UI goroutine (the Manager's implementation marshals onto the UI
 	// goroutine via Post).
 	onDiagnostics func(PublishDiagnosticsParams)
+
+	// root is the directory the server was started in, which relative
+	// watcher globs are matched against (see watching).
+	root string
+
+	// watchers holds the didChangeWatchedFiles globs the server registered
+	// (see register), keyed by registration id so an unregister can drop
+	// them. Written from the JSON-RPC handler goroutines, read by
+	// didChangeWatchedFiles, hence the mutex.
+	mu       sync.Mutex
+	watchers map[string][]*regexp.Regexp
 }
 
 // newClient spawns command in rootDir, performs the LSP initialize
@@ -92,7 +107,7 @@ func newClient(rootDir string, command []string, onDiagnostics func(PublishDiagn
 		return nil, err
 	}
 
-	c := &Client{cmd: cmd, onDiagnostics: onDiagnostics}
+	c := &Client{cmd: cmd, onDiagnostics: onDiagnostics, root: rootDir, watchers: map[string][]*regexp.Regexp{}}
 	stream := jsonrpc2.NewBufferedStream(stdio{in: stdin, out: stdout}, jsonrpc2.VSCodeObjectCodec{})
 	// AsyncHandler so a slow diagnostic callback can't stall the read
 	// loop and thereby block responses to in-flight requests.
@@ -106,18 +121,118 @@ func newClient(rootDir string, command []string, onDiagnostics func(PublishDiagn
 }
 
 // Handle implements jsonrpc2.Handler, receiving server-initiated requests
-// and notifications. Only publishDiagnostics is acted on; everything else
-// is ignored, which is protocol-legal for notifications and for the
-// server-to-client requests nib never opts into.
-func (c *Client) Handle(_ context.Context, _ *jsonrpc2.Conn, req *jsonrpc2.Request) {
-	if req.Method != methodPublishDiagnostics || req.Params == nil || c.onDiagnostics == nil {
+// and notifications. publishDiagnostics is forwarded; a request is always
+// answered, so the server never waits on a reply that won't come:
+// capability (un)registration is recorded (see register), workspace/
+// configuration gets one null per item ("use your defaults"), progress
+// tokens are accepted, and anything else is refused with MethodNotFound.
+// Other notifications are ignored, which is protocol-legal.
+func (c *Client) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+	if req.Notif {
+		if req.Method == methodPublishDiagnostics && req.Params != nil && c.onDiagnostics != nil {
+			var params PublishDiagnosticsParams
+			if err := json.Unmarshal(*req.Params, &params); err == nil {
+				c.onDiagnostics(params)
+			}
+		}
 		return
 	}
-	var params PublishDiagnosticsParams
-	if err := json.Unmarshal(*req.Params, &params); err != nil {
+
+	var result any
+	switch req.Method {
+	case methodRegisterCapability:
+		var params RegistrationParams
+		if req.Params != nil && json.Unmarshal(*req.Params, &params) == nil {
+			c.register(params)
+		}
+	case methodUnregisterCapability:
+		var params UnregistrationParams
+		if req.Params != nil && json.Unmarshal(*req.Params, &params) == nil {
+			c.mu.Lock()
+			for _, u := range params.Unregisterations {
+				delete(c.watchers, u.ID)
+			}
+			c.mu.Unlock()
+		}
+	case methodWorkspaceConfig:
+		var params ConfigurationParams
+		if req.Params != nil {
+			_ = json.Unmarshal(*req.Params, &params)
+		}
+		result = make([]any, len(params.Items))
+	case methodWorkDoneProgress:
+	default:
+		_ = conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+			Code:    jsonrpc2.CodeMethodNotFound,
+			Message: "nib does not handle " + req.Method,
+		})
 		return
 	}
-	c.onDiagnostics(params)
+	_ = conn.Reply(ctx, req.ID, result)
+}
+
+// register records the globs of every didChangeWatchedFiles registration
+// in params; other registrations are only acknowledged.
+func (c *Client) register(params RegistrationParams) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, r := range params.Registrations {
+		if r.Method != methodDidChangeWatchedFiles {
+			continue
+		}
+		var opts DidChangeWatchedFilesRegistrationOptions
+		if json.Unmarshal(r.RegisterOptions, &opts) != nil {
+			continue
+		}
+		var globs []*regexp.Regexp
+		for _, w := range opts.Watchers {
+			var pattern string
+			if json.Unmarshal(w.GlobPattern, &pattern) != nil {
+				continue // a RelativePattern object: not advertised, not handled
+			}
+			if re := compileGlob(pattern); re != nil {
+				globs = append(globs, re)
+			}
+		}
+		c.watchers[r.ID] = globs
+	}
+}
+
+// watching reports whether any registered glob matches path, tried both
+// as an absolute path and relative to root, since servers send either.
+// Callers must hold c.mu.
+func (c *Client) watching(path string) bool {
+	abs := filepath.ToSlash(path)
+	rel := ""
+	if r, err := filepath.Rel(c.root, path); err == nil && !filepath.IsAbs(r) && r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+		rel = filepath.ToSlash(r)
+	}
+	for _, globs := range c.watchers {
+		for _, re := range globs {
+			if re.MatchString(abs) || (rel != "" && re.MatchString(rel)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// didChangeWatchedFiles reports the changes the server registered an
+// interest in, dropping the rest. Sends nothing if none are left —
+// including before the server has registered anything.
+func (c *Client) didChangeWatchedFiles(changes []FileChange) error {
+	c.mu.Lock()
+	var events []FileEvent
+	for _, ch := range changes {
+		if c.watching(ch.Path) {
+			events = append(events, FileEvent{URI: pathToURI(ch.Path), Type: ch.Type})
+		}
+	}
+	c.mu.Unlock()
+	if len(events) == 0 {
+		return nil
+	}
+	return c.conn.Notify(context.Background(), methodDidChangeWatchedFiles, DidChangeWatchedFilesParams{Changes: events})
 }
 
 // initialize performs the opening handshake: the initialize request,
@@ -132,7 +247,11 @@ func (c *Client) initialize(rootDir string) error {
 		RootURI:   pathToURI(rootDir),
 		Capabilities: ClientCapabilities{
 			TextDocument: TextDocumentClientCapabilities{
-				Definition: DefinitionCapabilities{LinkSupport: false},
+				Synchronization: SynchronizationCapabilities{DidSave: true},
+				Definition:      DefinitionCapabilities{LinkSupport: false},
+			},
+			Workspace: WorkspaceClientCapabilities{
+				DidChangeWatchedFiles: DidChangeWatchedFilesCapabilities{DynamicRegistration: true},
 			},
 		},
 	}
@@ -163,6 +282,13 @@ func (c *Client) didChange(path, text string, version int) error {
 		ContentChanges: []TextDocumentContentChangeEvent{
 			{Text: text},
 		},
+	})
+}
+
+// didSave tells the server path was just written to disk.
+func (c *Client) didSave(path string) error {
+	return c.conn.Notify(context.Background(), methodDidSave, DidSaveTextDocumentParams{
+		TextDocument: TextDocumentIdentifier{URI: pathToURI(path)},
 	})
 }
 

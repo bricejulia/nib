@@ -44,10 +44,13 @@ lint: vet
 audit:
 	$(GOVULNCHECK) ./...
 
+audit-install:
+	$(GO) install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+
 ## clean: remove build artifacts
 clean:
 	rm -f $(BINARY)
 
 ## lint-install: install golangci-lint to GOPATH/bin
 lint-install:
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $$($(GO) env GOPATH)/bin v1.64.8
+	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0

@@ -12,6 +12,8 @@ type fakeClient struct {
 	opened    []string
 	changed   []string
 	closed    []string
+	saved     []string
+	watched   [][]FileChange
 	versions  []int
 	defLoc    Location
 	defFound  bool
@@ -65,6 +67,16 @@ func (f *fakeClient) didChange(path, _ string, version int) error {
 
 func (f *fakeClient) didClose(path string) error {
 	f.closed = append(f.closed, path)
+	return nil
+}
+
+func (f *fakeClient) didSave(path string) error {
+	f.saved = append(f.saved, path)
+	return nil
+}
+
+func (f *fakeClient) didChangeWatchedFiles(changes []FileChange) error {
+	f.watched = append(f.watched, changes)
 	return nil
 }
 
@@ -733,5 +745,34 @@ func TestShutdownClosesEveryClient(t *testing.T) {
 	}
 	if len(m.clients) != 0 {
 		t.Errorf("expected client state cleared, got %v", m.clients)
+	}
+}
+
+func TestSaveSendsDidSaveOnlyForOpenPaths(t *testing.T) {
+	fake := &fakeClient{}
+	m := newTestManager("go", fake)
+	m.Open("/project/a.go", "go", "x")
+
+	m.Save("/project/a.go")
+	m.Save("/project/never-opened.go")
+
+	if len(fake.saved) != 1 || fake.saved[0] != "/project/a.go" {
+		t.Fatalf("saved = %v, want one entry for a.go", fake.saved)
+	}
+}
+
+func TestFilesChangedForwardsToEveryRunningServer(t *testing.T) {
+	goFake, tsFake := &fakeClient{}, &fakeClient{}
+	m := newTestManager("go", goFake)
+	m.clients["typescript"] = tsFake
+	changes := []FileChange{{Path: "/project/b.go", Type: FileChanged}}
+
+	m.FilesChanged(changes)
+	m.FilesChanged(nil) // nothing to report: sends nothing
+
+	for name, f := range map[string]*fakeClient{"go": goFake, "typescript": tsFake} {
+		if len(f.watched) != 1 || len(f.watched[0]) != 1 || f.watched[0][0] != changes[0] {
+			t.Errorf("%s server got %v, want exactly %v", name, f.watched, changes)
+		}
 	}
 }

@@ -212,3 +212,66 @@ func TestNewDirWatchesOnlyThatDirectory(t *testing.T) {
 	}
 	expectNoEvent(t, w, testDebounce*3)
 }
+
+func TestWatcherReportsChangedPaths(t *testing.T) {
+	dir := newTestRepo(t)
+	w, err := New(dir, testDebounce)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	existing := filepath.Join(dir, "src", "main.go")
+	created := filepath.Join(dir, "src", "new.go")
+	for i := 0; i < 3; i++ { // several writes: still one entry
+		if err := os.WriteFile(existing, []byte("package main // "+string(rune('a'+i))), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(created, []byte("package main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ev, ok := waitForEvent(t, w)
+	if !ok {
+		t.Fatal("expected a RefreshEvent, got none")
+	}
+	got := map[string]ChangeKind{}
+	for _, c := range ev.Changes {
+		if _, dup := got[c.Path]; dup {
+			t.Errorf("path %s reported twice in %+v", c.Path, ev.Changes)
+		}
+		got[c.Path] = c.Kind
+	}
+	if got[existing] != Changed {
+		t.Errorf("%s: kind %v, want Changed (in %+v)", existing, got[existing], ev.Changes)
+	}
+	if got[created] != Created {
+		t.Errorf("%s: kind %v, want Created — a write right after creation is still a creation (in %+v)", created, got[created], ev.Changes)
+	}
+
+	if err := os.Remove(created); err != nil {
+		t.Fatal(err)
+	}
+	ev, ok = waitForEvent(t, w)
+	if !ok {
+		t.Fatal("expected a RefreshEvent for the removal, got none")
+	}
+	if len(ev.Changes) != 1 || ev.Changes[0] != (Change{Path: created, Kind: Deleted}) {
+		t.Errorf("Changes = %+v, want just %s Deleted", ev.Changes, created)
+	}
+}
+
+func TestMerge(t *testing.T) {
+	for _, tc := range []struct{ prev, next, want ChangeKind }{
+		{Created, Changed, Created},
+		{Deleted, Created, Changed},
+		{Changed, Deleted, Deleted},
+		{Changed, Changed, Changed},
+		{Created, Deleted, Deleted},
+	} {
+		if got := merge(tc.prev, tc.next); got != tc.want {
+			t.Errorf("merge(%v, %v) = %v, want %v", tc.prev, tc.next, got, tc.want)
+		}
+	}
+}
