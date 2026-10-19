@@ -24,6 +24,7 @@ type fakeLSP struct {
 	opened      []string
 	openedLangs []string
 	changed     []string
+	saved       []string
 	closed      []string
 
 	defDispatched bool
@@ -93,6 +94,8 @@ func (f *fakeLSP) Open(path, language, _ string) {
 }
 
 func (f *fakeLSP) Change(path, _ string) { f.changed = append(f.changed, path) }
+
+func (f *fakeLSP) Save(path string) { f.saved = append(f.saved, path) }
 
 func (f *fakeLSP) Close(path string) { f.closed = append(f.closed, path) }
 
@@ -264,6 +267,57 @@ func TestEditingNotifiesLanguageServer(t *testing.T) {
 
 	if len(fake.changed) == 0 {
 		t.Fatal("expected an edit to push the new contents to the server")
+	}
+}
+
+func TestSavingNotifiesLanguageServer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeLSP{}
+	v := NewView()
+	v.lsp = fake
+	v.Open(path)
+
+	v.HandleKey(layout.Key{Text: "i"})
+	v.HandleKey(layout.Key{Text: "x"})
+	if res := v.SaveDirtyTabs(); len(res.Failed) > 0 || len(res.Conflicts) > 0 {
+		t.Fatalf("SaveDirtyTabs() = %+v, want a clean save", res)
+	}
+
+	if len(fake.saved) != 1 || fake.saved[0] != path {
+		t.Fatalf("saved = %v, want one didSave for %s", fake.saved, path)
+	}
+}
+
+func TestResyncLanguageServerSendsReloadedContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeLSP{}
+	v := NewView()
+	v.lsp = fake
+	v.Open(path)
+	buf := v.BufferForPath(path)
+
+	if err := os.WriteFile(path, []byte("package main\n\nfunc Bar() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := buf.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if !v.ResyncLanguageServer(buf) {
+		t.Fatal("ResyncLanguageServer = false for a pane with the buffer open")
+	}
+	if len(fake.changed) != 1 || fake.changed[0] != path {
+		t.Fatalf("changed = %v, want one didChange for %s", fake.changed, path)
+	}
+	if NewView().ResyncLanguageServer(buf) {
+		t.Error("ResyncLanguageServer = true for a pane without the buffer")
 	}
 }
 

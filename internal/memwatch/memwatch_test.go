@@ -124,3 +124,41 @@ func TestCloseIsIdempotent(t *testing.T) {
 	w.Close()
 	w.Close()
 }
+
+func TestCheckRecordsLastAndCallsOnSample(t *testing.T) {
+	w, setHeap := newFakeWatcher(100, nil)
+	var samples []uint64
+	w.OnSample = func(heap uint64) { samples = append(samples, heap) }
+
+	if w.Last() != 0 {
+		t.Fatalf("Last() = %d before any sample, want 0", w.Last())
+	}
+	setHeap(42)
+	w.Check()
+	setHeap(150)
+	w.Check()
+
+	if w.Last() != 150 {
+		t.Fatalf("Last() = %d, want 150", w.Last())
+	}
+	if len(samples) != 2 || samples[0] != 42 || samples[1] != 150 {
+		t.Fatalf("OnSample got %v, want [42 150] (every sample, below or above threshold)", samples)
+	}
+}
+
+func TestFormat(t *testing.T) {
+	for _, tc := range []struct {
+		bytes uint64
+		want  string
+	}{
+		{0, "0M"},
+		{1 << 20, "1M"},
+		{1023 << 20, "1023M"},
+		{1 << 30, "1.0G"},
+		{3 << 29, "1.5G"},
+	} {
+		if got := Format(tc.bytes); got != tc.want {
+			t.Errorf("Format(%d) = %q, want %q", tc.bytes, got, tc.want)
+		}
+	}
+}

@@ -78,6 +78,32 @@ type memoryThresholdEvent struct {
 	heapBytes uint64
 }
 
+// lspFileChanges converts the watcher's changes into the LSP manager's
+// shape; the two packages don't import each other.
+func lspFileChanges(changes []watch.Change) []lsp.FileChange {
+	out := make([]lsp.FileChange, 0, len(changes))
+	for _, c := range changes {
+		var t lsp.FileChangeType
+		switch c.Kind {
+		case watch.Created:
+			t = lsp.FileCreated
+		case watch.Changed:
+			t = lsp.FileChanged
+		case watch.Deleted:
+			t = lsp.FileDeleted
+		default:
+			continue
+		}
+		out = append(out, lsp.FileChange{Path: c.Path, Type: t})
+	}
+	return out
+}
+
+// memorySampleEvent is posted by memWatcher whenever the status bar's
+// rounded memory figure changes. It carries nothing: the status bar reads
+// memWatcher.Last() itself, and App.Run re-renders after every event.
+type memorySampleEvent struct{}
+
 // mainShortcutsHint is the fixed reminder shown left-aligned in the status
 // bar — see internal/ui/help for the full keybinding reference (opened via
 // "?", included at the end here).
@@ -386,6 +412,10 @@ func run() error {
 	// out to on every render, which would run `git` on every keystroke.
 	var gitBranch, gitSummary string
 
+	// memWatcher is created near the end of this function, once app exists
+	// to post to; the status bar only reads it at render time, after that.
+	var memWatcher *memwatch.Watcher
+
 	// app needs the layout tree, and the tree needs the workspace's panes,
 	// so it's assigned just below; everything here that reads it only runs
 	// once the app exists.
@@ -484,6 +514,12 @@ func run() error {
 				branch += " " + gitSummary
 			}
 			parts = append(parts, branch)
+		}
+		// nib's own Go heap — the same figure memWatcher compares against
+		// memThreshold. Language servers are separate processes and aren't
+		// counted.
+		if memWatcher != nil && memWatcher.Last() > 0 {
+			parts = append(parts, "mem "+memwatch.Format(memWatcher.Last()))
 		}
 		parts = append(parts, "nib "+version.Version)
 		return strings.Join(parts, "   ")
@@ -1301,6 +1337,11 @@ func run() error {
 			app.Quit()
 		case watch.RefreshEvent:
 			debuglog.Debug("fsnotify refresh: gitChanged=%v fsChanged=%v", e.GitChanged, e.FSChanged)
+			// Language servers only learn about edits to files nib doesn't
+			// have open (another .go file in the package, go.mod) through
+			// this. Sent before SyncWithDisk, so an open file's reload
+			// didChange lands after it.
+			lspManager.FilesChanged(lspFileChanges(e.Changes))
 			if e.FSChanged {
 				treeView.Refresh()
 				// RefreshEvent only says "something changed", never what, so
@@ -1342,6 +1383,9 @@ func run() error {
 			e.Apply()
 		case memoryThresholdEvent:
 			promptToFreeMemory(e.heapBytes)
+		case memorySampleEvent:
+			// Nothing to do: the re-render that follows every event picks up
+			// memWatcher.Last() in the status bar.
 		}
 	})
 
@@ -1351,9 +1395,20 @@ func run() error {
 	// fsnotify watcher goroutine just below: a background goroutine that
 	// only ever talks to the UI by posting, never touching the workspace or
 	// any View directly.
-	memWatcher := memwatch.New(memThreshold, memWatchInterval, func(heap uint64) {
+	memWatcher = memwatch.New(memThreshold, memWatchInterval, func(heap uint64) {
 		app.Post(memoryThresholdEvent{heapBytes: heap})
 	})
+	// Only posted when the rounded figure the status bar shows changes, so
+	// an idle editor isn't redrawn every memWatchInterval. lastMemShown is
+	// only touched from memWatcher's sampling (Start's first Check, then its
+	// own goroutine), never concurrently.
+	var lastMemShown string
+	memWatcher.OnSample = func(heap uint64) {
+		if shown := memwatch.Format(heap); shown != lastMemShown {
+			lastMemShown = shown
+			app.Post(memorySampleEvent{})
+		}
+	}
 	memWatcher.Start()
 	defer memWatcher.Close()
 

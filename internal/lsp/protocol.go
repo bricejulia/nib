@@ -33,6 +33,7 @@ const (
 	methodDidOpen            = "textDocument/didOpen"
 	methodDidChange          = "textDocument/didChange"
 	methodDidClose           = "textDocument/didClose"
+	methodDidSave            = "textDocument/didSave"
 	methodDefinition         = "textDocument/definition"
 	methodCompletion         = "textDocument/completion"
 	methodHover              = "textDocument/hover"
@@ -42,6 +43,12 @@ const (
 	methodReferences         = "textDocument/references"
 	methodRename             = "textDocument/rename"
 	methodCodeAction         = "textDocument/codeAction"
+
+	methodDidChangeWatchedFiles = "workspace/didChangeWatchedFiles"
+	methodWorkspaceConfig       = "workspace/configuration"
+	methodRegisterCapability    = "client/registerCapability"
+	methodUnregisterCapability  = "client/unregisterCapability"
+	methodWorkDoneProgress      = "window/workDoneProgress/create"
 )
 
 // Position is a zero-based line/character pair. Note that LSP's
@@ -116,6 +123,80 @@ type DidChangeTextDocumentParams struct {
 // document open, so the on-disk contents are authoritative again.
 type DidCloseTextDocumentParams struct {
 	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
+// DidSaveTextDocumentParams tells the server the editor just wrote the
+// document to disk. The text isn't included: the server already has it
+// from didChange.
+type DidSaveTextDocumentParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
+// FileChangeType is what happened to a watched file, numbered as on the
+// wire.
+type FileChangeType int
+
+const (
+	FileCreated FileChangeType = 1
+	FileChanged FileChangeType = 2
+	FileDeleted FileChangeType = 3
+)
+
+// FileChange is one on-disk change for Manager.FilesChanged to report:
+// nib's own path-based shape, turned into a FileEvent on the wire.
+type FileChange struct {
+	Path string
+	Type FileChangeType
+}
+
+// FileEvent is one entry of a didChangeWatchedFiles notification.
+type FileEvent struct {
+	URI  string         `json:"uri"`
+	Type FileChangeType `json:"type"`
+}
+
+// DidChangeWatchedFilesParams reports files that changed on disk — the
+// files the editor doesn't have open, whose changes a server like gopls
+// doesn't otherwise learn about.
+type DidChangeWatchedFilesParams struct {
+	Changes []FileEvent `json:"changes"`
+}
+
+// RegistrationParams is client/registerCapability's request shape. Only
+// a didChangeWatchedFiles registration's options are decoded (see
+// Client.register); any other registration is just acknowledged.
+type RegistrationParams struct {
+	Registrations []Registration `json:"registrations"`
+}
+
+// Registration is one dynamically registered capability.
+type Registration struct {
+	ID              string          `json:"id"`
+	Method          string          `json:"method"`
+	RegisterOptions json.RawMessage `json:"registerOptions,omitempty"`
+}
+
+// DidChangeWatchedFilesRegistrationOptions lists the files a server wants
+// to hear about. Only the plain-string glob form is understood; a
+// RelativePattern object decodes to "" and is ignored.
+type DidChangeWatchedFilesRegistrationOptions struct {
+	Watchers []struct {
+		GlobPattern json.RawMessage `json:"globPattern"`
+	} `json:"watchers"`
+}
+
+// UnregistrationParams is client/unregisterCapability's request shape —
+// "unregisterations" is the spec's own (misspelled) field name.
+type UnregistrationParams struct {
+	Unregisterations []struct {
+		ID string `json:"id"`
+	} `json:"unregisterations"`
+}
+
+// ConfigurationParams is workspace/configuration's request shape; only
+// the item count matters, since nib answers null for every item.
+type ConfigurationParams struct {
+	Items []json.RawMessage `json:"items"`
 }
 
 // TextDocumentPositionParams is the request shape shared by every
@@ -418,6 +499,20 @@ type InitializeParams struct {
 // ClientCapabilities declares what this client supports.
 type ClientCapabilities struct {
 	TextDocument TextDocumentClientCapabilities `json:"textDocument"`
+	Workspace    WorkspaceClientCapabilities    `json:"workspace"`
+}
+
+// WorkspaceClientCapabilities is the workspace-wide slice of
+// ClientCapabilities.
+type WorkspaceClientCapabilities struct {
+	DidChangeWatchedFiles DidChangeWatchedFilesCapabilities `json:"didChangeWatchedFiles"`
+}
+
+// DidChangeWatchedFilesCapabilities says nib reports on-disk changes,
+// letting the server register which files it wants to hear about (gopls
+// registers its own *.go/go.mod/go.sum globs this way).
+type DidChangeWatchedFilesCapabilities struct {
+	DynamicRegistration bool `json:"dynamicRegistration"`
 }
 
 // TextDocumentClientCapabilities is the per-document-feature slice of
@@ -429,10 +524,10 @@ type TextDocumentClientCapabilities struct {
 }
 
 // SynchronizationCapabilities declares which document-sync notifications
-// the client sends. WillSave/DidSave are omitted (false) — nib doesn't
-// send them.
+// the client sends. WillSave is omitted (false) — nib doesn't send it.
 type SynchronizationCapabilities struct {
 	DynamicRegistration bool `json:"dynamicRegistration"`
+	DidSave             bool `json:"didSave"`
 }
 
 // DefinitionCapabilities declares go-to-definition support. LinkSupport

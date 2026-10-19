@@ -6,6 +6,7 @@ package watch
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +17,42 @@ import (
 type RefreshEvent struct {
 	GitChanged bool // .git/HEAD or .git/index touched -> re-run git status
 	FSChanged  bool // project tree touched -> re-scan the affected lazy-loaded Node
+
+	// Changes lists every path outside .git that was created, written or
+	// removed during the debounce window, one entry per path, sorted by
+	// path — what a language server needs to hear about files nib doesn't
+	// have open (see lsp.Manager.FilesChanged). A chmod-only event sets
+	// FSChanged but adds nothing here.
+	Changes []Change
+}
+
+// ChangeKind is what happened to one path over a debounce window.
+type ChangeKind int
+
+const (
+	Created ChangeKind = iota + 1
+	Changed
+	Deleted
+)
+
+// Change is one path's net change over a debounce window.
+type Change struct {
+	Path string
+	Kind ChangeKind
+}
+
+// merge folds a newer op on the same path into what was already seen:
+// created-then-written is still a creation, and deleted-then-created (an
+// editor saving through a temp file renamed over the original) is a
+// change.
+func merge(prev, next ChangeKind) ChangeKind {
+	switch {
+	case prev == Created && next == Changed:
+		return Created
+	case prev == Deleted && next == Created:
+		return Changed
+	}
+	return next
 }
 
 // Watcher watches a project tree and its repo's .git directory (HEAD/index
@@ -148,6 +185,7 @@ func (w *Watcher) loop() {
 	var timer *time.Timer
 	var timerC <-chan time.Time
 	var pending RefreshEvent
+	changes := map[string]ChangeKind{}
 
 	for {
 		select {
@@ -155,7 +193,7 @@ func (w *Watcher) loop() {
 			if !ok {
 				return
 			}
-			w.classify(ev, &pending)
+			w.classify(ev, &pending, changes)
 			if timer == nil {
 				timer = time.NewTimer(w.debounce)
 			} else {
@@ -170,8 +208,13 @@ func (w *Watcher) loop() {
 			timerC = timer.C
 
 		case <-timerC:
+			for path, kind := range changes {
+				pending.Changes = append(pending.Changes, Change{Path: path, Kind: kind})
+			}
+			sort.Slice(pending.Changes, func(i, j int) bool { return pending.Changes[i].Path < pending.Changes[j].Path })
 			w.events <- pending
 			pending = RefreshEvent{}
+			changes = map[string]ChangeKind{}
 			timerC = nil
 
 		case <-w.fsw.Errors:
@@ -187,7 +230,7 @@ func (w *Watcher) loop() {
 	}
 }
 
-func (w *Watcher) classify(ev fsnotify.Event, pending *RefreshEvent) {
+func (w *Watcher) classify(ev fsnotify.Event, pending *RefreshEvent, changes map[string]ChangeKind) {
 	dir := filepath.Dir(ev.Name)
 	base := filepath.Base(ev.Name)
 
@@ -200,6 +243,22 @@ func (w *Watcher) classify(ev fsnotify.Event, pending *RefreshEvent) {
 	}
 
 	pending.FSChanged = true
+
+	var kind ChangeKind
+	switch {
+	case ev.Has(fsnotify.Remove), ev.Has(fsnotify.Rename):
+		kind = Deleted // a rename's new name arrives as its own Create
+	case ev.Has(fsnotify.Create):
+		kind = Created
+	case ev.Has(fsnotify.Write):
+		kind = Changed
+	}
+	if kind != 0 {
+		if prev, ok := changes[ev.Name]; ok {
+			kind = merge(prev, kind)
+		}
+		changes[ev.Name] = kind
+	}
 
 	if ev.Has(fsnotify.Create) && !w.flat {
 		if fi, err := os.Stat(ev.Name); err == nil && fi.IsDir() {

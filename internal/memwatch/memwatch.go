@@ -6,8 +6,10 @@
 package memwatch
 
 import (
+	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,6 +29,14 @@ type Watcher struct {
 	Threshold   uint64 // bytes; a sample at or above this is "over"
 	Interval    time.Duration
 	OnThreshold func(heapBytes uint64)
+
+	// OnSample, if set, is called with every sample, before the threshold
+	// logic — what lets a caller (cmd/nib/main.go's status bar) show the
+	// current figure, not only react to crossings. Runs on the watcher's
+	// goroutine, so like OnThreshold it must only post to the UI.
+	OnSample func(heapBytes uint64)
+
+	last atomic.Uint64 // the latest sample, for Last
 
 	// sample reads the current heap size. A field, not a direct call, so
 	// tests can substitute a fake and drive Check deterministically,
@@ -61,10 +71,26 @@ func defaultSample() uint64 {
 	return m.HeapAlloc
 }
 
-// Start runs the periodic check on its own goroutine. Call Close to stop
-// it; Start must not be called more than once per Watcher.
+// Start takes a first sample right away, so Last isn't 0 until the first
+// Interval elapses, then runs the periodic check on its own goroutine.
+// Call Close to stop it; Start must not be called more than once per
+// Watcher.
 func (w *Watcher) Start() {
+	w.Check()
 	go w.run()
+}
+
+// Last returns the most recent sample, or 0 before the first one. Safe to
+// call from any goroutine.
+func (w *Watcher) Last() uint64 { return w.last.Load() }
+
+// Format renders a byte count compactly for the status bar: whole MiB
+// below 1GiB ("84M"), GiB with one decimal from there ("1.2G").
+func Format(bytes uint64) string {
+	if bytes < 1<<30 {
+		return fmt.Sprintf("%dM", bytes>>20)
+	}
+	return fmt.Sprintf("%.1fG", float64(bytes)/(1<<30))
 }
 
 // Close stops the watcher and waits for its goroutine to exit. Idempotent,
@@ -99,6 +125,10 @@ func (w *Watcher) run() {
 // waiting on a real Interval.
 func (w *Watcher) Check() {
 	heap := w.sample()
+	w.last.Store(heap)
+	if w.OnSample != nil {
+		w.OnSample(heap)
+	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()

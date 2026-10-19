@@ -656,6 +656,7 @@ type languageServer interface {
 	Status(language string) lsp.ServerStatus
 	Open(path, language, text string)
 	Change(path, text string)
+	Save(path string)
 	Close(path string)
 	Definition(path, language string, line, character int, apply func(loc lsp.Location, ok bool)) bool
 	Completion(path, language string, line, character int, apply func(items []lsp.CompletionItem, ok bool)) bool
@@ -3474,9 +3475,10 @@ func (v *View) redo(t *tab) {
 // rename touches as a tab in the pane that triggered it (see
 // View.OpenBackground). Falls back to reverting the shared Buffer directly
 // for a sibling that's open only in a different split pane: visually
-// correct immediately (Render reads the Buffer's live content), but that
-// other pane's diagnostics/LSP view won't refresh until its own next
-// interaction.
+// correct immediately (Render reads the Buffer's live content), and the
+// language server is told directly (the Manager is shared by every pane),
+// but that other pane's diagnostics won't refresh until the server
+// republishes them.
 func (v *View) undoGroupSiblings(self string, group *editGroup) {
 	for _, path := range group.paths {
 		if path == self {
@@ -3503,6 +3505,9 @@ func (v *View) undoGroupSiblings(self string, group *editGroup) {
 		buf.undoStack = buf.undoStack[:len(buf.undoStack)-1]
 		buf.redoStack = append(buf.redoStack, undoEntry{lines: append([]string(nil), buf.Lines...), group: group})
 		buf.Restore(entry.lines)
+		if v.lsp != nil {
+			v.lsp.Change(path, string(buf.Source))
+		}
 	}
 }
 
@@ -3535,6 +3540,9 @@ func (v *View) redoGroupSiblings(self string, group *editGroup) {
 		buf.redoStack = buf.redoStack[:len(buf.redoStack)-1]
 		buf.undoStack = append(buf.undoStack, undoEntry{lines: append([]string(nil), buf.Lines...), group: group})
 		buf.Restore(entry.lines)
+		if v.lsp != nil {
+			v.lsp.Change(path, string(buf.Source))
+		}
 	}
 }
 
@@ -3833,6 +3841,9 @@ func (v *View) saveActiveThen(onDone func()) {
 		return
 	}
 	t.detached = false
+	if v.lsp != nil {
+		v.lsp.Save(t.path)
+	}
 	if onDone != nil {
 		onDone()
 	}
@@ -3864,6 +3875,9 @@ func (v *View) saveTab(t *tab) (ok bool, conflict SaveConflict, err error) {
 		return false, SaveConflict{}, err
 	}
 	t.detached = false
+	if v.lsp != nil {
+		v.lsp.Save(t.path)
+	}
 	return true, SaveConflict{}, nil
 }
 
@@ -3952,6 +3966,27 @@ func (v *View) RefreshBuffer(buf *Buffer) {
 	if found {
 		v.submitHighlight(buf, true)
 	}
+}
+
+// ResyncLanguageServer sends buf's whole current content to the language
+// server, if this pane has a tab on it — for after Buffer.Reload, which
+// replaces the content without going through onBufferEdited. Without it
+// the server keeps the pre-reload text of an open file (its copy of an
+// open file wins over disk), so a method added outside nib stays
+// "undefined" until the next keystroke in that buffer. Reports whether
+// this pane handled it, so a caller fanning out across panes sends it
+// once rather than once per pane.
+func (v *View) ResyncLanguageServer(buf *Buffer) bool {
+	for _, t := range v.tabs {
+		if t.buf != buf {
+			continue
+		}
+		if v.lsp != nil {
+			v.lsp.Change(t.path, string(buf.Source))
+		}
+		return true
+	}
+	return false
 }
 
 // NoteDiskStat applies a pre-fetched os.Stat(path) result to whichever

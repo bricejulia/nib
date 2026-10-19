@@ -403,3 +403,72 @@ waitDiag:
 		}
 	}
 }
+
+// TestRealGoplsSeesEditsToUnopenedFiles is the stale-"undefined" bug: a
+// method added on disk to a file nib doesn't have open stays invisible to
+// gopls unless the client reports it with didChangeWatchedFiles — which
+// in turn only works because the client advertised the capability and
+// answered gopls's registerCapability request.
+func TestRealGoplsSeesEditsToUnopenedFiles(t *testing.T) {
+	requireGopls(t)
+	dir := goplsProject(t)
+	mainPath := filepath.Join(dir, "main.go")
+	helperPath := filepath.Join(dir, "helper.go")
+	main := "package main\n\nfunc main() {\n\t_ = Helper2()\n}\n"
+	if err := os.WriteFile(mainPath, []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	diags := make(chan PublishDiagnosticsParams, 32)
+	c, err := newClient(dir, []string{"gopls"}, func(p PublishDiagnosticsParams) {
+		select {
+		case diags <- p:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if err := c.didOpen(mainPath, "go", main, 1); err != nil {
+		t.Fatalf("didOpen: %v", err)
+	}
+
+	waitFor := func(what string, done func(PublishDiagnosticsParams) bool) {
+		t.Helper()
+		deadline := time.After(30 * time.Second)
+		for {
+			select {
+			case p := <-diags:
+				if uriToPath(p.URI) == mainPath && done(p) {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("timed out waiting for %s", what)
+			}
+		}
+	}
+	waitFor("undefined: Helper2", func(p PublishDiagnosticsParams) bool { return len(p.Diagnostics) > 0 })
+
+	// gopls registers its file watchers asynchronously after initialized.
+	for start := time.Now(); ; time.Sleep(50 * time.Millisecond) {
+		c.mu.Lock()
+		registered := len(c.watchers) > 0
+		c.mu.Unlock()
+		if registered {
+			break
+		}
+		if time.Since(start) > 10*time.Second {
+			t.Fatal("gopls never registered didChangeWatchedFiles watchers")
+		}
+	}
+
+	helper := "package main\n\nfunc Helper() int {\n\treturn 42\n}\n\nfunc Helper2() int {\n\treturn 43\n}\n"
+	if err := os.WriteFile(helperPath, []byte(helper), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.didChangeWatchedFiles([]FileChange{{Path: helperPath, Type: FileChanged}}); err != nil {
+		t.Fatalf("didChangeWatchedFiles: %v", err)
+	}
+	waitFor("main.go's diagnostics to clear", func(p PublishDiagnosticsParams) bool { return len(p.Diagnostics) == 0 })
+}
