@@ -1,7 +1,8 @@
 // Package session persists a project's editor workspace — which files are
 // open in which pane, where each cursor sits, and how the panes are split —
 // into a hidden .nib folder at the project root, so reopening nib there
-// picks up where the last run left off.
+// picks up where the last run left off. Scratch files live there too, in
+// .nib/scratch (see internal/scratch).
 //
 // The .nib folder doubles as the project's trust marker: nib only ever
 // writes into a project the user explicitly trusted (see Trust), and a

@@ -18,6 +18,7 @@ import (
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/lsp"
 	"github.com/bricejulia/nib/internal/memwatch"
+	"github.com/bricejulia/nib/internal/scratch"
 	"github.com/bricejulia/nib/internal/session"
 	"github.com/bricejulia/nib/internal/theme"
 	"github.com/bricejulia/nib/internal/ui"
@@ -35,6 +36,7 @@ import (
 	"github.com/bricejulia/nib/internal/ui/quitconfirm"
 	"github.com/bricejulia/nib/internal/ui/refview"
 	"github.com/bricejulia/nib/internal/ui/reloadconfirm"
+	"github.com/bricejulia/nib/internal/ui/scratchview"
 	"github.com/bricejulia/nib/internal/ui/statusbar"
 	"github.com/bricejulia/nib/internal/ui/trustprompt"
 	"github.com/bricejulia/nib/internal/vcs/gitblame"
@@ -201,6 +203,13 @@ var globalScope = config.Scope{Name: "global", Title: "Global", Actions: config.
 	// thing; like Alt+b/Alt+f, it degrades to ESC+"z" on terminals without
 	// the kitty keyboard protocol, which is still unambiguous for a letter.
 	{ID: "toggle_wrap", Keys: []string{"Alt+z"}, Desc: "Toggle soft wrap of long lines in every editor pane", InPopup: true},
+	// Scratch files live in the project's .nib folder (see
+	// internal/scratch), so both are unavailable — hidden from the action
+	// popup, a status-bar notice on their key — unless the project is
+	// trusted. Ctrl+n is free in every pane; Alt+s follows toggle_wrap's
+	// Alt+<letter> reasoning.
+	{ID: "new_scratch", Keys: []string{"Ctrl+n"}, Desc: "Create a scratch file (kept in the project's .nib folder)", Section: "Scratch files", InPopup: true},
+	{ID: "open_scratch", Keys: []string{"Alt+s"}, Desc: "Open or delete a scratch file", Section: "Scratch files", InPopup: true},
 	// Bare Ctrl+j, not Ctrl+Shift+A (JetBrains' own "Find Action" mnemonic,
 	// tried first here): outside the kitty keyboard protocol, a terminal
 	// has no way to report Shift held alongside Ctrl+<letter> — Ctrl+Shift+A
@@ -306,6 +315,7 @@ var scopes = []config.Scope{
 	historyview.Scope,
 	debug.Scope,
 	actionpopup.Scope,
+	scratchview.Scope,
 	help.Scope,
 }
 
@@ -407,6 +417,12 @@ func run() error {
 	statusBarView := statusbar.New()
 	statusBarView.Hint = mainShortcutsHint
 
+	// notice is a one-shot status-bar message from a global action (e.g.
+	// why a scratch-file key did nothing), cleared on the next key press —
+	// the same lifetime filetree.View.Notice has (see the
+	// SetKeyPressHandler call below).
+	var notice string
+
 	// gitBranch/gitSummary are refreshed by refreshGitStatus (on startup
 	// and whenever the watcher reports a git change) rather than shelled
 	// out to on every render, which would run `git` on every keystroke.
@@ -486,7 +502,10 @@ func run() error {
 	defer highlighter.Close()
 
 	statusBarView.TextFunc = func() string {
-		parts := make([]string, 0, 6)
+		parts := make([]string, 0, 7)
+		if notice != "" {
+			parts = append(parts, notice)
+		}
 		// A symlink activate() just refused to expand/open, or a path the
 		// context menu just copied — see filetree.View.Notice — only shown
 		// while the tree pane itself is focused, the same scoping openFinder
@@ -606,6 +625,71 @@ func run() error {
 	openActionPopup := func() {
 		actionPopupView.Open(cfg.Overrides)
 		app.ShowOverlay(actionPopupView)
+	}
+
+	// trusted is whether the project may keep state in its .nib folder —
+	// decided further down (see the session wiring before app.Run), and
+	// flipped on if the user trusts it mid-session. Declared here so the
+	// scratch-file actions below can gate on its live value.
+	trusted := false
+
+	app.SetKeyPressHandler(func() { notice = "" })
+
+	scratchActions := map[string]bool{"new_scratch": true, "open_scratch": true}
+	actionPopupView.Hidden = func(scope, id string) bool {
+		return scope == globalScope.Name && scratchActions[id] && !trusted
+	}
+
+	// scratchView is the scratch-file overlay: a name prompt (new_scratch)
+	// or a list to open/delete from (open_scratch). See internal/scratch.
+	scratchView := scratchview.New()
+	scratchView.OnClose = app.CloseOverlay
+	openScratchFile := func(path string) {
+		app.CloseOverlay()
+		app.FocusLeaf(ws.Open(path))
+	}
+	scratchView.OnCreate = func(name string) {
+		path, err := scratch.Create(absRoot, name)
+		if err != nil {
+			scratchView.SetError(err)
+			return
+		}
+		openScratchFile(path)
+	}
+	scratchView.OnOpen = openScratchFile
+	showScratchList := func() {
+		entries, err := scratch.List(absRoot)
+		scratchView.ShowList(entries)
+		scratchView.SetError(err)
+	}
+	scratchView.OnDelete = func(path string) {
+		if err := scratch.Delete(path); err != nil {
+			scratchView.SetError(err)
+			return
+		}
+		ws.CloseDeleted(path)
+		showScratchList()
+	}
+	requireTrust := func() bool {
+		if !trusted {
+			notice = "Scratch files need a trusted project"
+		}
+		return trusted
+	}
+	newScratch := func() {
+		if !requireTrust() {
+			return
+		}
+		scratchView.ShowCreate("")
+		app.ShowOverlay(scratchView)
+	}
+	openScratch := func() {
+		if !requireTrust() {
+			return
+		}
+		scratchView.Reset()
+		showScratchList()
+		app.ShowOverlay(scratchView)
 	}
 
 	// refreshGitStatus is defined further down (it needs finderView/etc.
@@ -1193,6 +1277,8 @@ func run() error {
 		"close_pane":           closePane,
 		"reveal_in_tree":       revealInTree,
 		"toggle_wrap":          func() { ws.ToggleWrap() },
+		"new_scratch":          newScratch,
+		"open_scratch":         openScratch,
 		"move_tab_next_pane":   func() { moveActiveTab(1) },
 		"move_tab_prev_pane":   func() { moveActiveTab(-1) },
 	}
@@ -1243,6 +1329,7 @@ func run() error {
 		historyview.Scope.Name:     historyView.SetKeymap,
 		debug.Scope.Name:           debugView.SetKeymap,
 		actionpopup.Scope.Name:     actionPopupView.SetKeymap,
+		scratchview.Scope.Name:     scratchView.SetKeymap,
 		help.Scope.Name:            helpView.SetKeymap,
 	}
 	// Every global action needs a handler, or its key would silently do
@@ -1458,7 +1545,6 @@ func run() error {
 	// must never ask to trust, or write into, whatever folder it lives in.
 	// A trusted folder gets its last session back now and saved again on
 	// exit; an untrusted one is asked about, every launch until trusted.
-	trusted := false
 	if !singleFile {
 		trusted = session.Trusted(absRoot)
 		if trusted {

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"go.rockorager.dev/vaxis"
@@ -1003,5 +1004,22 @@ func TestHandleMouseTreeBorderDragClamps(t *testing.T) {
 	a.handleMouse(vaxis.Mouse{Col: 500, Row: 50, Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion})
 	if got := split.Children[0].Hint.Fixed; got != 100-layout.MinRest {
 		t.Errorf("tree width = %d, want %d", got, 100-layout.MinRest)
+	}
+}
+
+// TestKeyPressHandlerRunsBeforeDispatchOnPressOnly: the hook clears
+// one-shot notices, so it must run before the global action that might set
+// a new one, and never on a release (which would wipe that notice at once).
+func TestKeyPressHandlerRunsBeforeDispatchOnPressOnly(t *testing.T) {
+	var order []string
+	a := &App{focus: &layout.FocusManager{}, global: map[string]func(){
+		"Ctrl+n": func() { order = append(order, "action") },
+	}}
+	a.SetKeyPressHandler(func() { order = append(order, "hook") })
+
+	a.handleKey(layout.Key{Text: "n", Mods: layout.ModCtrl, EventType: layout.EventPress})
+	a.handleKey(layout.Key{Text: "n", Mods: layout.ModCtrl, EventType: layout.EventRelease})
+	if got := strings.Join(order, ","); got != "hook,action" {
+		t.Fatalf("order = %q, want hook,action", got)
 	}
 }

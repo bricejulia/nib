@@ -43,7 +43,8 @@ func (v *View) Render(w layout.Window) {
 	line("  "+v.root, layout.Style{})
 	row++
 	line("nib will create a .nib folder here to remember", layout.Style{})
-	line("your open files and splits between sessions.", layout.Style{})
+	line("your open files and splits between sessions,", layout.Style{})
+	line("and to keep your scratch files.", layout.Style{})
 	row++
 	line("[y] Trust", layout.Style{})
 	line("[n] Don't trust", layout.Style{})

@@ -63,6 +63,11 @@ type View struct {
 	// global actions, or the target editor pane's ExecuteAction) is the
 	// caller's job.
 	OnExecute func(scope, id string)
+	// Hidden, when set, is asked on every Open whether a command should be
+	// left out of the list — for commands that can't run right now (e.g.
+	// scratch files in an untrusted project), rather than offering a row
+	// that does nothing.
+	Hidden func(scope, id string) bool
 
 	keymap map[string]string
 }
@@ -96,6 +101,16 @@ func (v *View) Open(overrides func(scope string) map[string]string) {
 		for id, keys := range s.Actions.KeysFor(s.Actions.Resolve(overrides(s.Name))) {
 			v.keybind[s.Name+":"+id] = keys[0]
 		}
+	}
+	v.entries = popupEntries(v.scopes)
+	if v.Hidden != nil {
+		visible := v.entries[:0]
+		for _, e := range v.entries {
+			if !v.Hidden(e.Scope, e.ID) {
+				visible = append(visible, e)
+			}
+		}
+		v.entries = visible
 	}
 	v.query = textfield.TextField{}
 	v.cursor = 0

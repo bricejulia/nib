@@ -228,3 +228,23 @@ func TestHintIsTheFirstKeyAndFollowsOverrides(t *testing.T) {
 		t.Errorf("save hint = %q, want its default key first", got)
 	}
 }
+
+func TestHiddenCommandsAreLeftOutOnEveryOpen(t *testing.T) {
+	v := New(testScopes)
+	hide := true
+	v.Hidden = func(scope, id string) bool { return hide && scope == "editor" && id == "save" }
+	v.Open(noOverrides)
+
+	w := newFakeWindow(80, len(entries)+1)
+	v.Render(w)
+	if joined := strings.Join(w.lines, "\n"); strings.Contains(joined, "Save the active tab") {
+		t.Fatalf("hidden command still listed:\n%s", joined)
+	}
+
+	hide = false
+	v.Open(noOverrides)
+	v.Render(w)
+	if joined := strings.Join(w.lines, "\n"); !strings.Contains(joined, "Save the active tab") {
+		t.Fatalf("command should be back once no longer hidden:\n%s", joined)
+	}
+}
