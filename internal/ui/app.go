@@ -383,6 +383,10 @@ type App struct {
 	// SetFocusChangeHandler.
 	onFocusChange func(id layout.LeafID)
 
+	// onKeyPress, if set, is called before every key press is dispatched
+	// — see SetKeyPressHandler.
+	onKeyPress func()
+
 	// focused tracks whether the terminal (not just some pane within it)
 	// currently has OS-level focus, via vaxis.FocusIn/FocusOut — vaxis
 	// requests this reporting from the terminal unconditionally at
@@ -504,6 +508,14 @@ func (a *App) Rects() map[layout.LeafID]layout.Rect {
 // tree, not yet on whatever editor pane it's about to hand off to).
 func (a *App) SetFocusChangeHandler(fn func(id layout.LeafID)) {
 	a.onFocusChange = fn
+}
+
+// SetKeyPressHandler registers fn to run before each key press (not
+// repeats or releases) is dispatched, overlay or not — e.g. to clear a
+// one-shot status-bar notice, so it lasts exactly until the next key, the
+// same lifetime filetree.View.Notice has.
+func (a *App) SetKeyPressHandler(fn func()) {
+	a.onKeyPress = fn
 }
 
 // notifyFocusChange calls onFocusChange iff the focused leaf differs from
@@ -688,6 +700,9 @@ func (a *App) handleKey(k layout.Key) {
 		a.lastShiftPress = now
 	}
 
+	if a.onKeyPress != nil && k.EventType == layout.EventPress {
+		a.onKeyPress()
+	}
 	if a.overlay != nil {
 		a.overlay.HandleKey(k)
 		return

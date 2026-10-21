@@ -44,6 +44,8 @@ servers — in a codebase small enough to read in an afternoon.
   gutter, branch and dirty summary in the status bar, and a file's history
   with each commit's diff.
 - **In-file search** — `/` with `n`/`N`, all matches highlighted.
+- **Scratch files** — per-project throwaway notes and snippets (`Ctrl+N` to
+  create, `Alt+S` to list), kept out of git in the project's `.nib` folder.
 - **Mouse text selection** — click, drag, double-click a word, triple-click a
   line; finishing a selection copies it to the system clipboard automatically.
 - **Everything rebindable** through a plain-text config file.
@@ -79,6 +81,12 @@ make build          # or: go build -o nib cmd/nib/main.go
 ./nib [directory]   # defaults to the current directory
 ./nib file [file…]  # just these files: no file tree, session or project scan
 ```
+
+The first time nib opens a folder, it asks whether to trust it. A trusted
+folder gets a `.nib` folder (git-ignored as a whole) holding its session (open
+files and splits, restored on the next launch) and its scratch files in
+`.nib/scratch/`. Until a folder is trusted, nib writes nothing into it, so
+sessions and scratch files are off.
 
 Opening files rather than a folder is single-file mode: each file gets a tab,
 only their own folder is watched for outside edits, and closing the last tab
@@ -224,6 +232,8 @@ Press `?` in nib for this list at runtime. Every binding is rebindable
 | `Ctrl+W` / `Ctrl+E` | Split the focused (or last-focused) editor pane right / down |
 | `Ctrl+X` | Close the focused (or last-focused) editor pane |
 | `Alt+Z` | Toggle soft wrap of long lines in every editor pane |
+| `Ctrl+N` | New scratch file: prompts for a name (`notes.md`, `query.sql`; blank for `scratch-<n>.txt`); an existing name reopens it. Trusted projects only |
+| `Alt+S` | Scratch files: type to filter, `Enter` to open (or create the typed name), `Ctrl+N` new, `Ctrl+D` delete. Trusted projects only |
 
 ### Editor — moving
 

@@ -22,6 +22,10 @@ The domain language of nib. Use these words in code, comments, commits and revie
 
 **Session**: the panes' layout and open tabs for a trusted project folder, saved in its `.nib` folder on exit and restored on the next launch.
 
+**Trusted project**: a project folder the user agreed to let nib write into, marked by its `.nib` folder existing (see `session.Trust`). Sessions and scratch files need one; single-file mode never is.
+
+**Scratch file**: a throwaway file kept in a trusted project's `.nib/scratch` folder, git-ignored with the rest of `.nib`. Created with `new_scratch`, listed with `open_scratch`; otherwise an ordinary file. Lives in `internal/scratch`.
+
 **Action**: a named command a key can be bound to, such as `save` or `move_down`. Declared once, with its default keys and a description, in its scope (see `config.Action`). Help, the action popup and the generated config file are all built from these declarations. _Avoid_: command (except for `:` commands), binding (that's the key-to-action pair).
 
 **Scope**: one keymap and the actions it can bind, such as `global`, `editor` or `filetree`. A config line names it: `keybind = editor:x = delete_char_forward`. The full list is `scopes` in `cmd/nib/main.go`.
