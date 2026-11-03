@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -492,7 +493,13 @@ func run() error {
 		},
 	}
 
-	app, err = ui.NewApp(tree, nil)
+	optionAsAlt, set := cfg.OptionAsAlt()
+	if !set {
+		// macOS layouts reach many everyday characters through Option
+		// ("{" on French AZERTY), so typing them wins by default there.
+		optionAsAlt = runtime.GOOS != "darwin"
+	}
+	app, err = ui.NewApp(tree, nil, ui.Options{OptionAsAlt: optionAsAlt})
 	if err != nil {
 		return err
 	}

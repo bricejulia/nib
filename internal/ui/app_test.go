@@ -1023,3 +1023,51 @@ func TestKeyPressHandlerRunsBeforeDispatchOnPressOnly(t *testing.T) {
 		t.Fatalf("order = %q, want hook,action", got)
 	}
 }
+
+// On macOS layouts like French AZERTY, Option is how ordinary characters
+// are typed ("{" is Option+(). Under the kitty keyboard protocol that
+// arrives as the base key + ModAlt + the composed text; it must reach Views
+// as plain text, or every text-inserting View rejects it as an Alt chord.
+func TestTranslateKeyOptionComposedCharIsPlainText(t *testing.T) {
+	cases := []struct {
+		name string
+		in   vaxis.Key
+		want string
+	}{
+		{"Option+( -> {", vaxis.Key{Keycode: '(', Modifiers: vaxis.ModAlt, Text: "{"}, "{"},
+		{"Option+) -> }", vaxis.Key{Keycode: ')', Modifiers: vaxis.ModAlt, Text: "}"}, "}"},
+		{"Option+Shift+( -> [", vaxis.Key{Keycode: '(', ShiftedCode: '5', Modifiers: vaxis.ModAlt | vaxis.ModShift, Text: "["}, "["},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := translateKey(c.in)
+			if got.Mods != 0 {
+				t.Errorf("Mods = %v, want 0", got.Mods)
+			}
+			if got.String() != c.want {
+				t.Errorf("String() = %q, want %q", got.String(), c.want)
+			}
+		})
+	}
+}
+
+// Real Alt chords must survive the Option-composition rule.
+func TestTranslateKeyAltChordsKeepAlt(t *testing.T) {
+	cases := []struct {
+		name string
+		in   vaxis.Key
+		want string
+	}{
+		{"no text", vaxis.Key{Keycode: 'z', Modifiers: vaxis.ModAlt}, "Alt+z"},
+		{"text equals key", vaxis.Key{Keycode: 'z', Modifiers: vaxis.ModAlt, Text: "z"}, "Alt+z"},
+		{"shifted letter", vaxis.Key{Keycode: 'z', Modifiers: vaxis.ModAlt | vaxis.ModShift, Text: "Z"}, "Alt+Z"},
+		{"ctrl+alt with text", vaxis.Key{Keycode: '(', Modifiers: vaxis.ModAlt | vaxis.ModCtrl, Text: "{"}, "Ctrl+Alt+{"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := translateKey(c.in).String(); got != c.want {
+				t.Errorf("String() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}

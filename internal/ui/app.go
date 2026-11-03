@@ -94,6 +94,19 @@ func translateKey(k vaxis.Key) layout.Key {
 		// printed form, so it stays significant.
 		mods &^= layout.ModShift
 	}
+	if named == "" && optionComposed(k) {
+		// On macOS, Option is how a lot of layouts reach ordinary
+		// characters — on French AZERTY "{" is Option+( and "[" is
+		// Option+Shift+(. Under the kitty keyboard protocol the terminal
+		// reports such a press as the base key with ModAlt set PLUS the
+		// character the OS actually composed as associated text. That
+		// text is what the user meant to type, so Alt is dropped here:
+		// otherwise every text-inserting View rejects it as an Alt chord
+		// and the character is silently lost. A real Alt binding (e.g.
+		// Alt+z with Option-as-Alt) is unaffected: there the text is
+		// empty or just the key itself.
+		mods &^= layout.ModAlt
+	}
 
 	et := layout.EventPress
 	switch k.EventType {
@@ -113,6 +126,25 @@ func translateKey(k vaxis.Key) layout.Key {
 		Mods:      mods,
 		EventType: et,
 	}
+}
+
+// optionComposed reports whether k is an Alt(Option)-held key whose
+// associated text is a different character than the key itself, i.e. the
+// OS keyboard layout composed a new character from Option+key. Ctrl and
+// Super chords never count.
+func optionComposed(k vaxis.Key) bool {
+	if k.Modifiers&vaxis.ModAlt == 0 || k.Modifiers&(vaxis.ModCtrl|vaxis.ModSuper) != 0 {
+		return false
+	}
+	// Case-insensitive so Alt+Shift+z reported as Text "Z" without a
+	// ShiftedCode still counts as the plain key, not a composed one.
+	if k.Text == "" || strings.EqualFold(k.Text, string(k.Keycode)) {
+		return false
+	}
+	if k.ShiftedCode != 0 && k.Text == string(k.ShiftedCode) {
+		return false
+	}
+	return true
 }
 
 // namedKey maps vaxis's special-key rune constants (values outside the
@@ -306,7 +338,9 @@ func scrollbarRect(r layout.Rect) (bar layout.Rect, ok bool) {
 // terminal-independent Key type, and the only place layout.Compute's
 // output is turned into real sub-windows.
 type App struct {
-	vx     *vaxis.Vaxis
+	vx *vaxis.Vaxis
+	// winsz backs up vaxis's resize detection; see sizeWatcher.
+	winsz  *sizeWatcher
 	root   layout.Node
 	focus  *layout.FocusManager
 	global map[string]func()
@@ -425,11 +459,32 @@ type App struct {
 // them to count as a double-tap.
 const doubleShiftWindow = 400 * time.Millisecond
 
+// Options tunes how NewApp sets up the terminal.
+type Options struct {
+	// OptionAsAlt keeps the kitty keyboard protocol's "report all keys as
+	// escape codes" mode on. Some terminals (Rex, notably) then report
+	// macOS's Option purely as an Alt modifier and drop the character it
+	// composes — "{" (Option+( on a French layout) arrives as Alt+( with no
+	// text — so Option-typed characters become impossible. With it off,
+	// those terminals send the composed character as plain text instead;
+	// the price is that Option no longer works as Alt, and bare modifier
+	// presses (the double-Shift detector) are never reported.
+	OptionAsAlt bool
+}
+
+func (o Options) keyboardFlags() vaxis.CSIuBitMask {
+	flags := vaxis.CSIuDisambiguate | vaxis.CSIuReportEvents | vaxis.CSIuAlternateKeys | vaxis.CSIuAssociatedText
+	if o.OptionAsAlt {
+		flags |= vaxis.CSIuAllKeys
+	}
+	return flags
+}
+
 // NewApp opens the terminal and constructs an App around root. global is
 // consulted for any key not consumed by the focused View; callers should
 // include a binding that calls (*App).Quit, e.g. global["Ctrl+c"] = app.Quit.
-func NewApp(root layout.Node, global map[string]func()) (*App, error) {
-	vx, err := vaxis.New(vaxis.Options{})
+func NewApp(root layout.Node, global map[string]func(), opts Options) (*App, error) {
+	vx, err := vaxis.New(vaxis.Options{CSIuBitMask: opts.keyboardFlags()})
 	if err != nil {
 		return nil, err
 	}
@@ -445,13 +500,32 @@ func NewApp(root layout.Node, global map[string]func()) (*App, error) {
 	// starting out unfocused would otherwise leave a non-reporting
 	// terminal's session permanently unresponsive to the double-shift
 	// detector.
-	return &App{vx: vx, root: root, focus: fm, global: global, focused: true, clip: clip}, nil
+	a := &App{vx: vx, root: root, focus: fm, global: global, focused: true, clip: clip, winsz: newSizeWatcher()}
+	a.winsz.watch(a.checkSize)
+	return a, nil
 }
 
 // Close tears down the terminal. Callers must defer this after NewApp
 // succeeds.
 func (a *App) Close() {
+	a.winsz.stop()
 	a.vx.Close()
+}
+
+// checkSize compares the tty's real size against what vaxis is drawing at
+// and, if they disagree, posts a corrective vaxis.Resize that Run applies
+// like any other. Safe to call from any goroutine.
+func (a *App) checkSize() {
+	ws, ok := a.winsz.size()
+	if !ok {
+		return
+	}
+	cols, rows := a.vx.Window().Size()
+	if ws.Cols == cols && ws.Rows == rows {
+		return
+	}
+	debuglog.Info("resize: tty is %dx%d but drawing at %dx%d; correcting", ws.Cols, ws.Rows, cols, rows)
+	a.vx.PostEvent(ws)
 }
 
 // Quit signals Run to stop once the current event finishes processing.
@@ -667,6 +741,9 @@ func (a *App) Run() error {
 			}
 		case vaxis.FocusIn:
 			a.focused = true
+			// Waking from sleep or a display re-layout usually refocuses
+			// the window; catch a size change no one reported.
+			go a.checkSize()
 		case vaxis.FocusOut:
 			a.focused = false
 		default:

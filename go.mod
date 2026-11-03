@@ -8,11 +8,11 @@ require (
 	github.com/odvcencio/gotreesitter v0.47.1
 	github.com/sourcegraph/jsonrpc2 v0.2.1
 	go.rockorager.dev/vaxis v0.17.1
+	golang.org/x/sys v0.13.0
 )
 
 require (
 	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 	github.com/rockorager/go-uucode v1.2.0 // indirect
-	golang.org/x/sys v0.13.0 // indirect
 	golang.org/x/term v0.10.0 // indirect
 )
