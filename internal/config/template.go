@@ -165,6 +165,18 @@ func Template(scopes []Scope) string {
 # pane at once with Alt+z, without touching this config.
 
 
+# --- Option key (macOS) ---
+#
+# Some terminals (e.g. Rex) report Option either as a modifier OR as the
+# character it composes ({ is Option+( on a French layout), never both.
+#
+#   option_as_alt = false   # Option types characters like { } [ ] | ~
+#   option_as_alt = true    # Option acts as Alt for Alt+<key> bindings
+#
+# false also disables the double-Shift finder shortcut (use Ctrl+P).
+# Unset, it defaults to false on macOS and true elsewhere. Needs a restart.
+
+
 # --- file icons ---
 #
 # Show Nerd Font file-type icons in the file tree (needs a Nerd Font

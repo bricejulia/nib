@@ -9,13 +9,14 @@
 //	color   = <role>             = <color name>
 //	tabmode = <language|default> = <spaces|tabs>[:<width>]
 //
-// plus five two-field directives:
+// plus six two-field directives:
 //
 //	theme      = <name>
 //	whitespace = true
 //	wrap       = true
 //	icons      = true
 //	memwatch   = <MiB>
+//	option_as_alt = <true|false>
 //
 // The "lsp" directive registers a language server, e.g.
 //
@@ -59,6 +60,15 @@
 // prompt offering to close a file to free memory, e.g. "memwatch = 500".
 // A non-numeric or non-positive value is ignored; omitting the directive
 // keeps nib's built-in default.
+//
+// The "option_as_alt" directive decides what macOS's Option key does,
+// e.g. "option_as_alt = true". Some terminals (Rex, notably) report
+// Option either as a modifier or as the character it composes ("{" is
+// Option+( on a French layout), never both. false makes Option type those
+// characters, at the cost of Alt+<key> bindings and the double-Shift
+// finder; true keeps them, at the cost of Option-composed characters.
+// Unset, it defaults to false on macOS and true elsewhere. Read once at
+// startup: changing it needs a restart.
 //
 // scope is one of "global" (or omitted, e.g. "keybind = ctrl+p = ..."),
 // "editor", "filetree", "finder", "debug", "help", "actionpopup",
@@ -142,6 +152,7 @@ type Config struct {
 	wrap        bool                         // "wrap = true" was set
 	icons       bool                         // "icons = true" was set
 	memWatchMiB int                          // "memwatch = <MiB>" value; 0 means unset
+	optionAlt   *bool                        // "option_as_alt = <bool>" value; nil means unset
 }
 
 // Servers returns the language->command entries parsed from "lsp" lines,
@@ -223,6 +234,16 @@ func (c *Config) ShowIcons() bool {
 	return c.icons
 }
 
+// OptionAsAlt returns the "option_as_alt = <true|false>" value and whether
+// it was set at all; callers apply their own platform default when it
+// wasn't. Safe to call on a nil *Config.
+func (c *Config) OptionAsAlt() (value, set bool) {
+	if c == nil || c.optionAlt == nil {
+		return false, false
+	}
+	return *c.optionAlt, true
+}
+
 // MemWatchThresholdMiB returns the user-configured "memwatch = <MiB>"
 // value, or 0 if unset — callers fall back to their own default in that
 // case. Safe to call on a nil *Config.
@@ -270,6 +291,15 @@ func Parse(r io.Reader) *Config {
 				cfg.wrap = strings.TrimSpace(fields[1]) == "true"
 			case "icons":
 				cfg.icons = strings.TrimSpace(fields[1]) == "true"
+			case "option_as_alt":
+				switch strings.TrimSpace(fields[1]) {
+				case "true":
+					v := true
+					cfg.optionAlt = &v
+				case "false":
+					v := false
+					cfg.optionAlt = &v
+				}
 			case "memwatch":
 				if mib, err := strconv.Atoi(strings.TrimSpace(fields[1])); err == nil && mib > 0 {
 					cfg.memWatchMiB = mib

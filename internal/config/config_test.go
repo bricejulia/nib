@@ -356,3 +356,25 @@ func TestDefaultTabModesFollowLanguageConventions(t *testing.T) {
 		}
 	}
 }
+
+func TestParseOptionAsAltDirective(t *testing.T) {
+	cases := []struct {
+		in       string
+		val, set bool
+	}{
+		{"option_as_alt = true\n", true, true},
+		{"option_as_alt = false\n", false, true},
+		{"option_as_alt = yes\n", false, false},
+		{"", false, false},
+	}
+	for _, c := range cases {
+		val, set := Parse(strings.NewReader(c.in)).OptionAsAlt()
+		if val != c.val || set != c.set {
+			t.Errorf("Parse(%q).OptionAsAlt() = (%v, %v), want (%v, %v)", c.in, val, set, c.val, c.set)
+		}
+	}
+	var cfg *Config
+	if _, set := cfg.OptionAsAlt(); set {
+		t.Error("OptionAsAlt() on a nil *Config should be unset")
+	}
+}
