@@ -162,7 +162,7 @@ func Template(scopes []Scope) string {
 #   wrap = true
 #
 # Any other value (or omitting the line) leaves it off. Toggle it for every
-# pane at once with Alt+z, without touching this config.
+# pane at once with Alt+w, without touching this config.
 
 
 # --- Option key (macOS) ---

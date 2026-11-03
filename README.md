@@ -231,7 +231,7 @@ Press `?` in nib for this list at runtime. Every binding is rebindable
 | `Ctrl+O` | Open the config file in `$EDITOR` |
 | `Ctrl+W` / `Ctrl+E` | Split the focused (or last-focused) editor pane right / down |
 | `Ctrl+X` | Close the focused (or last-focused) editor pane |
-| `Alt+Z` | Toggle soft wrap of long lines in every editor pane |
+| `Alt+W` | Toggle soft wrap of long lines in every editor pane |
 | `Ctrl+N` | New scratch file: prompts for a name (`notes.md`, `query.sql`; blank for `scratch-<n>.txt`); an existing name reopens it. Trusted projects only |
 | `Alt+S` | Scratch files: type to filter, `Enter` to open (or create the typed name), `Ctrl+N` new, `Ctrl+D` delete. Trusted projects only |
 
@@ -463,7 +463,7 @@ starting. Changes take effect on the next launch.
 
 ### Soft wrap
 
-`Alt+Z` wraps long lines onto the following rows in every editor pane, instead
+`Alt+W` wraps long lines onto the following rows in every editor pane, instead
 of scrolling sideways — handy with several narrow split panes. Lines break
 after a space where they can; continuation rows have a blank gutter, so line
 numbers still count file lines, and `j`/`k` still move a whole file line. To
@@ -472,6 +472,24 @@ start with it on:
 ```
 wrap = true
 ```
+
+### Option key on macOS
+
+Many layouts type everyday characters with `Option` (`{` is `Option+(` on
+French AZERTY). Some terminals (Rex, notably) report `Option` either as Alt or
+as the character it composes, never both, under the keyboard mode nib uses for
+Alt bindings and the double-Shift finder. So on macOS nib defaults to letting
+`Option` type characters:
+
+```
+option_as_alt = false   # default on macOS: Option types { } [ ] | ~ …
+option_as_alt = true    # default elsewhere: Option is Alt; double-Shift works
+```
+
+To keep both, split the keys in the terminal: Ghostty's
+`macos-option-as-alt = right`, or Rex's *Change Option Key Behavior* → right
+Option as Alt. Left `Option` then types characters and right `Option` triggers
+`Alt+…` bindings. Changing `option_as_alt` needs a restart.
 
 ### Language servers
 
