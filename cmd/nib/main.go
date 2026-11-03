@@ -200,10 +200,12 @@ var globalScope = config.Scope{Name: "global", Title: "Global", Actions: config.
 	{ID: "reveal_in_tree", Keys: []string{"Ctrl+t"}, Desc: "Locate the active file in the file tree", InPopup: true},
 	// Global rather than editor-scoped because it applies to every editor
 	// pane at once (see Workspace.ToggleWrap) — narrow split panes are what
-	// make wrapping worth having. Alt+z is VS Code's binding for the same
-	// thing; like Alt+b/Alt+f, it degrades to ESC+"z" on terminals without
-	// the kitty keyboard protocol, which is still unambiguous for a letter.
-	{ID: "toggle_wrap", Keys: []string{"Alt+z"}, Desc: "Toggle soft wrap of long lines in every editor pane", InPopup: true},
+	// make wrapping worth having. Not Alt+z (VS Code's binding): macOS
+	// setups commonly claim Option+z system-wide (hide window), so it never
+	// reaches the terminal. Like Alt+b/Alt+f, Alt+w degrades to ESC+"w" on
+	// terminals without the kitty keyboard protocol, still unambiguous for
+	// a letter.
+	{ID: "toggle_wrap", Keys: []string{"Alt+w"}, Desc: "Toggle soft wrap of long lines in every editor pane", InPopup: true},
 	// Scratch files live in the project's .nib folder (see
 	// internal/scratch), so both are unavailable — hidden from the action
 	// popup, a status-bar notice on their key — unless the project is
