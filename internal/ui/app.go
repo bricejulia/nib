@@ -484,7 +484,10 @@ func (o Options) keyboardFlags() vaxis.CSIuBitMask {
 // consulted for any key not consumed by the focused View; callers should
 // include a binding that calls (*App).Quit, e.g. global["Ctrl+c"] = app.Quit.
 func NewApp(root layout.Node, global map[string]func(), opts Options) (*App, error) {
-	vx, err := vaxis.New(vaxis.Options{CSIuBitMask: opts.keyboardFlags()})
+	// CSIuBitMask is marked deprecated ("vaxis now enables all supported
+	// flags"), but as of v0.17.1 it is still honored and is the only way to
+	// leave CSIuAllKeys off — see Options.OptionAsAlt.
+	vx, err := vaxis.New(vaxis.Options{CSIuBitMask: opts.keyboardFlags()}) //nolint:staticcheck // SA1019, see above
 	if err != nil {
 		return nil, err
 	}
