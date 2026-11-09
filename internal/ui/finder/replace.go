@@ -219,7 +219,7 @@ func (v *ReplaceView) refilter() {
 	root := v.root
 	scope := v.currentScope()
 	if v.Post == nil {
-		matches, _ := searchContent(root, scope, query)
+		matches, _ := searchContent(root, scope, query, false)
 		v.matches = matches
 		v.rebuildRows()
 		return
@@ -227,7 +227,7 @@ func (v *ReplaceView) refilter() {
 
 	v.searching = true
 	v.debounceTimer = time.AfterFunc(contentSearchDebounce, func() {
-		matches, _ := searchContent(root, scope, query)
+		matches, _ := searchContent(root, scope, query, false)
 		v.Post(ReplaceSearchResult{gen: gen, matches: matches})
 	})
 }

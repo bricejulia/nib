@@ -43,7 +43,7 @@ servers — in a codebase small enough to read in an afternoon.
 - **Git integration** — file status in the tree, per-line diff markers in the
   gutter, branch and dirty summary in the status bar, and a file's history
   with each commit's diff.
-- **In-file search** — `/` with `n`/`N`, all matches highlighted.
+- **In-file search** — `/` with `n`/`N`, case-insensitive, all matches highlighted.
 - **Scratch files** — per-project throwaway notes and snippets (`Ctrl+N` to
   create, `Alt+S` to list), kept out of git in the project's `.nib` folder.
 - **Mouse text selection** — click, drag, double-click a word, triple-click a
@@ -368,7 +368,9 @@ marked `-- DELETED --` so `:w` can write the file back.
 `Tab` cycles filename search → content search → find & replace (see below) →
 back to filename search · `Enter` opens · `↑`/`↓` selects · `←`/`→`/`Home`/`End`
 move the caret in the query (e.g. to add a prefix to a pre-filled word) ·
-`Ctrl+K` edits the folder scope shown below the query · `Esc` closes
+`Ctrl+K` edits the folder scope shown below the query · `Ctrl+T` toggles
+including git-ignored files (`node_modules`, an ignored `vendor/`, …) in
+filename and content search · `Esc` closes
 
 The filename and content-search modes show each file's git status marker in
 the leftmost column, colored the same way the file tree colors it.
@@ -382,7 +384,9 @@ folder; either way, it stays editable for as long as the popup is open —
 the query. Clear it to go back to searching the whole project. Both filename
 listing and content search implement scoping as a `git ls-files`/`git grep`
 pathspec, so a scoped search stays as fast and `.gitignore`-aware as an
-unscoped one.
+unscoped one. A scope that points into an ignored folder (e.g.
+`node_modules/react`) searches it even with `Ctrl+T` off. Find & replace
+always skips ignored files.
 
 ### Diff
 
