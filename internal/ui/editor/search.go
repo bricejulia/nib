@@ -3,6 +3,7 @@ package editor
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
@@ -43,17 +44,23 @@ type runeRange struct {
 }
 
 // findMatches returns every occurrence of pattern in buf, in file order.
-// Case-sensitive plain-substring matching, deliberately: it's what vim does
-// by default, and it's predictable. Regex is a deferred follow-up — Go's
+// Case-insensitive plain-substring matching, consistent with the finder's
+// content search and find & replace. Regex is a deferred follow-up — Go's
 // dialect differs from vim's in ways that would quietly mislead anyone
 // typing a familiar vim pattern.
 func findMatches(buf *Buffer, pattern string) []searchMatch {
 	if buf == nil || pattern == "" {
 		return nil
 	}
+	// Fold case rune by rune (strings.Map with unicode.ToLower) rather than
+	// strings.ToLower: a rune-for-rune mapping keeps every rune index in
+	// the folded line equal to the same rune's index in the original,
+	// which is what the returned ranges address.
+	pattern = strings.Map(unicode.ToLower, pattern)
 	patternRuneLen := len([]rune(pattern))
 	var matches []searchMatch
 	for ln, line := range buf.Lines {
+		line = strings.Map(unicode.ToLower, line)
 		// Byte offsets from strings.Index have to become rune indices,
 		// since every position elsewhere in the editor is rune-based.
 		// runeOffset/countedByte track that conversion incrementally —

@@ -39,10 +39,30 @@ func TestFindMatchesEmptyPatternMatchesNothing(t *testing.T) {
 	}
 }
 
-func TestFindMatchesIsCaseSensitive(t *testing.T) {
+func TestFindMatchesIsCaseInsensitive(t *testing.T) {
 	buf := &Buffer{Lines: []string{"Foo foo FOO"}}
-	if got := findMatches(buf, "foo"); len(got) != 1 || got[0].start != 4 {
-		t.Errorf("got %+v, want only the exact-case match at rune 4", got)
+	want := []searchMatch{{0, 0, 3}, {0, 4, 7}, {0, 8, 11}}
+	for _, pattern := range []string{"foo", "FOO", "fOo"} {
+		got := findMatches(buf, pattern)
+		if len(got) != len(want) {
+			t.Fatalf("%q: got %+v, want %+v", pattern, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("%q: match %d = %+v, want %+v", pattern, i, got[i], want[i])
+			}
+		}
+	}
+}
+
+func TestFindMatchesCaseInsensitiveKeepsRuneIndices(t *testing.T) {
+	// "É" and "é" differ in case but are each one rune; ranges must still
+	// address the original line's runes.
+	buf := &Buffer{Lines: []string{"Éa éA"}}
+	got := findMatches(buf, "éa")
+	want := []searchMatch{{0, 0, 2}, {0, 3, 5}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("got %+v, want %+v", got, want)
 	}
 }
 
