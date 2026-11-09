@@ -3,7 +3,10 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
@@ -324,9 +327,53 @@ var scopes = []config.Scope{
 
 func main() {
 	if err := run(); err != nil {
+		if errors.Is(err, errUsage) {
+			os.Exit(2) // parseArgs already printed the problem and the usage
+		}
 		fmt.Fprintln(os.Stderr, "nib:", err)
 		os.Exit(1)
 	}
+}
+
+// errUsage is parseArgs' "bad command line" error: the message and usage
+// are already on stderr by the time it's returned.
+var errUsage = errors.New("usage")
+
+const usageText = `Usage:
+  nib [directory]      open a folder (defaults to the current directory)
+  nib file [file…]     open just these files
+
+Flags:
+  -h, --help           show this help
+  -v, --version        print the version
+
+Use -- to open a path that starts with a dash: nib -- -v
+`
+
+// parseArgs handles nib's command-line flags and returns the remaining
+// arguments, the paths launchTarget opens. exit is true when a flag
+// (--version, --help) was fully handled here and nib should stop without
+// opening anything.
+func parseArgs(args []string, stdout, stderr io.Writer) (paths []string, exit bool, err error) {
+	fs := flag.NewFlagSet("nib", flag.ContinueOnError)
+	// Errors and usage are printed below, to the right stream.
+	fs.SetOutput(io.Discard)
+	var showVersion bool
+	fs.BoolVar(&showVersion, "v", false, "")
+	fs.BoolVar(&showVersion, "version", false, "")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(stdout, usageText)
+			return nil, true, nil
+		}
+		fmt.Fprintf(stderr, "nib: %v\n\n%s", err, usageText)
+		return nil, true, errUsage
+	}
+	if showVersion {
+		fmt.Fprintln(stdout, "nib", version.Version)
+		return nil, true, nil
+	}
+	return fs.Args(), false, nil
 }
 
 // preferredEditor picks the interactive editor to shell out to for
@@ -347,9 +394,8 @@ func preferredEditor() string {
 // and the files to open on start. No argument or a single directory is
 // folder mode: files is empty. One or more regular files is single-file
 // mode: the root is the first file's directory and no file tree is shown.
-// A single missing path falls through to folder mode, as it always has;
-// anything else that isn't a regular file — a directory among several
-// arguments, a missing one — is an error.
+// A path that doesn't exist is an error, as is a directory among several
+// arguments.
 func launchTarget(args []string) (root string, files []string, err error) {
 	if len(args) == 0 {
 		args = []string{"."}
@@ -359,7 +405,11 @@ func launchTarget(args []string) (root string, files []string, err error) {
 		if err != nil {
 			return "", nil, err
 		}
-		if info, statErr := os.Stat(abs); statErr != nil || info.IsDir() {
+		info, err := os.Stat(abs)
+		if err != nil {
+			return "", nil, err
+		}
+		if info.IsDir() {
 			return abs, nil, nil
 		}
 	}
@@ -381,7 +431,11 @@ func launchTarget(args []string) (root string, files []string, err error) {
 }
 
 func run() error {
-	absRoot, openOnStart, err := launchTarget(os.Args[1:])
+	paths, exit, err := parseArgs(os.Args[1:], os.Stdout, os.Stderr)
+	if err != nil || exit {
+		return err
+	}
+	absRoot, openOnStart, err := launchTarget(paths)
 	if err != nil {
 		return err
 	}

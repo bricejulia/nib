@@ -80,6 +80,7 @@ You can also download the latest binaries from the [release page](https://github
 make build          # or: go build -o nib cmd/nib/main.go
 ./nib [directory]   # defaults to the current directory
 ./nib file [file…]  # just these files: no file tree, session or project scan
+./nib --version     # or -v; --help (-h) lists the flags
 ```
 
 The first time nib opens a folder, it asks whether to trust it. A trusted
