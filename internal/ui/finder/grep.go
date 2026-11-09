@@ -30,10 +30,17 @@ type contentMatch struct {
 // scope, if non-empty, is a root-relative subdirectory narrowing the
 // search to that subtree, passed as git grep's own pathspec — identical
 // results to the unscoped case when scope is "".
-func searchContent(root, scope, query string) ([]contentMatch, error) {
+//
+// includeIgnored also searches git-ignored files (node_modules, an
+// ignored vendor/, …) via --no-exclude-standard; nib's own .nib/ state
+// is still left out.
+func searchContent(root, scope, query string, includeIgnored bool) ([]contentMatch, error) {
 	args := []string{"grep",
-		"--fixed-strings", "--ignore-case", "-n", "-I", "--untracked",
-		"-e", query, "--"}
+		"--fixed-strings", "--ignore-case", "-n", "-I", "--untracked"}
+	if includeIgnored {
+		args = append(args, "--no-exclude-standard")
+	}
+	args = append(args, "-e", query, "--")
 	if scope != "" {
 		args = append(args, scope)
 	}
@@ -56,6 +63,9 @@ func searchContent(root, scope, query string) ([]contentMatch, error) {
 		// inside the matched content itself intact.
 		parts := strings.SplitN(scanner.Text(), ":", 3)
 		if len(parts) != 3 {
+			continue
+		}
+		if includeIgnored && strings.HasPrefix(parts[0], nibStatePrefix) {
 			continue
 		}
 		lineno, err := strconv.Atoi(parts[1])

@@ -41,6 +41,10 @@ var Scope = config.Scope{Name: "finder", Title: "Finder", Actions: config.Action
 	// something else depending on context is still a confusing default.
 	// Ctrl+k is otherwise unused across every scope in this codebase.
 	{ID: "focus_scope", Keys: []string{"Ctrl+k"}, Desc: "Edit the folder scope (pre-filled with the folder selected in the tree; Enter returns to the query)"},
+	// Off by default and reset on every open: ignored trees like
+	// node_modules can be huge, so they're only searched on request — or
+	// when the scope itself points into one (see effectiveIncludeIgnored).
+	{ID: "toggle_ignored", Keys: []string{"Ctrl+t"}, Desc: "Include git-ignored files (node_modules, vendor, …) in file and content search"},
 }}
 
 // viewFocus is which field a keystroke currently goes to: the search
@@ -141,6 +145,11 @@ type View struct {
 	scopeField textfield.TextField
 	focus      viewFocus
 
+	// includeIgnored is the "toggle_ignored" action's state: also search
+	// git-ignored files. Reset on every open. A scope pointing into an
+	// ignored path includes them regardless — see effectiveIncludeIgnored.
+	includeIgnored bool
+
 	cursor    int
 	scrollTop int
 
@@ -206,7 +215,10 @@ func (v *View) Title() string {
 		return v.replace.Title()
 	}
 	if scope := v.currentScope(); scope != "" {
-		return base + " — " + scope
+		base += " — " + scope
+	}
+	if v.includeIgnored {
+		base += " (+ignored)"
 	}
 	return base
 }
@@ -240,7 +252,8 @@ func (v *View) openScoped(scope string) {
 	v.cancelPendingSearch()
 	v.scopeField = textfield.New(scope)
 	v.focus = focusQuery
-	v.items = listFiles(v.root, scope)
+	v.includeIgnored = false
+	v.items = listFiles(v.root, scope, effectiveIncludeIgnored(v.root, scope, false))
 	v.mode = modeFiles
 	v.query = textfield.TextField{}
 	v.cursor = 0
@@ -395,10 +408,11 @@ func (v *View) refilterContent() {
 	query := v.query.String()
 	root := v.root
 	scope := v.currentScope()
+	toggle := v.includeIgnored
 
 	if v.Post == nil {
 		// No async plumbing wired up (e.g. unit tests): search inline.
-		v.contentMatches, _ = searchContent(root, scope, query)
+		v.contentMatches, _ = searchContent(root, scope, query, effectiveIncludeIgnored(root, scope, toggle))
 		v.clampCursor()
 		return
 	}
@@ -409,7 +423,7 @@ func (v *View) refilterContent() {
 		// touches local copies (root, scope, query) and the Post callback —
 		// never View fields directly, since those belong to the UI
 		// goroutine.
-		matches, _ := searchContent(root, scope, query)
+		matches, _ := searchContent(root, scope, query, effectiveIncludeIgnored(root, scope, toggle))
 		v.Post(SearchResult{gen: gen, matches: matches})
 	})
 }
@@ -472,16 +486,17 @@ func (v *View) applyScopeChange() {
 	gen := v.searchGen
 	root := v.root
 	scope := v.currentScope()
+	toggle := v.includeIgnored
 
 	if v.Post == nil {
-		v.items = listFiles(root, scope)
+		v.items = listFiles(root, scope, effectiveIncludeIgnored(root, scope, toggle))
 		v.refilterFiles()
 		return
 	}
 
 	v.searching = true
 	v.debounceTimer = time.AfterFunc(contentSearchDebounce, func() {
-		items := listFiles(root, scope)
+		items := listFiles(root, scope, effectiveIncludeIgnored(root, scope, toggle))
 		v.Post(FileListResult{gen: gen, items: items})
 	})
 }
@@ -535,7 +550,7 @@ func (v *View) scopeRowSegments() []layout.Segment {
 	focused := v.focus == focusScope
 	if text == "" && !focused {
 		return []layout.Segment{{
-			Text:  "(scope: whole project — Ctrl+K to set)",
+			Text:  "(scope: whole project — Ctrl+K to set · Ctrl+T: include ignored files)",
 			Style: layout.Style{Attr: layout.AttrDim},
 		}}
 	}
@@ -647,6 +662,14 @@ func (v *View) HandleKey(k layout.Key) bool {
 	// "focus_scope" is checked before either field's own dispatch below —
 	// it needs to fire regardless of which field currently has focus, the
 	// same way Esc/Tab are checked before the mode/focus branches above.
+	if v.keymap[k.String()] == "toggle_ignored" {
+		v.includeIgnored = !v.includeIgnored
+		// applyScopeChange re-runs the active mode with the current
+		// settings: a re-index in file mode, a fresh grep in content mode.
+		v.applyScopeChange()
+		return true
+	}
+
 	if v.keymap[k.String()] == "focus_scope" {
 		if v.focus == focusScope {
 			v.focus = focusQuery
@@ -691,7 +714,7 @@ func (v *View) HandleKey(k layout.Key) bool {
 	// v.keymap — the same pattern textfield.TextField.HandleKey already
 	// implements for ReplaceView's own Find/Replace fields (replace.go), and
 	// handlePromptKey's for the file tree's inline prompt. Only
-	// Esc/Tab/Enter/Up/Down/Ctrl+K are ever remappable actions in this
+	// Esc/Tab/Enter/Up/Down/Ctrl+K/Ctrl+T are ever remappable actions in this
 	// mode (see Scope); every other key stays typeable.
 	if v.query.HandleKey(k) {
 		v.refilter()

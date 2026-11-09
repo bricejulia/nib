@@ -54,7 +54,7 @@ func newFilesTestRepo(t *testing.T) string {
 
 func TestListFilesIncludesTrackedAndUntrackedExcludesIgnored(t *testing.T) {
 	dir := newFilesTestRepo(t)
-	got, err := ListFiles(dir, "")
+	got, err := ListFiles(dir, "", false)
 	if err != nil {
 		t.Fatalf("ListFiles: %v", err)
 	}
@@ -74,19 +74,57 @@ func TestListFilesIncludesTrackedAndUntrackedExcludesIgnored(t *testing.T) {
 
 func TestListFilesNonRepoErrors(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := ListFiles(dir, ""); err == nil {
+	if _, err := ListFiles(dir, "", false); err == nil {
 		t.Fatal("expected an error listing files outside a git repo")
 	}
 }
 
 func TestListFilesScopeNarrowsToSubtree(t *testing.T) {
 	dir := newFilesTestRepo(t)
-	got, err := ListFiles(dir, "src")
+	got, err := ListFiles(dir, "src", false)
 	if err != nil {
 		t.Fatalf("ListFiles: %v", err)
 	}
 	want := []string{"src/main.go"}
 	if len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestListFilesIncludeIgnoredListsIgnoredFiles(t *testing.T) {
+	dir := newFilesTestRepo(t)
+	got, err := ListFiles(dir, "", true)
+	if err != nil {
+		t.Fatalf("ListFiles: %v", err)
+	}
+	sort.Strings(got)
+
+	want := []string{".gitignore", "ignored.txt", "src/main.go", "untracked.txt", "vendor/dep.go"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got %v, want %v", got, want)
+			break
+		}
+	}
+}
+
+func TestIsIgnored(t *testing.T) {
+	dir := newFilesTestRepo(t)
+	for path, want := range map[string]bool{
+		"vendor":        true,
+		"vendor/dep.go": true,
+		"ignored.txt":   true,
+		"src":           false,
+		"untracked.txt": false,
+	} {
+		if got := IsIgnored(dir, path); got != want {
+			t.Errorf("IsIgnored(%q) = %v, want %v", path, got, want)
+		}
+	}
+	if IsIgnored(t.TempDir(), "anything") {
+		t.Error("IsIgnored outside a git repo should be false")
 	}
 }
