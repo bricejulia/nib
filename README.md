@@ -46,7 +46,7 @@ servers — in a codebase small enough to read in an afternoon.
 - **In-file search** — `/` with `n`/`N`, case-insensitive, all matches highlighted.
 - **Scratch files** — per-project throwaway notes and snippets (`Ctrl+N` to
   create, `Alt+S` to list), kept out of git in the project's `.nib` folder.
-- **Mouse text selection** — click, drag, double-click a word, triple-click a
+- **Mouse text selection** — drag, double-click a word, triple-click a
   line; finishing a selection copies it to the system clipboard automatically.
 - **Everything rebindable** through a plain-text config file.
 
@@ -267,14 +267,16 @@ Press `?` in nib for this list at runtime. Every binding is rebindable
 
 | Gesture | Action |
 | --- | --- |
-| Click | Place the cursor |
-| Drag | Select text and copy it — drag past the pane's edge to scroll |
+| Drag | Select text and copy it |
 | Double-click | Select the word and copy it |
 | Triple-click | Select the line (including its break) and copy it |
 | `Shift`+click | Extend the selection — copy it with `y` |
 | `y` | Copy the selection to the clipboard **and** the yank register |
 | `Esc` | Dismiss the selection, as does any cursor movement |
 | Wheel | Scroll whichever pane the pointer is over, focused or not |
+
+Mouse gestures only select — they never move the cursor, so a selection
+can't reach past the visible rows.
 
 **Finishing a selection copies it**, the way selecting in a terminal does — no
 keypress needed. That auto-copy writes the system clipboard only, deliberately
