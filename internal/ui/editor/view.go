@@ -246,12 +246,12 @@ type tab struct {
 	lineStatus map[int]gitstatus.LineStatus
 
 	// selAnchor is the fixed end of the current selection — the end that
-	// stays put while dragging. The MOVING end is cursorLn/cursorCol itself,
-	// deliberately: reusing the cursor as one end of the selection is what
-	// makes auto-scroll-while-dragging fall out for free, since renderBody
-	// already derives topLine/leftCol from the cursor (and it means every
-	// existing clamp keeps applying to the selection too, with no second
-	// copy of that logic).
+	// stays put while dragging — and selHead its MOVING end. Both are
+	// deliberately independent of cursorLn/cursorCol: mouse gestures only
+	// select, they never move the cursor. The flip side is that dragging past
+	// the pane edge does not auto-scroll (renderBody derives topLine from the
+	// cursor, not from the selection), so positionAt clamps the pointer to the
+	// visible rows instead.
 	//
 	// Only meaningful while hasSel is true. Per-tab rather than on View,
 	// like cursorLn/cursorCol and for the same reason: switching tabs should
@@ -260,6 +260,7 @@ type tab struct {
 	// insertSnapshot is — it's view state, not document state, so two split
 	// panes on one buffer select independently.
 	selAnchor position
+	selHead   position
 	hasSel    bool
 
 	// diagnostics is this tab's language-server problems, keyed by the
@@ -3053,9 +3054,7 @@ func (v *View) applyMovement(t *tab, action string, count int) bool {
 		return false
 	}
 	// Moving the cursor collapses any mouse selection, the way it does in
-	// every editor: the cursor is the selection's own moving end (see
-	// tab.selAnchor), so leaving it set would silently turn an arrow key into
-	// a selection-extending gesture. Only on an actual movement — the
+	// every editor. Only on an actual movement — the
 	// default branch above returns before this.
 	t.clearSelection()
 	return true

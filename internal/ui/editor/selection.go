@@ -53,17 +53,17 @@ func (t *tab) selectionSpan() (start, end position, ok bool) {
 	if !t.hasSel || t.buf == nil {
 		return position{}, position{}, false
 	}
-	cursor := position{ln: t.cursorLn, col: t.cursorCol}
-	if cursor.before(t.selAnchor) {
-		return cursor, t.selAnchor, true
+	if t.selHead.before(t.selAnchor) {
+		return t.selHead, t.selAnchor, true
 	}
-	return t.selAnchor, cursor, true
+	return t.selAnchor, t.selHead, true
 }
 
 // clearSelection collapses the selection, leaving the cursor where it is.
 func (t *tab) clearSelection() {
 	t.hasSel = false
 	t.selAnchor = position{}
+	t.selHead = position{}
 }
 
 // selectionRangesOnLine returns the RAW rune ranges of line ln that fall
@@ -184,16 +184,17 @@ func (v *View) selectionString(t *tab) string {
 	return strings.Join(lines, "\n")
 }
 
-// HandleMouse implements layout.MouseHandler: click to place the cursor,
-// drag to select, double-click for a word, triple-click for a line,
-// Shift+click to extend. Returns false for anything it doesn't claim (the
+// HandleMouse implements layout.MouseHandler: drag to select, double-click
+// for a word, triple-click for a line, Shift+click to extend. No mouse
+// gesture moves the cursor — the selection has its own ends (see
+// tab.selAnchor). Returns false for anything it doesn't claim (the
 // wheel, the tab bar, a click with no file open) so App's generic handling
 // still applies — see App.handleMouse.
 //
 // m.Col/m.Row are relative to the window this View was last given in Render,
 // matching CursorPosition's convention. They are NOT clamped to it: during a
-// drag the pointer can leave the pane, and a row outside it is exactly the
-// signal to auto-scroll.
+// drag the pointer can leave the pane, which positionAt clamps to the
+// nearest visible row.
 func (v *View) HandleMouse(m layout.Mouse) bool {
 	// The right-click menu, while open, is modal to this pane's mouse
 	// input: every event goes to it until it's dismissed or acted on (see
@@ -367,42 +368,37 @@ func (v *View) continueTabDrag(m layout.Mouse) bool {
 	return true
 }
 
-// mousePress handles a button-down in the text area: it moves the cursor
-// there and then, depending on the click count, leaves an empty selection
-// (single), selects the word (double) or the whole line (triple).
+// mousePress handles a button-down in the text area. It never moves the
+// cursor: depending on the click count it plants an empty selection at the
+// pointer (single), selects the word (double) or the whole line (triple).
 func (v *View) mousePress(t *tab, m layout.Mouse) bool {
-	ln, col := v.positionAt(t, m)
+	pos := v.positionAt(t, m)
 
 	// Shift+click extends the existing selection instead of starting a new
 	// one, keeping whichever end was already anchored.
 	if m.Mods&layout.ModShift != 0 && t.hasSel {
-		t.cursorLn, t.cursorCol = ln, col
+		t.selHead = pos
 		v.dragging = true
-		v.clamp(t)
 		return true
 	}
 
-	t.cursorLn, t.cursorCol = ln, col
-	v.clamp(t)
-
 	switch m.Clicks {
 	case 2:
-		v.selectWordAt(t)
+		selectWordAt(t, pos)
 		// A double- or triple-click is a COMPLETE gesture: there is nothing
 		// further to wait for, so it copies here rather than on the release
 		// that follows. (The release still arrives; dragMoved is what stops it
 		// copying a second time.)
 		v.copySelectionToClipboard(t)
 	case 3:
-		v.selectLineAt(t)
+		selectLineAt(t, pos)
 		v.copySelectionToClipboard(t)
 	default:
-		// A bare click just repositions the cursor and drops any previous
-		// selection; the anchor is planted so that a drag out of this press
-		// has something to extend from. Nothing is copied — there is no
-		// selection, and clearing the clipboard because someone clicked would
-		// be actively unhelpful.
-		t.selAnchor = position{ln: t.cursorLn, col: t.cursorCol}
+		// A bare click drops any previous selection and plants the anchor so
+		// that a drag out of this press has something to extend from.
+		// Nothing is copied — there is no selection, and clearing the
+		// clipboard because someone clicked would be actively unhelpful.
+		t.selAnchor, t.selHead = pos, pos
 		t.hasSel = false
 	}
 	v.dragging = true
@@ -410,44 +406,40 @@ func (v *View) mousePress(t *tab, m layout.Mouse) bool {
 	return true
 }
 
-// selectWordAt selects the identifier-like word the cursor is touching,
-// leaving the cursor at its end. A click not touching a word selects
-// nothing, rather than guessing at a neighbouring one.
-func (v *View) selectWordAt(t *tab) {
-	line := lineAt(t, t.cursorLn)
-	pos := rawIndexForExpandedCol(line, t.cursorCol, tabWidthOf(t))
-	start, end, ok := wordRangeAt(line, pos)
+// selectWordAt selects the identifier-like word touching pos. A click not
+// touching a word selects nothing, rather than guessing at a neighbouring
+// one.
+func selectWordAt(t *tab, pos position) {
+	line := lineAt(t, pos.ln)
+	raw := rawIndexForExpandedCol(line, pos.col, tabWidthOf(t))
+	start, end, ok := wordRangeAt(line, raw)
 	if !ok {
-		t.selAnchor = position{ln: t.cursorLn, col: t.cursorCol}
+		t.selAnchor, t.selHead = pos, pos
 		t.hasSel = false
 		return
 	}
-	t.selAnchor = position{ln: t.cursorLn, col: expandedColForRawIndex(line, start, tabWidthOf(t))}
-	t.cursorCol = expandedColForRawIndex(line, end, tabWidthOf(t))
+	t.selAnchor = position{ln: pos.ln, col: expandedColForRawIndex(line, start, tabWidthOf(t))}
+	t.selHead = position{ln: pos.ln, col: expandedColForRawIndex(line, end, tabWidthOf(t))}
 	t.hasSel = true
 }
 
-// selectLineAt selects the cursor's whole line, ending at the start of the
-// next one so the line break is included — which is what makes a
-// triple-click copy paste back as a whole line.
-func (v *View) selectLineAt(t *tab) {
-	t.selAnchor = position{ln: t.cursorLn, col: 0}
-	if t.cursorLn+1 < len(t.buf.Lines) {
-		t.cursorLn++
-		t.cursorCol = 0
+// selectLineAt selects pos's whole line, ending at the start of the next one
+// so the line break is included — which is what makes a triple-click copy
+// paste back as a whole line.
+func selectLineAt(t *tab, pos position) {
+	t.selAnchor = position{ln: pos.ln, col: 0}
+	if pos.ln+1 < len(t.buf.Lines) {
+		t.selHead = position{ln: pos.ln + 1, col: 0}
 	} else {
-		t.cursorCol = len(currentLineRunes(t, t.cursorLn, tabWidthOf(t)))
+		t.selHead = position{ln: pos.ln, col: len(currentLineRunes(t, pos.ln, tabWidthOf(t)))}
 	}
 	t.hasSel = true
 }
 
-// extendSelectionTo moves the selection's cursor end to the pointer,
-// scrolling the viewport when the pointer has left the pane.
+// extendSelectionTo moves the selection's moving end to the pointer.
 func (v *View) extendSelectionTo(t *tab, m layout.Mouse) {
-	ln, col := v.positionAt(t, m)
-	t.cursorLn, t.cursorCol = ln, col
+	t.selHead = v.positionAt(t, m)
 	t.hasSel = true
-	v.clamp(t)
 }
 
 // positionAt converts a pane-relative mouse cell into a buffer position, in
@@ -455,14 +447,10 @@ func (v *View) extendSelectionTo(t *tab, m layout.Mouse) {
 // two must stay in step: row 0 is the tab bar, the gutter occupies the first
 // gutterWidthFor columns, and leftCol is the horizontal scroll offset.
 //
-// A row outside the pane maps to the line just past the corresponding edge
-// of the viewport, which is what produces auto-scroll: cursorLn drives
-// topLine in renderBody, so moving the cursor one line past the edge scrolls
-// by one line, with no separate scrolling code. Note this advances one line
-// per motion EVENT, so holding the pointer still outside the pane does not
-// keep scrolling — continuous scroll would need a ticker posted through
-// App.Post.
-func (v *View) positionAt(t *tab, m layout.Mouse) (ln, col int) {
+// A row outside the pane clamps to the first or last visible row: the
+// viewport follows the cursor, not the selection, so a selection end past
+// the edge would never scroll into view.
+func (v *View) positionAt(t *tab, m layout.Mouse) position {
 	bodyRows := v.lastHeight - 1
 	if bodyRows < 1 {
 		bodyRows = 1
@@ -471,14 +459,7 @@ func (v *View) positionAt(t *tab, m layout.Mouse) (ln, col int) {
 		return v.wrappedPositionAt(t, m, bodyRows)
 	}
 
-	switch {
-	case m.Row < 1:
-		ln = t.topLine - 1
-	case m.Row > bodyRows:
-		ln = t.topLine + bodyRows
-	default:
-		ln = t.topLine + m.Row - 1
-	}
+	ln := t.topLine + min(max(m.Row, 1), bodyRows) - 1
 	if ln < 0 {
 		ln = 0
 	}
@@ -492,27 +473,20 @@ func (v *View) positionAt(t *tab, m layout.Mouse) (ln, col int) {
 	// does in a GUI editor, and what makes dragging down the gutter select
 	// whole lines.
 	if m.Col < gutter {
-		return ln, 0
+		return position{ln: ln}
 	}
 	displayCol := m.Col - gutter + t.leftCol
 	expanded := string(currentLineRunes(t, ln, tabWidthOf(t)))
-	return ln, textwidth.RuneIndexForDisplayColumn(expanded, displayCol)
+	return position{ln: ln, col: textwidth.RuneIndexForDisplayColumn(expanded, displayCol)}
 }
 
 // wrappedPositionAt is positionAt with soft wrap on: screen rows are visual
 // rows (see wrap.go), counted from (topLine, topSub), and a column maps into
-// whichever slice of the line that row shows. A row outside the pane maps
-// to the visual row just past that edge — the same auto-scroll-by-one-step
-// rule as the unwrapped case.
-func (v *View) wrappedPositionAt(t *tab, m layout.Mouse, bodyRows int) (ln, col int) {
+// whichever slice of the line that row shows. A row outside the pane clamps
+// to the nearest visible row, as in the unwrapped case.
+func (v *View) wrappedPositionAt(t *tab, m layout.Mouse, bodyRows int) position {
 	tabWidth, width := tabWidthOf(t), wrapWidth(t, v.lastWidth)
-	steps := m.Row - 1
-	switch {
-	case m.Row < 1:
-		steps = -1
-	case m.Row > bodyRows:
-		steps = bodyRows
-	}
+	steps := min(max(m.Row, 1), bodyRows) - 1
 	ln, sub := stepVisualRows(t, t.topLine, t.topSub, steps, tabWidth, width)
 	starts := lineWrapStarts(t, ln, tabWidth, width)
 	sub = min(sub, len(starts)-1)
@@ -526,7 +500,7 @@ func (v *View) wrappedPositionAt(t *tab, m layout.Mouse, bodyRows int) (ln, col 
 		displayCol = starts[sub+1] - 1
 	}
 	expanded := string(currentLineRunes(t, ln, tabWidth))
-	return ln, textwidth.RuneIndexForDisplayColumn(expanded, displayCol)
+	return position{ln: ln, col: textwidth.RuneIndexForDisplayColumn(expanded, displayCol)}
 }
 
 // isWheelButton reports whether b is a wheel direction. The editor leaves

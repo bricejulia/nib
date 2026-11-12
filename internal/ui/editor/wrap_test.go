@@ -123,19 +123,19 @@ func TestWrapClickOnContinuationRow(t *testing.T) {
 	v.Render(w)
 
 	v.HandleMouse(press(4+2, 2, 1))
-	if tb.cursorLn != 0 || tb.cursorCol != 17 {
-		t.Errorf("cursor = (%d, %d), want (0, 17): the third column of the second row", tb.cursorLn, tb.cursorCol)
+	if a := tb.selAnchor; a.ln != 0 || a.col != 17 {
+		t.Errorf("anchor = (%d, %d), want (0, 17): the third column of the second row", a.ln, a.col)
 	}
 
 	// Past the end of a row that isn't the line's last: its last character.
 	v.HandleMouse(press(19, 1, 1))
-	if tb.cursorLn != 0 || tb.cursorCol != 14 {
-		t.Errorf("cursor = (%d, %d), want (0, 14)", tb.cursorLn, tb.cursorCol)
+	if a := tb.selAnchor; a.ln != 0 || a.col != 14 {
+		t.Errorf("anchor = (%d, %d), want (0, 14)", a.ln, a.col)
 	}
 
 	v.HandleMouse(press(4+1, 3, 1))
-	if tb.cursorLn != 1 || tb.cursorCol != 1 {
-		t.Errorf("cursor = (%d, %d), want (1, 1) on the row after the wrapped line", tb.cursorLn, tb.cursorCol)
+	if a := tb.selAnchor; a.ln != 1 || a.col != 1 {
+		t.Errorf("anchor = (%d, %d), want (1, 1) on the row after the wrapped line", a.ln, a.col)
 	}
 }
 

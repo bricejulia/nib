@@ -38,30 +38,73 @@ func release(col, row int) layout.Mouse {
 // gutterFor is the first column holding text, for a buffer of n lines.
 func gutterFor(t *tab) int { return gutterWidthFor(t) }
 
-func TestClickPlacesCursorWithoutSelecting(t *testing.T) {
+// assertCursorUnmoved fails if a mouse gesture moved the cursor off (ln, col).
+func assertCursorUnmoved(t *testing.T, tb *tab, ln, col int) {
+	t.Helper()
+	if tb.cursorLn != ln || tb.cursorCol != col {
+		t.Errorf("cursor = (%d,%d), want (%d,%d) — mouse gestures must not move the cursor", tb.cursorLn, tb.cursorCol, ln, col)
+	}
+}
+
+func TestClickAnchorsWithoutSelectingOrMovingTheCursor(t *testing.T) {
 	v, tb := selectionView("hello world")
 	g := gutterFor(tb)
 
 	if !v.HandleMouse(press(g+6, 1, 1)) {
 		t.Fatal("expected the press to be consumed")
 	}
-	if tb.cursorLn != 0 || tb.cursorCol != 6 {
-		t.Errorf("cursor = (%d,%d), want (0,6)", tb.cursorLn, tb.cursorCol)
+	if want := (position{ln: 0, col: 6}); tb.selAnchor != want || tb.selHead != want {
+		t.Errorf("anchor/head = %v/%v, want both %v", tb.selAnchor, tb.selHead, want)
 	}
 	if tb.hasSel {
-		t.Error("a single click should place the cursor, not select anything")
+		t.Error("a single click should not select anything")
 	}
+	assertCursorUnmoved(t, tb, 0, 0)
 }
 
-func TestClickOnSecondRowSelectsSecondLine(t *testing.T) {
+func TestClickOnSecondRowAnchorsOnSecondLine(t *testing.T) {
 	// Row 0 is the tab bar, so row 2 is the buffer's second line.
 	v, tb := selectionView("one", "two", "three")
 	g := gutterFor(tb)
 
 	v.HandleMouse(press(g+1, 2, 1))
-	if tb.cursorLn != 1 || tb.cursorCol != 1 {
-		t.Errorf("cursor = (%d,%d), want (1,1)", tb.cursorLn, tb.cursorCol)
+	if want := (position{ln: 1, col: 1}); tb.selAnchor != want {
+		t.Errorf("anchor = %v, want %v", tb.selAnchor, want)
 	}
+	assertCursorUnmoved(t, tb, 0, 0)
+}
+
+func TestDragSelectsWithoutMovingTheCursor(t *testing.T) {
+	v, tb := selectionView("hello world", "second")
+	tb.cursorLn, tb.cursorCol = 1, 3
+	g := gutterFor(tb)
+
+	v.HandleMouse(press(g, 1, 1))
+	v.HandleMouse(motion(g+5, 1))
+	v.HandleMouse(release(g+5, 1))
+
+	if got := strings.Join(v.selectionText(tb), "\n"); got != "hello" {
+		t.Errorf("selection = %q, want %q", got, "hello")
+	}
+	assertCursorUnmoved(t, tb, 1, 3)
+}
+
+func TestDoubleAndTripleClickDoNotMoveTheCursor(t *testing.T) {
+	v, tb := selectionView("hello world", "second")
+	tb.cursorLn, tb.cursorCol = 1, 2
+	g := gutterFor(tb)
+
+	v.HandleMouse(press(g+7, 1, 2))
+	if got := strings.Join(v.selectionText(tb), "\n"); got != "world" {
+		t.Errorf("double-click selection = %q, want %q", got, "world")
+	}
+	assertCursorUnmoved(t, tb, 1, 2)
+
+	v.HandleMouse(press(g+7, 1, 3))
+	if got := strings.Join(v.selectionText(tb), "\n"); got != "hello world\n" {
+		t.Errorf("triple-click selection = %q, want %q", got, "hello world\n")
+	}
+	assertCursorUnmoved(t, tb, 1, 2)
 }
 
 func TestClickOnTabBarPastLastTabIsNotConsumed(t *testing.T) {
@@ -265,7 +308,7 @@ func TestShiftClickExtendsAnExistingSelection(t *testing.T) {
 	}
 }
 
-func TestShiftClickWithNoSelectionJustPlacesTheCursor(t *testing.T) {
+func TestShiftClickWithNoSelectionJustAnchors(t *testing.T) {
 	v, tb := selectionView("hello world")
 	g := gutterFor(tb)
 
@@ -276,12 +319,13 @@ func TestShiftClickWithNoSelectionJustPlacesTheCursor(t *testing.T) {
 	if tb.hasSel {
 		t.Error("Shift+click with nothing selected should not invent a selection")
 	}
-	if tb.cursorCol != 6 {
-		t.Errorf("cursorCol = %d, want 6", tb.cursorCol)
+	if tb.selAnchor.col != 6 {
+		t.Errorf("anchor col = %d, want 6", tb.selAnchor.col)
 	}
+	assertCursorUnmoved(t, tb, 0, 0)
 }
 
-func TestDragBelowThePaneScrollsDown(t *testing.T) {
+func TestDragBelowThePaneClampsToTheLastVisibleRow(t *testing.T) {
 	lines := make([]string, 50)
 	for i := range lines {
 		lines[i] = "line"
@@ -290,19 +334,19 @@ func TestDragBelowThePaneScrollsDown(t *testing.T) {
 	g := gutterFor(tb)
 
 	v.HandleMouse(press(g, 1, 1))
-	before := tb.cursorLn
 	// bodyRows is lastHeight-1 == 9, so row 10 is past the bottom edge.
 	v.HandleMouse(motion(g, 10))
 
-	if tb.cursorLn <= before {
-		t.Errorf("cursorLn = %d, want past %d — dragging below the pane should scroll", tb.cursorLn, before)
+	if tb.selHead.ln != 8 {
+		t.Errorf("head line = %d, want 8 (last visible line)", tb.selHead.ln)
 	}
+	assertCursorUnmoved(t, tb, 0, 0)
 	if !tb.hasSel {
 		t.Error("expected the drag to still be selecting")
 	}
 }
 
-func TestDragAbovePaneScrollsUp(t *testing.T) {
+func TestDragAbovePaneClampsToTheFirstVisibleRow(t *testing.T) {
 	lines := make([]string, 50)
 	for i := range lines {
 		lines[i] = "line"
@@ -316,9 +360,10 @@ func TestDragAbovePaneScrollsUp(t *testing.T) {
 	// Row 0 is the tab bar, so any row below 1 is past the top edge.
 	v.HandleMouse(motion(g, 0))
 
-	if tb.cursorLn != 19 {
-		t.Errorf("cursorLn = %d, want 19 (one line above topLine 20)", tb.cursorLn)
+	if tb.selHead.ln != 20 {
+		t.Errorf("head line = %d, want 20 (topLine)", tb.selHead.ln)
 	}
+	assertCursorUnmoved(t, tb, 25, 0)
 }
 
 func TestDragPastTheTopOfTheBufferClampsToZero(t *testing.T) {
@@ -328,8 +373,8 @@ func TestDragPastTheTopOfTheBufferClampsToZero(t *testing.T) {
 	v.HandleMouse(press(g, 2, 1))
 	v.HandleMouse(motion(g, 0)) // topLine is 0, so this asks for line -1
 
-	if tb.cursorLn != 0 {
-		t.Errorf("cursorLn = %d, want 0", tb.cursorLn)
+	if tb.selHead.ln != 0 {
+		t.Errorf("head line = %d, want 0", tb.selHead.ln)
 	}
 }
 
@@ -341,8 +386,8 @@ func TestDragHonoursHorizontalScroll(t *testing.T) {
 	g := gutterFor(tb)
 
 	v.HandleMouse(press(g, 1, 1))
-	if tb.cursorCol != 10 {
-		t.Errorf("cursorCol = %d, want 10 (column 0 of the pane at leftCol 10)", tb.cursorCol)
+	if tb.selAnchor.col != 10 {
+		t.Errorf("anchor col = %d, want 10 (column 0 of the pane at leftCol 10)", tb.selAnchor.col)
 	}
 }
 
@@ -351,8 +396,8 @@ func TestClickPastEndOfLineClampsToItsEnd(t *testing.T) {
 	g := gutterFor(tb)
 
 	v.HandleMouse(press(g+30, 1, 1))
-	if tb.cursorCol != 2 {
-		t.Errorf("cursorCol = %d, want 2 (one past the last rune)", tb.cursorCol)
+	if tb.selAnchor.col != 2 {
+		t.Errorf("anchor col = %d, want 2 (one past the last rune)", tb.selAnchor.col)
 	}
 }
 
