@@ -37,8 +37,8 @@ var Scope = config.Scope{Name: "filetree", Title: "File Tree", Actions: config.A
 	// "L" ("log"), the same key the editor uses for the file's history.
 	{ID: "show_history", Keys: []string{"L"}, Desc: "Show the selected file's git history"},
 	{ID: "open_external", Keys: []string{"o"}, Desc: "Open in the system default app (e.g. HTML in the browser)"},
-	{ID: "next_view", Keys: []string{"]"}, Desc: "Next view: files / changed files"},
-	{ID: "prev_view", Keys: []string{"["}, Desc: "Previous view: files / changed files"},
+	{ID: "next_view", Keys: []string{"]"}, Desc: "Next view: files / changed files, then the finder's"},
+	{ID: "prev_view", Keys: []string{"["}, Desc: "Previous view (wraps around through the finder's)"},
 }}
 
 // Mode selects which tree the pane displays. ModeFiles is the full,
@@ -119,6 +119,10 @@ type View struct {
 	// file row. Set by the caller (cmd/nib/main.go) to wire in the
 	// editor pane.
 	OnOpen func(path string)
+	// OnViewOverflow, if set, is called with +1 when next_view is pressed
+	// on the last view or -1 when prev_view is pressed on the first,
+	// instead of wrapping around — see cycleView.
+	OnViewOverflow func(dir int)
 
 	// OnPathMoved is called after a successful rename or move, before the
 	// tree itself is updated, so the caller can retarget anything holding
@@ -295,9 +299,26 @@ func (v *View) SetMode(m Mode) {
 }
 
 // NextView and PrevView cycle through the available modes — bound to "]"
-// and "[" by default, the same keys the editor uses to cycle tabs.
-func (v *View) NextView() { v.SetMode(Mode((int(v.mode) + 1) % modeCount)) }
-func (v *View) PrevView() { v.SetMode(Mode((int(v.mode) - 1 + modeCount) % modeCount)) }
+// and "[" by default, the same keys the editor uses to cycle tabs. Past
+// either end they call OnViewOverflow when it's set (the files panel
+// continues into the finder's views), and wrap around otherwise.
+func (v *View) NextView() { v.cycleView(1) }
+func (v *View) PrevView() { v.cycleView(-1) }
+
+func (v *View) cycleView(dir int) {
+	next := int(v.mode) + dir
+	if next < 0 || next >= modeCount {
+		if v.OnViewOverflow != nil {
+			v.OnViewOverflow(dir)
+			return
+		}
+		next = (next + modeCount) % modeCount
+	}
+	v.SetMode(Mode(next))
+}
+
+// CurrentMode is the view the tree is showing.
+func (v *View) CurrentMode() Mode { return v.mode }
 
 // Refresh invalidates every currently expanded directory so the next
 // Render/HandleKey re-reads it from disk, then marks the tree dirty.

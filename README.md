@@ -116,7 +116,7 @@ cmd/nib          wiring: builds the pane tree, owns the callbacks between panes
      │        └── app.go      event loop, focus, overlays, key translation
      │
      ├── internal/ui/editor   the editor pane: buffers, modes, undo, completion
-     ├── internal/ui/filetree, finder, help, debug, statusbar, gitstyle
+     ├── internal/ui/sidepanel, filetree, finder, help, debug, statusbar, gitstyle
      │
      ├── internal/layout      terminal-INDEPENDENT: View, Key, Window, splits
      ├── internal/textwidth   display-column math (tabs, wide runes, slicing)
@@ -226,7 +226,7 @@ Press `?` in nib for this list at runtime. Every binding is rebindable
 | `Tab` / `Shift+Tab` | Focus next / previous pane |
 | `Ctrl+P` | File finder (also: double-tap `Shift`) |
 | `Ctrl+F` | Find references (LSP when available; falls back to a content search of the word under the cursor, pre-filled, in the focused/last-focused editor pane) |
-| `Ctrl+R` | Find & replace in path (also: `Tab` twice from the file finder) |
+| `Ctrl+R` | Find & replace in path (also: the files panel's Replace view, `[` from Files) |
 | `Ctrl+D` | Debug log |
 | `?` | Help |
 | `Ctrl+O` | Open the config file in `$EDITOR` |
@@ -366,12 +366,32 @@ marked `-- DELETED --` so `:w` can write the file back.
 
 ### Finder
 
-`Tab` cycles filename search → content search → find & replace (see below) →
-back to filename search · `Enter` opens · `↑`/`↓` selects · `←`/`→`/`Home`/`End`
-move the caret in the query (e.g. to add a prefix to a pre-filled word) ·
-`Ctrl+K` edits the folder scope shown below the query · `Ctrl+T` toggles
-including git-ignored files (`node_modules`, an ignored `vendor/`, …) in
-filename and content search · `Esc` closes
+Search lives in the files panel. The panel is one strip of five views, shown
+in its title (`Files [Changes] Find Content Replace`) and cycled with `]` / `[`,
+wrapping around:
+
+    Files ↔ Changes ↔ Find File ↔ Find in Files ↔ Replace ↔ (Files)
+
+`Ctrl+P` jumps to Find File, `Ctrl+R` to Replace, and `Ctrl+F` (when the
+language server has nothing) to Find in Files, ready to type. `Tab` always moves
+to the next pane, so the code stays visible and the results stay listed while
+you work. Each search view keeps its query and results when you cycle away.
+In single-file mode, where there is no panel, the finder opens as a centred
+popup instead, with the same keys.
+
+The search views have two states, like the editor's Insert mode:
+
+| State | Keys |
+| --- | --- |
+| Typing (caret in the query) | every printable key is typed, `[` and `]` included · `↑`/`↓` select · `Enter` opens · `←`/`→`/`Home`/`End` move the caret · `Ctrl+K` edits the folder scope · `Ctrl+T` toggles git-ignored files (`node_modules`, an ignored `vendor/`, …) · `Esc` → browse |
+| Browse (no caret) | `]` / `[` next / previous view · `j`/`k` or `↑`/`↓` select · `Enter` opens · `/` or `i` back to typing · `Esc` back to Files |
+
+Arriving with `]` / `[` lands in browse, so you can keep cycling; opening a
+result moves focus to it and leaves the finder in browse. `Ctrl+P` from
+another pane returns to the query with its results intact.
+
+The finder's former `switch_mode` action (`Tab`) is gone; a config file
+that still names it gets the usual unknown-action warning.
 
 The filename and content-search modes show each file's git status marker in
 the leftmost column, colored the same way the file tree colors it.
@@ -380,7 +400,7 @@ the leftmost column, colored the same way the file tree colors it.
 content, and find & replace) to one folder — shown as `(scope: whole
 project)` when unset. Opening the finder (`Ctrl+P`) or find & replace
 (`Ctrl+R`) while the file tree is focused pre-fills it from the selected
-folder; either way, it stays editable for as long as the popup is open —
+folder; either way, it stays editable for as long as the search lasts —
 `Ctrl+K` jumps into it, type a project-relative path, `Enter` jumps back to
 the query. Clear it to go back to searching the whole project. Both filename
 listing and content search implement scoping as a `git ls-files`/`git grep`
@@ -407,18 +427,21 @@ by a page · `←`/`→` peeks at a long line · `Esc` closes
 
 ### Find & Replace
 
-The finder's third mode (`Ctrl+P` then `Tab` twice, or jump straight there
-with `Ctrl+R`):
+The files panel's Replace view (`]` from Find in Files, or jump straight
+there with `Ctrl+R`). The Find, Replace and scope fields are its typing state,
+the results list its browse state:
 
 | Key | Action |
 | --- | --- |
-| `Tab` / `Enter` | Switch between Find, Replace, and the results list (`Enter` only advances focus off the results list — see below) |
-| `Up` / `Down` | Move selection (results list) |
+| `Enter` | Next field: Find → Replace → results list (in a field) |
+| `Esc` | From a field: to the results list · from the results list: back to Files |
+| `/` / `i` | Back to the Find field (results list) |
+| `]` / `[` | Next / previous view (results list) |
+| `Up` / `Down`, `j` / `k` | Move selection (results list) |
 | `Space` | Toggle an occurrence, or a whole file's occurrences |
 | `Enter` | Replace just the occurrence under the cursor (results list) |
 | `a` | Replace every checked occurrence |
 | `Ctrl+K` | Edit the folder scope (`Enter` returns to Find) — see [Finder](#finder) |
-| `Esc` | Close |
 
 A literal (non-regex), case-insensitive search across the project — the same
 `git grep` finder's own content search uses — grouped by file, with one row

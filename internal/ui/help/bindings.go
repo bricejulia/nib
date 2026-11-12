@@ -58,10 +58,12 @@ var extras = []extra{
 	}},
 	{Section: "Finder", Rows: []binding{
 		{"Left Right Home End", "Move the caret in the query (e.g. to add a prefix to a pre-filled word)"},
+		{"<type>", "While the caret is in the query, every key is typed, [ and ] included"},
 	}},
 	{Section: "Find & Replace", Rows: []binding{
-		{"Tab Enter", "Switch between Find, Replace, and the results list"},
-		{"Esc", "Close"},
+		{"Enter", "Next field: Find, Replace, then the results list"},
+		{"Esc", "From a field: to the results list; from the results list: back to Files"},
+		{"[ ]", "Previous / next view (results list)"},
 	}},
 	{Section: "Help", Rows: []binding{
 		{"<type>", "Filter the list by key or description"},

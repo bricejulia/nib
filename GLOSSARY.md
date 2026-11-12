@@ -26,6 +26,10 @@ The domain language of nib. Use these words in code, comments, commits and revie
 
 **Scratch file**: a throwaway file kept in a trusted project's `.nib/scratch` folder, git-ignored with the rest of `.nib`. Created with `new_scratch`, listed with `open_scratch`; otherwise an ordinary file. Lives in `internal/scratch`.
 
+**Files panel**: the leaf left of the panes, holding the file tree's views (Files, Changes) and the finder's (Find File, Find in Files, Replace) as one strip cycled with `[` / `]`. Lives in `internal/ui/sidepanel`. Absent in single-file mode.
+
+**Finder**: the file / content / find & replace search (`internal/ui/finder`), shown as the files panel's last three views; a modal overlay only in single-file mode. Its views are either typing (keys go to the query) or browsing (keys are actions). _Avoid_: search popup.
+
 **Action**: a named command a key can be bound to, such as `save` or `move_down`. Declared once, with its default keys and a description, in its scope (see `config.Action`). Help, the action popup and the generated config file are all built from these declarations. _Avoid_: command (except for `:` commands), binding (that's the key-to-action pair).
 
 **Scope**: one keymap and the actions it can bind, such as `global`, `editor` or `filetree`. A config line names it: `keybind = editor:x = delete_char_forward`. The full list is `scopes` in `cmd/nib/main.go`.

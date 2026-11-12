@@ -41,6 +41,7 @@ import (
 	"github.com/bricejulia/nib/internal/ui/refview"
 	"github.com/bricejulia/nib/internal/ui/reloadconfirm"
 	"github.com/bricejulia/nib/internal/ui/scratchview"
+	"github.com/bricejulia/nib/internal/ui/sidepanel"
 	"github.com/bricejulia/nib/internal/ui/statusbar"
 	"github.com/bricejulia/nib/internal/ui/trustprompt"
 	"github.com/bricejulia/nib/internal/vcs/gitblame"
@@ -525,7 +526,13 @@ func run() error {
 		Rects:   func() map[layout.LeafID]layout.Rect { return app.Rects() },
 	})
 
-	fileTreeLeaf := &layout.LeafNode{ID: 1, View: treeView}
+	// The files panel: the tree's two views and the finder's three, as one
+	// strip cycled with "[" / "]" — see internal/ui/sidepanel. Single-file
+	// mode has no panel, so there the finder stays a centred overlay.
+	finderView := finder.New(absRoot)
+	finderView.SetDocked(!singleFile)
+	panelView := sidepanel.New(treeView, finderView)
+	fileTreeLeaf := &layout.LeafNode{ID: 1, View: panelView}
 	statusBarLeaf := &layout.LeafNode{ID: 2, View: statusBarView}
 
 	panes := &layout.SplitNode{
@@ -573,7 +580,7 @@ func run() error {
 		// context menu just copied — see filetree.View.Notice — only shown
 		// while the tree pane itself is focused, the same scoping openFinder
 		// below uses for "which pane's selection does this apply to".
-		if id, ok := app.FocusedLeaf(); ok && id == fileTreeLeaf.ID {
+		if id, ok := app.FocusedLeaf(); ok && id == fileTreeLeaf.ID && panelView.TreeActive() {
 			if notice := treeView.Notice(); notice != "" {
 				parts = append(parts, notice)
 			}
@@ -630,8 +637,26 @@ func run() error {
 		lastFocusedLeaf = id
 	})
 
-	finderView := finder.New(absRoot)
-	finderView.OnClose = app.CloseOverlay
+	if singleFile {
+		finderView.OnClose = app.CloseOverlay
+	}
+	// showFinder shows the finder — in the files panel, focused, or as an
+	// overlay in single-file mode — after one of its Open* calls.
+	showFinder := func() {
+		if singleFile {
+			app.ShowOverlay(finderView)
+			return
+		}
+		panelView.ShowFinder()
+		app.FocusLeaf(fileTreeLeaf.ID)
+	}
+	// treeFocused reports whether the file tree itself (not one of the
+	// finder's views) has focus — what "scope to the selected folder"
+	// keys off below.
+	treeFocused := func() bool {
+		id, ok := app.FocusedLeaf()
+		return ok && id == fileTreeLeaf.ID && panelView.TreeActive()
+	}
 	finderView.OnSelect = func(absPath string, line int) {
 		app.FocusLeaf(ws.OpenAtLine(absPath, line))
 	}
@@ -645,13 +670,24 @@ func run() error {
 	// whole project otherwise, exactly as before. The scope field it
 	// pre-fills stays editable once the popup is open (Ctrl+K), so this is
 	// only a starting value, not the only way to change it.
+	//
+	// With Find File already showing in the panel but focus elsewhere,
+	// this just brings focus back to its query, results intact; otherwise
+	// (from inside the finder, or another view) it starts a fresh search.
 	openFinder := func() {
-		if id, ok := app.FocusedLeaf(); ok && id == fileTreeLeaf.ID {
+		if !singleFile && panelView.FinderActive() && finderView.CurrentMode() == finder.ModeFiles {
+			if id, ok := app.FocusedLeaf(); !ok || id != fileTreeLeaf.ID {
+				finderView.EditQuery()
+				app.FocusLeaf(fileTreeLeaf.ID)
+				return
+			}
+		}
+		if treeFocused() {
 			finderView.OpenScoped(treeView.SelectedDir())
 		} else {
 			finderView.Open() // re-index the project's files fresh on every open
 		}
-		app.ShowOverlay(finderView)
+		showFinder()
 	}
 	app.SetDoubleShiftHandler(openFinder)
 
@@ -1129,7 +1165,7 @@ func run() error {
 			} else {
 				finderView.OpenWithQuery(word)
 			}
-			app.ShowOverlay(finderView)
+			showFinder()
 		}
 		dispatched := v.FindReferences(func(locs []lsp.Location, ok bool) {
 			if !ok {
@@ -1153,6 +1189,8 @@ func run() error {
 			return
 		}
 		if treeView.Reveal(path) {
+			// The tree has to be on screen to reveal anything.
+			panelView.ShowTree(treeView.CurrentMode())
 			app.FocusLeaf(fileTreeLeaf.ID)
 		}
 	}
@@ -1207,7 +1245,7 @@ func run() error {
 	// Search-and-replace is finder.View's third mode (Tab-cycled, alongside
 	// filename/content search), so it shares finderView's own overlay
 	// rather than getting a separate one — see finder.View.Replace.
-	finderView.Replace().OnClose = app.CloseOverlay
+	finderView.Replace().OnClose = func() { finderView.OnClose() }
 	// Reuses the same async plumbing finderView.Post already relies on —
 	// see finder.ReplaceView.refilter.
 	finderView.Replace().Post = app.Post
@@ -1228,14 +1266,14 @@ func run() error {
 	// and to the current file, with the word under the cursor as the Find
 	// text, when an editor pane is.
 	openReplace := func() {
-		if id, ok := app.FocusedLeaf(); ok && id == fileTreeLeaf.ID {
+		if treeFocused() {
 			finderView.OpenReplaceScoped(treeView.SelectedDir())
 		} else if file, ok := focusedEditorFile(); ok {
 			finderView.OpenReplaceWithQueryScoped(ws.Target().WordUnderCursor(), file)
 		} else {
 			finderView.OpenReplace()
 		}
-		app.ShowOverlay(finderView)
+		showFinder()
 	}
 
 	// saveAllDirty saves every unsaved file, then calls onDone — immediately

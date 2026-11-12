@@ -1,5 +1,6 @@
-// Package finder is a fuzzy file finder meant to be shown as a modal
-// overlay (see ui.App.ShowOverlay/CloseOverlay). It has three modes,
+// Package finder is a fuzzy file finder, shown as a pane in the file
+// tree's slot (see View.SetDocked) — or, in single-file mode where there
+// is no tree, as a modal overlay (see ui.App.ShowOverlay). It has three modes,
 // switched with Tab: find a file by name (fuzzy match), find a line by
 // its content (via `git grep`), or search-and-replace across the project
 // (see ReplaceView). Up/Down moves the selection, Enter opens it, Esc
@@ -22,24 +23,28 @@ import (
 )
 
 // Scope is the finder's actions and their default keys, overridable via
-// the user config's "finder" scope (see internal/config). Deliberately
-// narrow: any trigger not listed here (and not otherwise Ctrl/Alt/Super-
-// modified) falls through to being typed into the search query instead,
-// so overriding a plain letter key here means it stops being typeable —
-// see HandleKey.
+// the user config's "finder" scope (see internal/config).
+//
+// The finder has two states (see View.typing): typing into the query,
+// where every printable key without Ctrl/Alt/Super is typed — so "[", "j"
+// or "/" never trigger an action there, whatever they're bound to — and
+// browse, where the whole keymap applies. Esc moves from typing to browse;
+// edit_query moves back.
 var Scope = config.Scope{Name: "finder", Title: "Finder", Actions: config.Actions{
-	{ID: "close", Keys: []string{"Esc"}, Desc: "Close"},
-	{ID: "switch_mode", Keys: []string{"Tab"}, Desc: "Cycle file / content / find & replace search"},
+	{ID: "close", Keys: []string{"Esc"}, Desc: "Leave the query for browse; in browse, back to the file tree"},
+	{ID: "next_view", Keys: []string{"]"}, Desc: "Next view: find file / find in files / find & replace (browse)"},
+	{ID: "prev_view", Keys: []string{"["}, Desc: "Previous view (browse)"},
+	{ID: "edit_query", Keys: []string{"/", "i"}, Desc: "Back to typing the query (browse)"},
 	{ID: "open_selection", Keys: []string{"Enter"}, Desc: "Open selection"},
-	{ID: "move_down", Keys: []string{"Down"}, Desc: "Move selection down"},
-	{ID: "move_up", Keys: []string{"Up"}, Desc: "Move selection up"},
+	{ID: "move_down", Keys: []string{"Down", "j"}, Desc: "Move selection down (j: browse only)"},
+	{ID: "move_up", Keys: []string{"Up", "k"}, Desc: "Move selection up (k: browse only)"},
 	// Jumps focus into (or back out of) the scope field below the
 	// query prompt — see focusScope, Render, and HandleKey. Not Ctrl+g
 	// (editor's own "go to parent node") or Ctrl+l (global's own
-	// "reload_config"): the finder overlay owns all input while shown, so
-	// neither would actually collide, but the same physical key meaning
-	// something else depending on context is still a confusing default.
-	// Ctrl+k is otherwise unused across every scope in this codebase.
+	// "reload_config"): the finder handles its keys before the global
+	// keymap, so neither would actually collide, but the same physical key
+	// meaning something else depending on context is still a confusing
+	// default. Ctrl+k is otherwise unused across every scope in this codebase.
 	{ID: "focus_scope", Keys: []string{"Ctrl+k"}, Desc: "Edit the folder scope (pre-filled with the folder selected in the tree; Enter returns to the query)"},
 	// Off by default and reset on every open: ignored trees like
 	// node_modules can be huge, so they're only searched on request — or
@@ -81,12 +86,14 @@ func relScope(root, dir string) string {
 	return filepath.ToSlash(rel)
 }
 
-type mode int
+// Mode is which search the finder runs: file names, file contents, or
+// find & replace. Cycled with next_view/prev_view (see cycleMode).
+type Mode int
 
 const (
-	modeFiles mode = iota
-	modeContent
-	modeReplace
+	ModeFiles Mode = iota
+	ModeContent
+	ModeReplace
 )
 
 type scoredItem struct {
@@ -120,12 +127,12 @@ type SearchResult struct {
 // (so the terminal's real cursor sits at the end of the typed query).
 type View struct {
 	root string
-	mode mode
+	mode Mode
 
 	// replace is the search-and-replace mode's entire state and behavior,
 	// delegated to wholesale (Render, HandleKey, Title, CursorPosition,
 	// ScrollState/ScrollTo) rather than folded into View's own fields and
-	// switches — see toggleMode, Render, and HandleKey. It's also reachable
+	// switches — see setMode, Render, and HandleKey. It's also reachable
 	// directly via OpenReplace/Replace, for a global shortcut that jumps
 	// straight into this mode (Ctrl+r, see cmd/nib/main.go) the same way
 	// OpenWithQuery jumps straight into content-search mode.
@@ -167,8 +174,8 @@ type View struct {
 	// chosen file, line is 1-based for a content-mode match or 0 for a
 	// file-mode match (meaning "no specific line").
 	OnSelect func(absPath string, line int)
-	// OnClose is called whenever the modal should be dismissed: Esc, or
-	// right after OnSelect fires for a selection.
+	// OnClose is called whenever the finder should be dismissed: Esc, or —
+	// as a modal overlay only — right after OnSelect fires for a selection.
 	OnClose func()
 	// Post, if set, delivers a completed content search's SearchResult
 	// back through the host application's event loop (see ui.App.Post)
@@ -179,6 +186,31 @@ type View struct {
 	Post func(ev interface{})
 
 	keymap map[string]string
+
+	// inBrowse is the files/content modes' input state: false (the zero
+	// value) while keys go to the query or scope field — "typing" — and
+	// true while browsing the results, where "[" / "]" switch views and j/k
+	// move. Replace mode keeps the same split in its own focus — see
+	// browsing.
+	inBrowse bool
+
+	// opened is set by the first Open*, so a Resume* before any of them
+	// still has a file index to show.
+	opened bool
+	// replaceStarted is set once replace mode has been opened, so cycling
+	// back into it resumes its Find/Replace/results instead of resetting.
+	replaceStarted bool
+
+	// OnViewOverflow, if set, is called with +1 when next_view is pressed
+	// on the last mode (replace) or -1 when prev_view is pressed on the
+	// first (files), instead of wrapping around — the files panel uses it
+	// to continue into the file tree's own views. See cycleMode.
+	OnViewOverflow func(dir int)
+
+	// docked is set by SetDocked: the finder is shown as a regular pane
+	// (in the file tree's slot) rather than a modal overlay. See
+	// SetDocked for what changes.
+	docked bool
 }
 
 // New creates a finder rooted at absPath. Call Open each time it's about
@@ -194,6 +226,19 @@ func (v *View) Replace() *ReplaceView {
 	return v.replace
 }
 
+// SetDocked switches the finder between a modal overlay (the default)
+// and a regular pane shown in the file tree's slot. Docked, it behaves
+// like any other pane: opening a selection leaves it open (OnClose is not
+// called, so the results stay listed while the user edits), and keys it
+// has no use for are reported unconsumed, so they bubble to the global
+// keymap (Shift+Tab to leave the pane, Ctrl+C to quit, …) through
+// layout.Dispatch. As an overlay, every key is swallowed, as a modal must.
+// Applies to the replace mode too.
+func (v *View) SetDocked(docked bool) {
+	v.docked = docked
+	v.replace.docked = docked
+}
+
 // SetKeymap merges the user config's "finder" scope overrides on top of
 // Scope, replacing the pane's active keymap.
 func (v *View) SetKeymap(overrides map[string]string) {
@@ -207,11 +252,11 @@ const scopeLabel = "Scope: "
 func (v *View) Title() string {
 	base := "Find File"
 	switch v.mode {
-	case modeFiles:
+	case ModeFiles:
 		// base already set above.
-	case modeContent:
+	case ModeContent:
 		base = "Find in Files"
-	case modeReplace:
+	case ModeReplace:
 		return v.replace.Title()
 	}
 	if scope := v.currentScope(); scope != "" {
@@ -250,11 +295,14 @@ func (v *View) OpenScoped(absDir string) {
 
 func (v *View) openScoped(scope string) {
 	v.cancelPendingSearch()
+	v.opened = true
+	v.inBrowse = false
+	v.replaceStarted = false // a fresh search restarts replace mode too
 	v.scopeField = textfield.New(scope)
 	v.focus = focusQuery
 	v.includeIgnored = false
 	v.items = listFiles(v.root, scope, effectiveIncludeIgnored(v.root, scope, false))
-	v.mode = modeFiles
+	v.mode = ModeFiles
 	v.query = textfield.TextField{}
 	v.cursor = 0
 	v.scrollTop = 0
@@ -279,7 +327,7 @@ func (v *View) OpenWithQueryScoped(query, absPath string) {
 
 func (v *View) openWithQuery(query, scope string) {
 	v.openScoped(scope)
-	v.mode = modeContent
+	v.mode = ModeContent
 	v.query = textfield.New(query)
 	v.refilter()
 }
@@ -308,7 +356,8 @@ func (v *View) OpenReplaceWithQueryScoped(query, absPath string) {
 
 func (v *View) openReplace(scope string) {
 	v.openScoped(scope)
-	v.mode = modeReplace
+	v.replaceStarted = true
+	v.mode = ModeReplace
 	v.replace.SetScope(scope)
 	v.replace.Open()
 }
@@ -322,28 +371,93 @@ func (v *View) ApplyStatus(direct map[string]gitstatus.Status) {
 	v.status = direct
 }
 
-// toggleMode cycles Files -> Content -> Replace -> Files. Replace mode
-// keeps its own independent state (query, replacement, results — see
-// ReplaceView), so entering it always starts fresh via replace.Open(),
-// the same way switching into it via OpenReplace does.
-func (v *View) toggleMode() {
+// setMode switches to m, keeping the query: files and content search
+// share it, and replace mode keeps its own state (Find, Replace, results
+// — see ReplaceView), started fresh only the first time it's entered.
+func (v *View) setMode(m Mode) {
 	v.cancelPendingSearch()
-	switch v.mode {
-	case modeFiles:
-		v.mode = modeContent
-	case modeContent:
-		v.mode = modeReplace
-	default:
-		v.mode = modeFiles
-	}
-	if v.mode == modeReplace {
-		v.replace.SetScope(v.scopeField.String())
-		v.replace.Open()
+	v.mode = m
+	if m == ModeReplace {
+		if !v.replaceStarted {
+			v.replaceStarted = true
+			v.replace.SetScope(v.scopeField.String())
+			v.replace.Open()
+		}
 		return
 	}
 	v.cursor = 0
 	v.scrollTop = 0
 	v.refilter()
+}
+
+// cycleMode is next_view/prev_view: Files -> Content -> Replace, landing
+// in browse. Past either end it hands over to OnViewOverflow when set (the
+// files panel continues into the tree's views), and wraps otherwise.
+func (v *View) cycleMode(dir int) {
+	next := int(v.mode) + dir
+	if next < int(ModeFiles) || next > int(ModeReplace) {
+		if v.OnViewOverflow != nil {
+			v.OnViewOverflow(dir)
+			return
+		}
+		next = (next + 3) % 3
+	}
+	v.setMode(Mode(next))
+	v.browse()
+}
+
+// browse puts the current mode in its browse state.
+func (v *View) browse() {
+	v.inBrowse = true
+	v.focus = focusQuery
+	if v.mode == ModeReplace {
+		v.replace.Browse()
+	}
+}
+
+// browsing reports whether "[" / "]" switch views right now: the results
+// list has focus rather than a text field.
+func (v *View) browsing() bool {
+	if v.mode == ModeReplace {
+		return v.replace.Browsing()
+	}
+	return v.inBrowse
+}
+
+// ResumeFirst shows file-name mode in browse, keeping its query and
+// results — how the files panel enters the finder with "]" from the
+// tree's last view. ResumeLast is the same for replace mode, entered with
+// "[" from the tree's first view.
+func (v *View) ResumeFirst() { v.resume(ModeFiles) }
+
+// ResumeLast — see ResumeFirst.
+func (v *View) ResumeLast() { v.resume(ModeReplace) }
+
+func (v *View) resume(m Mode) {
+	if !v.opened {
+		v.Open()
+	}
+	v.setMode(m)
+	v.browse()
+}
+
+// CurrentMode is the search the finder is showing.
+func (v *View) CurrentMode() Mode { return v.mode }
+
+// Typing reports whether keys currently go to a text field (the query,
+// scope, or one of replace mode's fields) — the state Ctrl+P returns to.
+func (v *View) Typing() bool {
+	return !v.browsing()
+}
+
+// EditQuery returns to typing the current mode's query, keeping it.
+func (v *View) EditQuery() {
+	if v.mode == ModeReplace {
+		v.replace.EditFind()
+		return
+	}
+	v.inBrowse = false
+	v.focus = focusQuery
 }
 
 // cancelPendingSearch stops any pending debounce timer and bumps
@@ -361,7 +475,7 @@ func (v *View) cancelPendingSearch() {
 
 func (v *View) refilter() {
 	switch v.mode {
-	case modeContent:
+	case ModeContent:
 		v.refilterContent()
 	default:
 		v.refilterFiles()
@@ -475,7 +589,7 @@ func (v *View) ApplyFileListResult(r FileListResult) {
 // doesn't spawn one `git ls-files` per keystroke and never blocks the UI
 // thread — see FileListResult/ApplyFileListResult.
 func (v *View) applyScopeChange() {
-	if v.mode == modeContent {
+	if v.mode == ModeContent {
 		v.refilterContent()
 		return
 	}
@@ -511,7 +625,7 @@ func (v *View) clampCursor() {
 }
 
 func (v *View) resultCount() int {
-	if v.mode == modeContent {
+	if v.mode == ModeContent {
 		return len(v.contentMatches)
 	}
 	return len(v.fileMatches)
@@ -521,7 +635,7 @@ func (v *View) resultCount() int {
 // find-by-name (matching typical fuzzy finders), "/ " for find-by-content
 // (matching the vi/less "search" prompt).
 func (v *View) promptPrefix() string {
-	if v.mode == modeContent {
+	if v.mode == ModeContent {
 		return "/ "
 	}
 	return "> "
@@ -532,8 +646,11 @@ func (v *View) promptPrefix() string {
 // (query or scope) — or, in replace mode, wherever
 // ReplaceView.CursorPosition puts it.
 func (v *View) CursorPosition() (int, int, bool) {
-	if v.mode == modeReplace {
+	if v.mode == ModeReplace {
 		return v.replace.CursorPosition()
+	}
+	if v.inBrowse {
+		return 0, 0, false // browsing: no caret, which is also the cue
 	}
 	if v.focus == focusScope {
 		return len(scopeLabel) + v.scopeField.Caret(), 1, true
@@ -562,7 +679,7 @@ func (v *View) scopeRowSegments() []layout.Segment {
 }
 
 func (v *View) Render(w layout.Window) {
-	if v.mode == modeReplace {
+	if v.mode == ModeReplace {
 		v.replace.Render(w)
 		return
 	}
@@ -570,9 +687,9 @@ func (v *View) Render(w layout.Window) {
 	cols, rows := w.Size()
 	w.Clear()
 
-	hint := "(Tab: search content)"
-	if v.mode == modeContent {
-		hint = "(Tab: find & replace)"
+	hint := "(Esc: browse)"
+	if v.inBrowse {
+		hint = "([ ] views · / search)"
 	}
 	w.Println(0, layout.Segment{Text: v.promptPrefix() + v.query.String() + "  " + hint})
 	w.Println(1, v.scopeRowSegments()...)
@@ -586,7 +703,7 @@ func (v *View) Render(w layout.Window) {
 		return
 	}
 
-	if v.mode == modeContent && v.query.Len() < minContentQueryLen {
+	if v.mode == ModeContent && v.query.Len() < minContentQueryLen {
 		w.Println(2, layout.Segment{
 			Text:  fmt.Sprintf("type at least %d characters to search file contents", minContentQueryLen),
 			Style: layout.Style{Attr: layout.AttrDim},
@@ -629,48 +746,58 @@ func (v *View) Render(w layout.Window) {
 	}
 }
 
-// HandleKey always reports the key consumed: a modal should never leak
-// input through to whatever is behind it, matched or not.
+// HandleKey routes a key by state (see Scope): while typing, printable
+// keys go to the query or scope field and only named or modified keys can
+// be actions; while browsing, the whole keymap applies, and "[" / "]"
+// switch modes. Replace mode is delegated wholesale to v.replace, apart
+// from those two view keys while it is browsing too.
 //
-// Close and switch-mode are handled up front, before any mode-specific
-// dispatch, so Esc/Tab always close/cycle regardless of mode — including
-// out of replace mode, where everything else is delegated wholesale to
-// v.replace.HandleKey below rather than threaded through the switches
-// that follow (those are files/content-mode-specific: move_down and
-// friends act on v.cursor/v.fileMatches/v.contentMatches, none of which
-// replace mode uses).
+// As an overlay every key is reported consumed — a modal never leaks
+// input. Docked (see SetDocked), keys nothing here used are reported
+// unconsumed, so they reach the global keymap (Tab: next pane, …).
 func (v *View) HandleKey(k layout.Key) bool {
 	if k.EventType == layout.EventRelease {
 		return true
 	}
 
-	switch v.keymap[k.String()] {
-	case "close":
-		if v.OnClose != nil {
-			v.OnClose()
+	action := v.keymap[k.String()]
+	if v.browsing() {
+		switch action {
+		case "next_view":
+			v.cycleMode(1)
+			return true
+		case "prev_view":
+			v.cycleMode(-1)
+			return true
 		}
-		return true
-	case "switch_mode":
-		v.toggleMode()
-		return true
 	}
 
-	if v.mode == modeReplace {
+	if v.mode == ModeReplace {
 		return v.replace.HandleKey(k)
 	}
 
-	// "focus_scope" is checked before either field's own dispatch below —
-	// it needs to fire regardless of which field currently has focus, the
-	// same way Esc/Tab are checked before the mode/focus branches above.
-	if v.keymap[k.String()] == "toggle_ignored" {
+	// While typing, printable text is never an action, so "[" or "j" are
+	// typed rather than switching views or moving the selection.
+	if !v.inBrowse && isTypedText(k) {
+		action = ""
+	}
+
+	switch action {
+	case "close":
+		if !v.inBrowse {
+			v.browse()
+		} else if v.OnClose != nil {
+			v.OnClose()
+		}
+		return true
+	case "toggle_ignored":
 		v.includeIgnored = !v.includeIgnored
 		// applyScopeChange re-runs the active mode with the current
 		// settings: a re-index in file mode, a fresh grep in content mode.
 		v.applyScopeChange()
 		return true
-	}
-
-	if v.keymap[k.String()] == "focus_scope" {
+	case "focus_scope":
+		v.inBrowse = false
 		if v.focus == focusScope {
 			v.focus = focusQuery
 		} else {
@@ -679,25 +806,30 @@ func (v *View) HandleKey(k layout.Key) bool {
 		return true
 	}
 
-	if v.focus == focusScope {
+	if !v.inBrowse && v.focus == focusScope {
 		// Enter commits the scope edit by returning focus to the query,
-		// mirroring how Enter advances focus in ReplaceView; move_down/
-		// move_up/open_selection don't apply here — they act on the
-		// results list, which isn't what's focused.
+		// mirroring how Enter advances focus in ReplaceView; the results
+		// actions don't apply here — they act on the list, which isn't
+		// what's focused.
 		if k.Named == layout.KeyEnter {
 			v.focus = focusQuery
 			return true
 		}
 		if v.scopeField.HandleKey(k) {
 			v.applyScopeChange()
+			return true
 		}
-		return true
+		return !v.docked
 	}
 
-	switch v.keymap[k.String()] {
+	switch action {
 	case "open_selection":
 		v.selectCurrent()
-		if v.OnClose != nil {
+		if v.docked {
+			// Focus moves to the opened file; coming back lands in browse,
+			// where "[" / "]" work straight away.
+			v.browse()
+		} else if v.OnClose != nil {
 			v.OnClose()
 		}
 		return true
@@ -707,24 +839,29 @@ func (v *View) HandleKey(k layout.Key) bool {
 	case "move_up":
 		v.moveCursor(-1)
 		return true
+	case "edit_query":
+		v.EditQuery()
+		return true
 	}
 
 	// Left/Right/Home/End/Backspace and typed text all edit the query's
-	// caret directly, checking k.Named first and never consulting
-	// v.keymap — the same pattern textfield.TextField.HandleKey already
-	// implements for ReplaceView's own Find/Replace fields (replace.go), and
-	// handlePromptKey's for the file tree's inline prompt. Only
-	// Esc/Tab/Enter/Up/Down/Ctrl+K/Ctrl+T are ever remappable actions in this
-	// mode (see Scope); every other key stays typeable.
-	if v.query.HandleKey(k) {
+	// caret directly (see textfield.TextField.HandleKey).
+	if !v.inBrowse && v.query.HandleKey(k) {
 		v.refilter()
+		return true
 	}
-	return true
+	return !v.docked
+}
+
+// isTypedText reports whether k types a character: it carries text and no
+// Ctrl/Alt/Super modifier.
+func isTypedText(k layout.Key) bool {
+	return k.Text != "" && k.Mods&(layout.ModCtrl|layout.ModAlt|layout.ModSuper) == 0
 }
 
 // ScrollState implements layout.Scrollable.
 func (v *View) ScrollState() layout.ScrollState {
-	if v.mode == modeReplace {
+	if v.mode == ModeReplace {
 		return v.replace.ScrollState()
 	}
 	return layout.ScrollState{Top: v.scrollTop, Viewport: v.lastListRows, Total: v.resultCount()}
@@ -736,7 +873,7 @@ func (v *View) ScrollState() layout.ScrollState {
 // that leaves the cursor outside the new viewport has to move the cursor
 // too, or the next Render would silently undo it.
 func (v *View) ScrollTo(top int) {
-	if v.mode == modeReplace {
+	if v.mode == ModeReplace {
 		v.replace.ScrollTo(top)
 		return
 	}
@@ -773,7 +910,7 @@ func (v *View) selectCurrent() {
 	if v.OnSelect == nil || v.cursor < 0 || v.cursor >= v.resultCount() {
 		return
 	}
-	if v.mode == modeContent {
+	if v.mode == ModeContent {
 		m := v.contentMatches[v.cursor]
 		v.OnSelect(filepath.Join(v.root, m.path), m.line)
 		return
@@ -804,7 +941,7 @@ func (v *View) moveCursor(delta int) {
 // something I've already touched?" is answerable while searching content,
 // not only while searching filenames.
 func (v *View) rowSegments(idx int) []layout.Segment {
-	if v.mode == modeContent {
+	if v.mode == ModeContent {
 		m := v.contentMatches[idx]
 		status := v.status[m.path]
 		prefix := fmt.Sprintf("%s:%d: ", m.path, m.line)

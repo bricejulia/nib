@@ -289,14 +289,23 @@ func TestReplaceViewReplaceCurrentOnFileRowIsNoOp(t *testing.T) {
 	}
 }
 
-func TestReplaceViewEscClosesWhileTyping(t *testing.T) {
+func TestReplaceViewEscLeavesFieldThenCloses(t *testing.T) {
 	v := NewReplaceView(t.TempDir())
 	v.Open()
 	closed := false
 	v.OnClose = func() { closed = true }
 	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+	if closed || v.focus != focusResults {
+		t.Fatalf("the first Esc should move to the results list, got focus=%v closed=%v", v.focus, closed)
+	}
+	v.HandleKey(layout.Key{Text: "/"})
+	if v.focus != focusFind {
+		t.Fatalf("/ in the results list should return to Find, got focus=%v", v.focus)
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
 	if !closed {
-		t.Error("expected Esc to close the overlay")
+		t.Error("expected Esc from the results list to close")
 	}
 }
 

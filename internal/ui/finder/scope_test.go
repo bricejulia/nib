@@ -123,7 +123,7 @@ func TestFocusScopeTogglesTypingTargetAndEnterReturnsToQuery(t *testing.T) {
 func TestScopeFieldNarrowsContentSearchViaGitGrep(t *testing.T) {
 	dir := newScopedTestRepo(t)
 	v := New(dir)
-	v.HandleKey(layout.Key{Named: layout.KeyTab}) // content mode
+	nextMode(v) // content mode
 
 	v.HandleKey(layout.Key{Text: "k", Mods: layout.ModCtrl})
 	for _, r := range "sub" {
@@ -144,8 +144,8 @@ func TestScopeCarriesForwardWhenTabbingIntoReplaceMode(t *testing.T) {
 	v := New("/project")
 	v.OpenScoped("/project/sub")
 
-	v.HandleKey(layout.Key{Named: layout.KeyTab}) // content mode
-	v.HandleKey(layout.Key{Named: layout.KeyTab}) // replace mode
+	nextMode(v) // content mode
+	nextMode(v) // replace mode
 
 	if got := v.replace.scopeField.String(); got != "sub" {
 		t.Errorf("replace.scopeField = %q, want %q", got, "sub")
@@ -241,7 +241,7 @@ func TestOpenWithQueryScopedToAFileSearchesOnlyThatFile(t *testing.T) {
 
 	v.OpenWithQueryScoped("needle", filepath.Join(dir, "top.go"))
 
-	if v.mode != modeContent {
+	if v.mode != ModeContent {
 		t.Fatalf("mode = %v, want content search", v.mode)
 	}
 	if got := v.scopeField.String(); got != "top.go" {
@@ -258,7 +258,7 @@ func TestOpenReplaceWithQueryScopedPrefillsFindAndScope(t *testing.T) {
 
 	v.OpenReplaceWithQueryScoped("needle", filepath.Join(dir, "sub", "inner.go"))
 
-	if v.mode != modeReplace {
+	if v.mode != ModeReplace {
 		t.Fatalf("mode = %v, want replace", v.mode)
 	}
 	if got := v.replace.find.String(); got != "needle" {
