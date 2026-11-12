@@ -63,7 +63,7 @@ func TestRefilterContentDoesNotBlockWhenPostIsSet(t *testing.T) {
 	v := New(dir)
 	c := &postCollector{}
 	v.Post = c.post
-	v.mode = modeContent
+	v.mode = ModeContent
 
 	// 2 chars: at minContentQueryLen, so this actually starts a search
 	// (a 1-char query stays in the "type more" state and never reaches
@@ -87,7 +87,7 @@ func TestContentSearchDeliversResultViaPost(t *testing.T) {
 	v := New(dir)
 	c := &postCollector{}
 	v.Post = c.post
-	v.mode = modeContent
+	v.mode = ModeContent
 
 	for _, r := range "needle" {
 		v.HandleKey(layout.Key{Text: string(r)})
@@ -115,7 +115,7 @@ func TestContentSearchDebounceCollapsesRapidKeystrokesIntoOneSearch(t *testing.T
 	v := New(dir)
 	c := &postCollector{}
 	v.Post = c.post
-	v.mode = modeContent
+	v.mode = ModeContent
 
 	// Type all 6 characters faster than the (already-shrunk) debounce
 	// window, as a real fast typist would relative to a 150ms debounce.
@@ -137,7 +137,7 @@ func TestContentSearchStaleResultIsDiscarded(t *testing.T) {
 	v := New(dir)
 	c := &postCollector{}
 	v.Post = c.post
-	v.mode = modeContent
+	v.mode = ModeContent
 
 	v.HandleKey(layout.Key{Text: "n"})
 	staleGen := v.searchGen
@@ -160,7 +160,7 @@ func TestCancelPendingSearchStopsDebounceTimer(t *testing.T) {
 	v := New(dir)
 	c := &postCollector{}
 	v.Post = c.post
-	v.mode = modeContent
+	v.mode = ModeContent
 
 	// 2 chars: at minContentQueryLen, so a real debounce timer actually
 	// gets armed (a 1-char query never reaches that point, which would
@@ -185,7 +185,7 @@ func TestSearchingIndicatorShowsWhilePending(t *testing.T) {
 	v := New(dir)
 	c := &postCollector{}
 	v.Post = c.post
-	v.mode = modeContent
+	v.mode = ModeContent
 
 	for _, r := range "needle" {
 		v.HandleKey(layout.Key{Text: string(r)})

@@ -12,20 +12,17 @@ import (
 	"github.com/bricejulia/nib/internal/ui/textfield"
 )
 
-// ReplaceScope is the replace-in-path overlay's actions and their
-// default keys, overridable via the user config's "replace" scope (see
-// internal/config). Deliberately narrow, like finder's own Scope:
-// most of these only ever apply once focus is on the results list (see
-// ReplaceView.HandleKey) — while typing into the Find/Replace/Scope
-// fields, every character stays typeable the same way filetree's in-pane
-// prompt keeps every character typeable, and Esc/Tab are structural to the
-// pane (close / switch field) rather than remappable actions, so neither
-// is listed here. "focus_scope" is the one exception: like Esc/Tab it
-// applies regardless of which field currently has focus (see HandleKey),
-// but unlike them it's a genuine, remappable action.
+// ReplaceScope is find & replace mode's actions and their default keys,
+// overridable via the user config's "replace" scope (see internal/config).
+// All but "focus_scope" only apply once focus is on the results list (the
+// "browse" state, see ReplaceView.HandleKey): while typing into the
+// Find/Replace/Scope fields every character stays typeable, and Esc/Enter/
+// Tab are structural there (leave the field / next field) rather than
+// remappable actions.
 var ReplaceScope = config.Scope{Name: "replace", Title: "Find & Replace", Actions: config.Actions{
-	{ID: "move_down", Keys: []string{"Down"}, Desc: "Move selection down (results list)"},
-	{ID: "move_up", Keys: []string{"Up"}, Desc: "Move selection up (results list)"},
+	{ID: "move_down", Keys: []string{"Down", "j"}, Desc: "Move selection down (results list)"},
+	{ID: "move_up", Keys: []string{"Up", "k"}, Desc: "Move selection up (results list)"},
+	{ID: "edit_query", Keys: []string{"/", "i"}, Desc: "Back to the Find field (results list)"},
 	{ID: "toggle", Keys: []string{"Space"}, Desc: "Toggle the occurrence, or a whole file's occurrences"},
 	{ID: "replace_current", Keys: []string{"Enter"}, Desc: "Replace just this occurrence (results list)"},
 	{ID: "replace_all", Keys: []string{"a"}, Desc: "Replace every checked occurrence"},
@@ -121,6 +118,10 @@ type ReplaceView struct {
 	Post func(ev interface{})
 
 	keymap map[string]string
+
+	// docked mirrors finder.View's own (see View.SetDocked): keys nothing
+	// here used are reported unconsumed instead of swallowed.
+	docked bool
 }
 
 // NewReplaceView creates a replace-in-path view rooted at absPath. Call
@@ -143,7 +144,7 @@ func (v *ReplaceView) Title() string {
 }
 
 // SetScope sets the scope field's starting text — called from
-// finder.View (toggleMode, openReplace) right before Open, so a scope set
+// finder.View (setMode, openReplace) right before Open, so a scope set
 // in file/content mode, or pre-filled via OpenScoped/OpenReplaceScoped,
 // carries forward into replace mode as this view's own, independently
 // editable, starting value. A no-op call with "" (the default) leaves
@@ -381,39 +382,46 @@ func (v *ReplaceView) fireReplace(occs []editor.Occurrence) {
 	v.OnReplaceAll(v.find.String(), v.replace.String(), occs)
 }
 
-// HandleKey always reports the key consumed: a modal should never leak
-// input through to whatever is behind it.
+// HandleKey routes a key by focus. The text fields (Find, Replace, scope)
+// are this mode's "typing" state: every printable key is typed, Enter
+// advances to the next field, and Esc drops to the results list — the
+// "browse" state, where keys go through v.keymap (Space, Enter, a, j/k, and
+// "/"/"i" back to the Find field) and Esc closes. finder.View checks its own
+// next_view/prev_view keys first while Browsing, so "[" and "]" cycle views
+// from the results list but stay typeable in the fields.
 //
-// Esc and Tab are structural to this pane (close / switch field) rather
-// than remappable actions — the same trade filetree's in-pane prompt makes
-// for Esc — so they're intercepted before v.keymap is ever consulted, and
-// aren't listed in ReplaceScope. Enter is likewise structural
-// while focus is off the results list (advance to the next field, same as
-// Tab). "focus_scope" is checked next, before the focus-specific branches,
-// since — like Esc/Tab — it needs to apply regardless of which field
-// currently has focus. Everything else routes to whichever field has
-// focus (typing, never through the keymap — see
-// textfield.TextField.HandleKey) or, once focus is on the results list,
-// through v.keymap.
+// Tab cycles fields as an overlay; docked it is left to the global keymap
+// (next pane), the same as every other key nothing here used. As an
+// overlay every key is reported consumed — a modal never leaks input.
 func (v *ReplaceView) HandleKey(k layout.Key) bool {
 	if k.EventType == layout.EventRelease {
 		return true
 	}
 
 	if v.resultShown {
-		if k.Named == layout.KeyEsc && v.OnClose != nil {
-			v.OnClose()
+		if k.Named == layout.KeyEsc {
+			if v.OnClose != nil {
+				v.OnClose()
+			}
+			return true
 		}
-		return true
+		return !v.docked
 	}
 
 	switch k.Named {
 	case layout.KeyEsc:
-		if v.OnClose != nil {
-			v.OnClose()
+		if v.focus == focusResults {
+			if v.OnClose != nil {
+				v.OnClose()
+			}
+		} else {
+			v.focus = focusResults
 		}
 		return true
 	case layout.KeyTab:
+		if v.docked {
+			return false
+		}
 		v.cycleFocus()
 		return true
 	}
@@ -434,17 +442,14 @@ func (v *ReplaceView) HandleKey(k layout.Key) bool {
 		}
 		if v.scopeField.HandleKey(k) {
 			v.refilter()
+			return true
 		}
-		return true
+		return !v.docked
 	}
 
 	if v.focus != focusResults {
-		// Enter advances focus the same way Tab does (Find -> Replace ->
-		// Results), so the field-to-field flow still works once this pane
-		// is embedded as finder.View's third mode, where Tab is taken for
-		// cycling modes instead — see View.HandleKey. Additive here: it
-		// doesn't take anything away from Tab's existing behavior when
-		// this pane is shown standalone (Ctrl+R).
+		// Enter advances Find -> Replace -> Results, the same as Tab does
+		// as an overlay.
 		if k.Named == layout.KeyEnter {
 			v.cycleFocus()
 			return true
@@ -453,7 +458,10 @@ func (v *ReplaceView) HandleKey(k layout.Key) bool {
 		if v.focus == focusReplace {
 			field = &v.replace
 		}
-		if field.HandleKey(k) && v.focus == focusFind {
+		if !field.HandleKey(k) {
+			return !v.docked
+		}
+		if v.focus == focusFind {
 			v.refilter()
 		}
 		return true
@@ -470,8 +478,30 @@ func (v *ReplaceView) HandleKey(k layout.Key) bool {
 		v.moveCursor(1)
 	case "move_up":
 		v.moveCursor(-1)
+	case "edit_query":
+		v.focus = focusFind
+	default:
+		return !v.docked
 	}
 	return true
+}
+
+// Browsing reports whether focus is on the results list (or the
+// post-replace summary) rather than a text field — the state in which
+// finder.View's next_view/prev_view keys apply. See HandleKey.
+func (v *ReplaceView) Browsing() bool {
+	return v.resultShown || v.focus == focusResults
+}
+
+// EditFind moves focus back to the Find field, keeping its text.
+func (v *ReplaceView) EditFind() {
+	v.focus = focusFind
+}
+
+// Browse moves focus to the results list without touching anything else —
+// used when the panel cycles into this mode with "[" / "]".
+func (v *ReplaceView) Browse() {
+	v.focus = focusResults
 }
 
 func (v *ReplaceView) cycleFocus() {
@@ -637,7 +667,7 @@ func (v *ReplaceView) statusLine() string {
 		return ""
 	default:
 		files, occs := v.counts()
-		return fmt.Sprintf("%d occurrence(s) in %d file(s) — Tab/Enter: switch field, Space: toggle, Enter: replace one, a: replace all",
+		return fmt.Sprintf("%d occurrence(s) in %d file(s) — Enter: next field, Esc: results · Space: toggle, Enter: replace one, a: replace all",
 			occs, files)
 	}
 }

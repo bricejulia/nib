@@ -321,6 +321,23 @@ func TestViewNextPrevViewToggleMode(t *testing.T) {
 	}
 }
 
+func TestViewOverflowHookReplacesWrapAround(t *testing.T) {
+	v := New(fixtureRoot(t))
+	var dirs []int
+	v.OnViewOverflow = func(dir int) { dirs = append(dirs, dir) }
+
+	v.PrevView() // before Files
+	v.NextView() // Changes
+	v.NextView() // past Changes
+
+	if len(dirs) != 2 || dirs[0] != -1 || dirs[1] != 1 {
+		t.Fatalf("overflows = %v, want [-1 1]", dirs)
+	}
+	if v.mode != ModeChanges {
+		t.Errorf("an overflow should leave the mode alone, got %v", v.mode)
+	}
+}
+
 func TestViewBracketKeysCycleMode(t *testing.T) {
 	v := New(fixtureRoot(t))
 	if !v.HandleKey(layout.Key{Text: "]"}) {

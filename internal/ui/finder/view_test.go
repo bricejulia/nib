@@ -39,6 +39,14 @@ func (w *fakeWindow) Clear() {
 	}
 }
 
+// nextMode switches to the next search mode the way a user does — Esc to
+// browse, "]" — and goes back to typing its query, so the test can type.
+func nextMode(v *View) {
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+	v.HandleKey(layout.Key{Text: "]"})
+	v.HandleKey(layout.Key{Text: "/"})
+}
+
 func newTestView(items ...string) *View {
 	v := New("/project")
 	v.items = items
@@ -133,16 +141,20 @@ func TestSetKeymapAddsCtrlBoundActionWithoutBreakingTyping(t *testing.T) {
 	}
 }
 
-func TestSetKeymapOverridingAPlainLetterStopsItFromBeingTyped(t *testing.T) {
+func TestSetKeymapPlainLetterOverrideAppliesOnlyWhileBrowsing(t *testing.T) {
 	v := newTestView("a.go", "b.go", "c.go")
-	v.SetKeymap(map[string]string{"j": "move_down"})
+	v.SetKeymap(map[string]string{"x": "move_down"})
 
-	v.HandleKey(layout.Key{Text: "j"})
-	if v.cursor != 1 {
-		t.Fatalf("cursor = %d, want 1 (j remapped to move_down)", v.cursor)
+	v.HandleKey(layout.Key{Text: "x"})
+	if v.query.String() != "x" || v.cursor != 0 {
+		t.Fatalf("while typing, x should be typed: query = %q, cursor = %d", v.query.String(), v.cursor)
 	}
-	if v.query.Len() != 0 {
-		t.Fatalf("query = %q, want empty: a plain-letter override intentionally stops that letter from being typed", v.query.String())
+
+	v.HandleKey(layout.Key{Named: layout.KeyBackspace})
+	v.HandleKey(layout.Key{Named: layout.KeyEsc}) // browse
+	v.HandleKey(layout.Key{Text: "x"})
+	if v.cursor != 1 {
+		t.Fatalf("cursor = %d, want 1 (x remapped to move_down, browsing)", v.cursor)
 	}
 }
 
@@ -177,12 +189,16 @@ func TestViewEscClosesWithoutSelecting(t *testing.T) {
 	v.OnClose = func() { closed = true }
 
 	v.HandleKey(layout.Key{Named: layout.KeyEsc})
+	if closed {
+		t.Fatal("the first Esc should only leave the query for browse")
+	}
+	v.HandleKey(layout.Key{Named: layout.KeyEsc})
 
 	if selected {
 		t.Error("Esc should not trigger OnSelect")
 	}
 	if !closed {
-		t.Error("expected OnClose to be called after Esc")
+		t.Error("expected OnClose to be called after Esc from browse")
 	}
 }
 
@@ -350,31 +366,31 @@ func TestViewLeftRightDoNotFilterResults(t *testing.T) {
 	}
 }
 
-func TestViewTabCyclesThroughAllThreeModesAndTitles(t *testing.T) {
+func TestViewNextViewCyclesThroughAllThreeModesAndTitles(t *testing.T) {
 	v := newTestView("main.go")
 	if v.Title() != "Find File" {
 		t.Fatalf("expected initial title %q, got %q", "Find File", v.Title())
 	}
 
-	v.HandleKey(layout.Key{Named: layout.KeyTab})
-	if v.mode != modeContent {
-		t.Fatal("a first Tab should switch to content mode")
+	nextMode(v)
+	if v.mode != ModeContent {
+		t.Fatal("a first ] should switch to content mode")
 	}
 	if v.Title() != "Find in Files" {
 		t.Errorf("expected title %q in content mode, got %q", "Find in Files", v.Title())
 	}
 
-	v.HandleKey(layout.Key{Named: layout.KeyTab})
-	if v.mode != modeReplace {
-		t.Fatal("a second Tab should switch to replace mode")
+	nextMode(v)
+	if v.mode != ModeReplace {
+		t.Fatal("a second ] should switch to replace mode")
 	}
 	if v.Title() != "Find & Replace in Path" {
 		t.Errorf("expected title %q in replace mode, got %q", "Find & Replace in Path", v.Title())
 	}
 
-	v.HandleKey(layout.Key{Named: layout.KeyTab})
-	if v.mode != modeFiles {
-		t.Fatal("a third Tab should cycle back to file mode")
+	nextMode(v)
+	if v.mode != ModeFiles {
+		t.Fatal("a third ] should cycle back to file mode")
 	}
 }
 
@@ -384,8 +400,8 @@ func TestViewTabCyclesThroughAllThreeModesAndTitles(t *testing.T) {
 // like file/content mode — see View.toggleMode and View.HandleKey.
 func TestViewReplaceModeDelegatesToReplaceView(t *testing.T) {
 	v := newTestView("main.go")
-	v.HandleKey(layout.Key{Named: layout.KeyTab}) // content mode
-	v.HandleKey(layout.Key{Named: layout.KeyTab}) // replace mode
+	nextMode(v) // content mode
+	nextMode(v) // replace mode
 
 	typeText := "todo"
 	for _, r := range typeText {
@@ -413,7 +429,7 @@ func TestOpenWithQueryEntersContentModeWithQueryPreFilled(t *testing.T) {
 
 	v.OpenWithQuery("myIdentifier")
 
-	if v.mode != modeContent {
+	if v.mode != ModeContent {
 		t.Fatal("expected OpenWithQuery to switch to content-search mode")
 	}
 	if v.query.String() != "myIdentifier" {
@@ -423,17 +439,17 @@ func TestOpenWithQueryEntersContentModeWithQueryPreFilled(t *testing.T) {
 
 func TestViewOpenAlwaysResetsToFileMode(t *testing.T) {
 	v := newTestView("main.go")
-	v.HandleKey(layout.Key{Named: layout.KeyTab}) // switch to content mode
+	nextMode(v) // switch to content mode
 	v.Open()
-	if v.mode != modeFiles {
+	if v.mode != ModeFiles {
 		t.Error("Open should always reset back to file mode")
 	}
 }
 
 func TestViewContentModeRequiresMinimumQueryLength(t *testing.T) {
 	v := newTestView("main.go")
-	v.HandleKey(layout.Key{Named: layout.KeyTab}) // content mode
-	v.HandleKey(layout.Key{Text: "a"})            // 1 char: below minContentQueryLen
+	nextMode(v)                        // content mode
+	v.HandleKey(layout.Key{Text: "a"}) // 1 char: below minContentQueryLen
 
 	w := newFakeWindow(60, 10)
 	v.Render(w)
@@ -445,7 +461,7 @@ func TestViewContentModeRequiresMinimumQueryLength(t *testing.T) {
 func TestViewContentModeSearchesFileContentsViaGitGrep(t *testing.T) {
 	dir := newContentSearchRepo(t)
 	v := New(dir)
-	v.HandleKey(layout.Key{Named: layout.KeyTab}) // content mode
+	nextMode(v) // content mode
 	for _, r := range "needle" {
 		v.HandleKey(layout.Key{Text: string(r)})
 	}
@@ -468,7 +484,7 @@ func TestViewContentModeSearchesFileContentsViaGitGrep(t *testing.T) {
 func TestViewContentModeDimsThePathLinePrefix(t *testing.T) {
 	dir := newContentSearchRepo(t)
 	v := New(dir)
-	v.HandleKey(layout.Key{Named: layout.KeyTab}) // content mode
+	nextMode(v) // content mode
 	for _, r := range "needle" {
 		v.HandleKey(layout.Key{Text: string(r)})
 	}
@@ -494,7 +510,7 @@ func TestViewContentModeDimsThePathLinePrefix(t *testing.T) {
 func TestViewContentModeShowsGitStatusMarker(t *testing.T) {
 	dir := newContentSearchRepo(t)
 	v := New(dir)
-	v.HandleKey(layout.Key{Named: layout.KeyTab}) // content mode
+	nextMode(v) // content mode
 	for _, r := range "needle" {
 		v.HandleKey(layout.Key{Text: string(r)})
 	}
@@ -520,7 +536,7 @@ func TestViewContentModeShowsGitStatusMarker(t *testing.T) {
 func TestViewContentModeSelectReportsPathAndLine(t *testing.T) {
 	dir := newContentSearchRepo(t)
 	v := New(dir)
-	v.HandleKey(layout.Key{Named: layout.KeyTab})
+	nextMode(v)
 	for _, r := range "needle" {
 		v.HandleKey(layout.Key{Text: string(r)})
 	}
