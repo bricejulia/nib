@@ -404,12 +404,27 @@ wrapping around:
 
     Files ↔ Changes ↔ Find File ↔ Find in Files ↔ Replace ↔ (Files)
 
-`Ctrl+P` jumps to Find File, `Ctrl+R` to Replace, and `Ctrl+F` (when the
-language server has nothing) to Find in Files, ready to type. `Tab` always moves
-to the next pane, so the code stays visible and the results stay listed while
-you work. Each search view keeps its query and results when you cycle away.
-In single-file mode, where there is no panel, the finder opens as a centred
-popup instead, with the same keys.
+`Ctrl+R` jumps to Replace. `Tab` always moves to the next pane, so the code
+stays visible and the results stay listed while you work. Each search view
+keeps its query and results when you cycle away.
+
+**Quick search popup**: `Ctrl+P` (Find File) and `Ctrl+F` when the language
+server has nothing (Find in Files, on the word under the cursor) open the
+same search as a centred popup, for a one-off lookup:
+
+- `Enter` opens the result and closes the popup; `Esc` closes it.
+- Either way the search stays in the panel's Find view (`]` / `[` to get
+  there), so you can come back to it.
+- `Tab` moves the search into the panel straight away, results and all,
+  with focus on the list.
+- `Ctrl+P` again shows the last query, selected: typing replaces it, `Enter`
+  or the arrows reuse it.
+- With Find File already showing in the panel, `Ctrl+P` returns to its query
+  there instead.
+
+In single-file mode, where there is no panel, the finder is always a popup:
+`Esc` goes to browse first, where `]` / `[` switch views, and `Tab` does
+nothing.
 
 The search views have two states, like the editor's Insert mode:
 
@@ -419,11 +434,7 @@ The search views have two states, like the editor's Insert mode:
 | Browse (no caret) | `]` / `[` next / previous view · `j`/`k` or `↑`/`↓` select · `Enter` opens · `/` or `i` back to typing · `Esc` back to Files |
 
 Arriving with `]` / `[` lands in browse, so you can keep cycling; opening a
-result moves focus to it and leaves the finder in browse. `Ctrl+P` from
-another pane returns to the query with its results intact.
-
-The finder's former `switch_mode` action (`Tab`) is gone; a config file
-that still names it gets the usual unknown-action warning.
+result moves focus to it and leaves the finder in browse.
 
 The filename and content-search modes show each file's git status marker in
 the leftmost column, colored the same way the file tree colors it.
