@@ -9,7 +9,7 @@ all: build
 
 ## build: compile the binary
 build:
-	$(GO) build -o $(BINARY) cmd/nib/main.go
+	$(GO) build -o $(BINARY) ./cmd/nib
 
 ## installl: install the binary
 install:
@@ -17,7 +17,7 @@ install:
 
 ## run: run the server (loads env from .env)
 run:
-	$(GO) run cmd/nib/main.go
+	$(GO) run ./cmd/nib
 
 ## vet: run go vet
 vet:
@@ -53,4 +53,4 @@ clean:
 
 ## lint-install: install golangci-lint to GOPATH/bin
 lint-install:
-	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
