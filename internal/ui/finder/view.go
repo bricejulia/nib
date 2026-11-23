@@ -50,6 +50,9 @@ var Scope = config.Scope{Name: "finder", Title: "Finder", Actions: config.Action
 	// node_modules can be huge, so they're only searched on request — or
 	// when the scope itself points into one (see effectiveIncludeIgnored).
 	{ID: "toggle_ignored", Keys: []string{"Ctrl+t"}, Desc: "Include git-ignored files (node_modules, vendor, …) in file and content search"},
+	// Popup only (see OnDock): docked, Tab isn't consumed, so it still
+	// reaches the global keymap's "switch pane".
+	{ID: "dock_to_panel", Keys: []string{"Tab"}, Desc: "Popup: keep this search in the files panel, results and all"},
 }}
 
 // viewFocus is which field a keystroke currently goes to: the search
@@ -211,6 +214,17 @@ type View struct {
 	// (in the file tree's slot) rather than a modal overlay. See
 	// SetDocked for what changes.
 	docked bool
+
+	// OnDock, if set, is called by dock_to_panel (Tab) while the finder
+	// is shown as a popup: the host moves it into the files panel,
+	// query and results intact. nil (single-file mode, no panel) leaves
+	// Tab doing nothing.
+	OnDock func()
+
+	// querySelected is set by Reopen: the previous query is shown
+	// selected, so the first typed character replaces it while arrows
+	// and Enter use it as it is. Cleared by any key.
+	querySelected bool
 }
 
 // New creates a finder rooted at absPath. Call Open each time it's about
@@ -308,6 +322,31 @@ func (v *View) openScoped(scope string) {
 	v.scrollTop = 0
 	v.refilter()
 }
+
+// Reopen is Open for a popup that should remember the last search: it
+// re-indexes files and resets the scope like Open, but keeps the query
+// text, shown selected (see querySelected) so typing starts over and
+// Enter reuses it.
+func (v *View) Reopen() {
+	v.ReopenScoped("")
+}
+
+// ReopenScoped is Reopen with the scope pre-filled from absDir, as
+// OpenScoped is to Open.
+func (v *View) ReopenScoped(absDir string) {
+	query := v.query.String()
+	if v.mode == ModeReplace {
+		query = ""
+	}
+	v.openScoped(relScope(v.root, absDir))
+	v.query = textfield.New(query)
+	v.querySelected = query != ""
+	v.refilter()
+}
+
+// Browse puts the finder in browse — the results list has focus — as
+// after Esc. The host uses it when a popup search moves into the panel.
+func (v *View) Browse() { v.browse() }
 
 // OpenWithQuery opens the finder already in content-search mode with
 // query pre-filled and searched — used by the global "find references"
@@ -688,10 +727,23 @@ func (v *View) Render(w layout.Window) {
 	w.Clear()
 
 	hint := "(Esc: browse)"
-	if v.inBrowse {
+	switch {
+	case !v.docked && v.OnDock != nil:
+		hint = "(Esc: close · Tab: keep in panel)"
+	case !v.docked:
+		hint = "(Esc: close)"
+	case v.inBrowse:
 		hint = "([ ] views · / search)"
 	}
-	w.Println(0, layout.Segment{Text: v.promptPrefix() + v.query.String() + "  " + hint})
+	queryStyle := layout.Style{}
+	if v.querySelected {
+		queryStyle.Attr = layout.AttrReverse
+	}
+	w.Println(0,
+		layout.Segment{Text: v.promptPrefix()},
+		layout.Segment{Text: v.query.String(), Style: queryStyle},
+		layout.Segment{Text: "  " + hint},
+	)
 	w.Println(1, v.scopeRowSegments()...)
 
 	listRows := rows - 2
@@ -782,12 +834,33 @@ func (v *View) HandleKey(k layout.Key) bool {
 		action = ""
 	}
 
+	// A selected query (see Reopen) is replaced by typed text and kept by
+	// everything else; either way the selection ends with this key.
+	if v.querySelected {
+		v.querySelected = false
+		if !v.inBrowse && v.focus == focusQuery && isTypedText(k) {
+			v.query = textfield.TextField{}
+		}
+	}
+
 	switch action {
 	case "close":
-		if !v.inBrowse {
+		// The panel's popup (it can dock, so it has a panel behind it)
+		// closes on the first Esc: switching views is the panel's job.
+		// Otherwise the first Esc leaves the query for browse, where
+		// "[" / "]" switch views, and the second closes.
+		if !v.inBrowse && (v.docked || v.OnDock == nil) {
 			v.browse()
 		} else if v.OnClose != nil {
 			v.OnClose()
+		}
+		return true
+	case "dock_to_panel":
+		if v.docked {
+			return false
+		}
+		if v.OnDock != nil {
+			v.OnDock()
 		}
 		return true
 	case "toggle_ignored":

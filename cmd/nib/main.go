@@ -652,6 +652,38 @@ func run() error {
 		panelView.ShowFinder()
 		app.FocusLeaf(fileTreeLeaf.ID)
 	}
+	// The Ctrl+P / Ctrl+F popup: the panel's own finder, shown as an
+	// overlay instead (SetDocked(false)), so a one-off search opens and
+	// closes in one go while its query and results stay behind in the
+	// panel's search views. Tab (OnDock) moves it into the panel there and
+	// then. Single-file mode has no panel: its finder is always the
+	// overlay, so this is just showFinder there.
+	panelFinderClose := finderView.OnClose
+	closeFinderPopup := func() {
+		app.CloseOverlay()
+		finderView.SetDocked(true)
+		finderView.OnClose = panelFinderClose
+		finderView.OnDock = nil
+	}
+	showFinderPopup := func() {
+		if singleFile {
+			showFinder()
+			return
+		}
+		if panelView.FinderActive() {
+			// Never draw the same search twice.
+			panelView.ShowTree(treeView.CurrentMode())
+		}
+		finderView.SetDocked(false)
+		finderView.OnClose = closeFinderPopup
+		finderView.OnDock = func() {
+			closeFinderPopup()
+			finderView.Browse()
+			panelView.ShowFinder()
+			app.FocusLeaf(fileTreeLeaf.ID)
+		}
+		app.ShowOverlay(finderView)
+	}
 	// treeFocused reports whether the file tree itself (not one of the
 	// finder's views) has focus — what "scope to the selected folder"
 	// keys off below.
@@ -684,12 +716,14 @@ func run() error {
 				return
 			}
 		}
+		// Re-indexes the project's files fresh on every open, keeping the
+		// last query (selected, so typing replaces it).
 		if treeFocused() {
-			finderView.OpenScoped(treeView.SelectedDir())
+			finderView.ReopenScoped(treeView.SelectedDir())
 		} else {
-			finderView.Open() // re-index the project's files fresh on every open
+			finderView.Reopen()
 		}
-		showFinder()
+		showFinderPopup()
 	}
 	app.SetDoubleShiftHandler(openFinder)
 
@@ -1206,7 +1240,7 @@ func run() error {
 			} else {
 				finderView.OpenWithQuery(word)
 			}
-			showFinder()
+			showFinderPopup()
 		}
 		dispatched := v.FindReferences(func(locs []lsp.Location, ok bool) {
 			if !ok {
