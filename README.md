@@ -43,6 +43,11 @@ servers — in a codebase small enough to read in an afternoon.
 - **Git integration** — file status in the tree, per-line diff markers in the
   gutter, branch and dirty summary in the status bar, and a file's history
   with each commit's diff.
+- **Merge-conflict resolver** — after a merge, rebase or cherry-pick stops,
+  pick the left or right side of each conflict (or both, or neither) with one
+  key, or let the magic wand resolve every conflict whose sides don't
+  actually collide, down to the word. Saving a file with no conflicts left
+  marks it resolved.
 - **In-file search** — `/` with `n`/`N`, case-insensitive, all matches highlighted.
 - **Scratch files** — per-project throwaway notes and snippets (`Ctrl+N` to
   create, `Alt+S` to list), kept out of git in the project's `.nib` folder.
@@ -319,6 +324,31 @@ terminals bypass this while a modifier is held (`Option` on macOS).
 | `H` | Show the diff hunk this line belongs to |
 | `D` | Show this file's full diff against `HEAD` (scrollable; `Esc` closes) |
 | `L` | Show this file's history: the commits that touched it, each one's diff previewed below (see [File history](#file-history)) |
+
+### Editor — merge conflicts
+
+A conflict region's marker lines show as colored bars, with the keys on the
+opening one, and a bar in the gutter tells you which side each line is on.
+Sides are **left** (the upper block) and **right** (the lower block), not
+ours/theirs, which swap meaning during a rebase. The marker labels (`HEAD`,
+the commit and its subject) say which is which.
+
+| Key | Action |
+| --- | --- |
+| `O` | Resolve the conflict under the cursor with its left side |
+| `T` | …with its right side |
+| `Y` | …with both, left then right |
+| `Z` | …with neither |
+| `M` | Magic wand: resolve every conflict in the file whose sides don't collide |
+| `Alt+n` / `Alt+p` | Next / previous conflict, moving on to the next conflicted file |
+
+Each resolution is one `u` to undo. The wand needs each conflict's base
+version: with git's default conflict style it asks git to rewrite the
+conflicts with it (`git checkout --conflict=zdiff3`), so it only does that
+on a file with no unsaved edits. Setting `git config merge.conflictStyle
+zdiff3` avoids the step. Saving a conflicted file with no conflict regions
+left runs `git add` on it; *Mark this file as conflicted again* in the
+action popup (`Ctrl+j`) undoes that.
 
 ### Editor — search and ex-commands
 

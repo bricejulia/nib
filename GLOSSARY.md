@@ -18,6 +18,10 @@ The domain language of nib. Use these words in code, comments, commits and revie
 
 **Save conflict**: a save that found its file changed on disk since nib last synced with it. Resolved by the user: keep mine, or reload from disk.
 
+**Merge conflict**: a file git left unmerged after a merge, rebase or cherry-pick (stopped with `!` in the file tree). Resolved in the editor, one conflict region at a time; saving it with none left marks it resolved (`git add`). Not a Save conflict. Lives in `internal/merge` and `internal/vcs/gitmerge`.
+
+**Conflict region**: one `<<<<<<<` … `>>>>>>>` block git wrote into a merge-conflicted file. It has a **left** side (the upper block), a **right** side (the lower block) and, in the diff3/zdiff3 styles, a **base** (the common ancestor). _Avoid_: ours/theirs in the UI, since they swap meaning during a rebase; hunk.
+
 **Single-file mode**: nib launched on one or more files (`nib a.json b.csv`) instead of a folder. No file tree, no Session, no trust prompt, no repo-wide git status; only the files' own folders are watched, and closing the last tab quits. The files' first folder is still the root for LSP and git.
 
 **Session**: the panes' layout and open tabs for a trusted project folder, saved in its `.nib` folder on exit and restored on the next launch.

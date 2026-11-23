@@ -22,6 +22,7 @@ import (
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/lsp"
 	"github.com/bricejulia/nib/internal/memwatch"
+	"github.com/bricejulia/nib/internal/merge"
 	"github.com/bricejulia/nib/internal/scratch"
 	"github.com/bricejulia/nib/internal/session"
 	"github.com/bricejulia/nib/internal/theme"
@@ -46,6 +47,7 @@ import (
 	"github.com/bricejulia/nib/internal/ui/trustprompt"
 	"github.com/bricejulia/nib/internal/vcs/gitblame"
 	"github.com/bricejulia/nib/internal/vcs/githistory"
+	"github.com/bricejulia/nib/internal/vcs/gitmerge"
 	"github.com/bricejulia/nib/internal/vcs/gitstatus"
 	"github.com/bricejulia/nib/internal/vcs/watch"
 	"github.com/bricejulia/nib/internal/version"
@@ -1016,6 +1018,45 @@ func run() error {
 		}
 		v.OnShowFileDiff = openFileDiff
 		v.OnShowFileHistory = openFileHistory
+		// Merge conflicts (see editor/conflict.go): the git half of the
+		// resolver, which the editor asks for the same way it asks for
+		// blame.
+		v.RegenerateConflictsFunc = func(path string) error {
+			return gitmerge.RegenerateWithBase(absRoot, path)
+		}
+		v.UnresolveFunc = func(path string) error {
+			if err := gitmerge.Unresolve(absRoot, path); err != nil {
+				return err
+			}
+			refreshGitStatus()
+			return nil
+		}
+		v.OnConflictFileDone = func(path string, forward bool) bool {
+			next, ok := nextConflictedFile(absRoot, path, forward)
+			if !ok {
+				return false
+			}
+			app.FocusLeaf(ws.Open(next))
+			ws.Target().JumpToConflict(!forward)
+			return true
+		}
+		// A save that leaves a conflicted file with no conflict regions
+		// marks it resolved, as `git add` would — undoable through the
+		// conflict_unresolve action the notice points at.
+		v.OnSaved = func(path string, lines []string) {
+			if len(merge.Parse(lines)) > 0 {
+				return
+			}
+			if conflicted, err := gitmerge.IsConflicted(absRoot, path); err != nil || !conflicted {
+				return
+			}
+			if err := gitmerge.Stage(absRoot, path); err != nil {
+				v.SetNotice("Could not mark resolved: " + err.Error())
+				return
+			}
+			refreshGitStatus()
+			v.SetNotice("Marked resolved (git add) · undo via Ctrl+j")
+		}
 		// A save that finds its file changed on disk since nib last synced
 		// with it (see editor.Buffer.HasDiskConflict) hands off here rather
 		// than writing — queueConflicts shows reloadconfirmView, guarded

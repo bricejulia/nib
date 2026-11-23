@@ -114,6 +114,8 @@ func Template(scopes []Scope) string {
 #     — the mouse-selection highlight
 #   editor_whitespace
 #     — the space/tab glyphs drawn when "whitespace = true" is set
+#   conflict_left conflict_base conflict_right
+#     — a merge conflict's marker lines and gutter bar, per side
 #   ui_focus_border
 #     — the focused pane's border and title
 #
