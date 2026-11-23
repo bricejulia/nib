@@ -626,11 +626,11 @@ func (c *Client) Close() error {
 	done := make(chan error, 1)
 	go func() { done <- c.cmd.Wait() }()
 	select {
-	case <-done:
+	case <-done: //nolint:errcheck // the exit status of a server told to exit is of no use
 		return nil
 	case <-time.After(shutdownTimeout):
 		_ = c.cmd.Process.Kill()
-		<-done // reap it, so no zombie is left
+		<-done //nolint:errcheck // reap it, so no zombie is left; it was killed, so its status is known
 		return nil
 	}
 }

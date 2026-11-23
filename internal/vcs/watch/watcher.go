@@ -217,7 +217,7 @@ func (w *Watcher) loop() {
 			changes = map[string]ChangeKind{}
 			timerC = nil
 
-		case <-w.fsw.Errors:
+		case <-w.fsw.Errors: //nolint:errcheck // see below: a single watch error is dropped on purpose
 			// Nothing sensible to do with a single watch error in Step 0;
 			// the watcher keeps running on its remaining watched paths.
 
