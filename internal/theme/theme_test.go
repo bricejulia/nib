@@ -76,6 +76,10 @@ func TestDefaultThemeMatchesHardcodedColors(t *testing.T) {
 		EditorSelection:  layout.ColorBrightBlack,
 		EditorWhitespace: layout.ColorBrightBlack,
 
+		ConflictLeft:  layout.ColorBlue,
+		ConflictBase:  layout.ColorBrightBlack,
+		ConflictRight: layout.ColorMagenta,
+
 		UIFocusBorder: layout.ColorCyan,
 	}
 

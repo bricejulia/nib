@@ -11,6 +11,7 @@ import (
 	"github.com/bricejulia/nib/internal/debuglog"
 	"github.com/bricejulia/nib/internal/layout"
 	"github.com/bricejulia/nib/internal/lsp"
+	"github.com/bricejulia/nib/internal/merge"
 	"github.com/bricejulia/nib/internal/textwidth"
 	"github.com/bricejulia/nib/internal/ui/gitstyle"
 	"github.com/bricejulia/nib/internal/ui/textfield"
@@ -133,6 +134,21 @@ var Scope = config.Scope{Name: "editor", Title: "Editor", Actions: config.Action
 	{ID: "show_line_diff", Keys: []string{"H"}, Desc: "Show the diff hunk this line belongs to", Section: "Editor — git", InPopup: true},
 	{ID: "show_file_diff", Keys: []string{"D"}, Desc: "Show this file's full diff against HEAD", Section: "Editor — git", InPopup: true},
 	{ID: "show_file_history", Keys: []string{"L"}, Desc: "Show this file's git history (commits and their diffs)", Section: "Editor — git", InPopup: true},
+	// Merge conflicts (see conflict.go and internal/merge). Sides are left
+	// (the upper block) and right (the lower), never ours/theirs — those
+	// swap meaning during a rebase. Shifted letters again, all free: nib
+	// has no vim "O"/"T"/"Y"/"Z"/"M". Alt+n/Alt+p because "n"/"N" are
+	// search and "]"/"[" switch tabs.
+	{ID: "conflict_take_left", Keys: []string{"O"}, Desc: "Resolve this merge conflict with its left (upper) side", Section: "Editor — merge conflicts", InPopup: true},
+	{ID: "conflict_take_right", Keys: []string{"T"}, Desc: "Resolve this merge conflict with its right (lower) side", Section: "Editor — merge conflicts", InPopup: true},
+	{ID: "conflict_take_both", Keys: []string{"Y"}, Desc: "Resolve this merge conflict with both sides, left then right", Section: "Editor — merge conflicts", InPopup: true},
+	{ID: "conflict_take_neither", Keys: []string{"Z"}, Desc: "Resolve this merge conflict by dropping both sides", Section: "Editor — merge conflicts", InPopup: true},
+	{ID: "conflict_auto_resolve", Keys: []string{"M"}, Desc: "Magic wand: resolve every conflict in this file whose sides don't collide", Section: "Editor — merge conflicts", InPopup: true},
+	{ID: "conflict_next", Keys: []string{"Alt+n"}, Desc: "Next merge conflict, then the next conflicted file", Section: "Editor — merge conflicts", InPopup: true},
+	{ID: "conflict_prev", Keys: []string{"Alt+p"}, Desc: "Previous merge conflict, then the previous conflicted file", Section: "Editor — merge conflicts", InPopup: true},
+	// No key: only ever needed right after a save marked a file resolved
+	// by mistake, and the status line says where to find it.
+	{ID: "conflict_unresolve", Desc: "Mark this file as conflicted again (undo the automatic git add)", Section: "Editor — merge conflicts", InPopup: true},
 }}
 
 // editMode is the editor pane's modal-editing state: Normal (the pane's
@@ -430,6 +446,22 @@ type View struct {
 	// (see internal/ui/historyview). Same overlay-the-app-owns reasoning as
 	// OnShowFileDiff.
 	OnShowFileHistory func(path string)
+
+	// The merge-conflict hooks (see conflict.go), set by cmd/nib/main.go
+	// since the View never runs git itself.
+	//
+	// RegenerateConflictsFunc rewrites path's conflicts with their base
+	// version shown (git checkout --conflict=zdiff3), for the magic wand.
+	RegenerateConflictsFunc func(path string) error
+	// UnresolveFunc marks path conflicted again in git's index.
+	UnresolveFunc func(path string) error
+	// OnConflictFileDone is called when conflict_next/conflict_prev run
+	// past the last/first conflict in path; it reports whether it moved on
+	// to another conflicted file (false wraps within path instead).
+	OnConflictFileDone func(path string, forward bool) bool
+	// OnSaved is called after a tab's buffer was written to disk — main
+	// uses it to mark a fully resolved conflicted file as resolved.
+	OnSaved func(path string, lines []string)
 
 	// OnApplyWorkspaceEdit, if set, is called with a rename request's
 	// resulting lsp.WorkspaceEdit so the caller (which owns the registry of
@@ -1763,7 +1795,14 @@ func (v *View) Render(w layout.Window) {
 	// lives one level down, on the real vaxis.Window), so the offset is
 	// applied directly to the row index passed to Println instead.
 	v.syncSearchMatches()
-	renderBody(w, t, tabWidthOf(t), cols, bodyRows, 1, v.visibleSearchMatches(), v.showWhitespace, v.wrap)
+	var cr conflictRender
+	if t != nil && t.buf != nil {
+		cr.regions = merge.Parse(t.buf.Lines)
+		if len(cr.regions) > 0 {
+			cr.hint = v.conflictHint()
+		}
+	}
+	renderBody(w, t, tabWidthOf(t), cols, bodyRows, 1, v.visibleSearchMatches(), v.showWhitespace, v.wrap, cr)
 
 	// Popups draw last so they sit on top of the file content. Only one can
 	// be up at a time: the tab menu takes priority over everything (it's
@@ -2290,7 +2329,7 @@ var renderTruncationMarker = layout.Segment{Text: "…", Style: layout.Style{Att
 // wider than the pane continues onto the following rows (see wrap.go) and
 // there is no horizontal scrolling; with it off, each line is one row and
 // leftCol scrolls.
-func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, searchMatches []searchMatch, showWhitespace, wrap bool) {
+func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, searchMatches []searchMatch, showWhitespace, wrap bool, cr conflictRender) {
 	if t == nil {
 		return
 	}
@@ -2358,6 +2397,13 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 		if lineTruncated || segTruncated {
 			raw = append(raw, renderTruncationMarker)
 		}
+		// Inside a merge conflict, marker lines become colored bars and
+		// base lines are dimmed (see conflictLine); the gutter's git
+		// column shows which side a line is on instead of its diff status.
+		conflict := conflictLine(cr, ln, line)
+		if conflict.segs != nil {
+			raw = conflict.segs
+		}
 		// Search matches are overlaid while the segments are still raw,
 		// because that's the only stage where a rune index means the same
 		// thing to the highlighter, the cursor, and findMatches alike.
@@ -2380,6 +2426,9 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 		} else {
 			expandedSegs = textwidth.ExpandTabsSegments(raw, tabWidth)
 		}
+		if conflict.hint != nil {
+			expandedSegs = append(expandedSegs, *conflict.hint)
+		}
 		worst := worstSeverity(t.diagnostics[ln])
 		diagSeg := layout.Segment{
 			Text:  diagnosticMarker(worst),
@@ -2388,6 +2437,9 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 		diffSeg := layout.Segment{
 			Text:  gitstyle.LineMarker(t.lineStatus[ln]),
 			Style: gitstyle.LineStyle(t.lineStatus[ln]),
+		}
+		if conflict.in {
+			diffSeg = conflict.gutter
 		}
 		gutterSeg := layout.Segment{
 			Text:  fmt.Sprintf("%*d ", gutterWidth-3, ln+1),
@@ -2421,6 +2473,9 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 				// pad, a selection spanning a blank line would appear to skip it.
 				visible = padSelection(visible, contentWidth)
 			}
+			if conflict.marker {
+				visible = padStyled(visible, width, conflict.segs[0].Style)
+			}
 			if sub > 0 && wrap {
 				gutter = []layout.Segment{{Text: strings.Repeat(" ", gutterWidth)}}
 			}
@@ -2435,6 +2490,13 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 // row is selected" rather than stopping ragged at the end of the text.
 // A no-op once the row is already full.
 func padSelection(segs []layout.Segment, width int) []layout.Segment {
+	return padStyled(segs, width, selectionStyle())
+}
+
+// padStyled extends segs with spaces in style out to width — padSelection's
+// general form, also used to run a conflict marker's colored bar to the
+// pane's edge.
+func padStyled(segs []layout.Segment, width int, style layout.Style) []layout.Segment {
 	used := 0
 	for _, s := range segs {
 		used += textwidth.DisplayWidth(s.Text)
@@ -2444,7 +2506,7 @@ func padSelection(segs []layout.Segment, width int) []layout.Segment {
 	}
 	return append(segs, layout.Segment{
 		Text:  strings.Repeat(" ", width-used),
-		Style: selectionStyle(),
+		Style: style,
 	})
 }
 
@@ -2768,6 +2830,9 @@ func (v *View) runAction(action string, count int) bool {
 	t := v.activeTab()
 	if t == nil {
 		return false
+	}
+	if v.runConflictAction(t, action) {
+		return true
 	}
 
 	switch action {
@@ -3843,6 +3908,9 @@ func (v *View) saveActiveThen(onDone func()) {
 	if v.lsp != nil {
 		v.lsp.Save(t.path)
 	}
+	if v.OnSaved != nil {
+		v.OnSaved(t.path, t.buf.Lines)
+	}
 	if onDone != nil {
 		onDone()
 	}
@@ -3876,6 +3944,9 @@ func (v *View) saveTab(t *tab) (ok bool, conflict SaveConflict, err error) {
 	t.detached = false
 	if v.lsp != nil {
 		v.lsp.Save(t.path)
+	}
+	if v.OnSaved != nil {
+		v.OnSaved(t.path, t.buf.Lines)
 	}
 	return true, SaveConflict{}, nil
 }

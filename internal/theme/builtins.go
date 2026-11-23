@@ -34,6 +34,10 @@ var Default = Theme{
 	EditorSelection:  layout.ColorBrightBlack,
 	EditorWhitespace: layout.ColorBrightBlack,
 
+	ConflictLeft:  layout.ColorBlue,
+	ConflictBase:  layout.ColorBrightBlack,
+	ConflictRight: layout.ColorMagenta,
+
 	UIFocusBorder: layout.ColorCyan,
 }
 
@@ -67,6 +71,10 @@ var Ocean = Theme{
 
 	EditorSelection:  layout.ColorBlue,
 	EditorWhitespace: layout.ColorBrightBlack,
+
+	ConflictLeft:  layout.ColorBlue,
+	ConflictBase:  layout.ColorBrightBlack,
+	ConflictRight: layout.ColorMagenta,
 
 	UIFocusBorder: layout.ColorBrightBlue,
 }
@@ -104,6 +112,10 @@ var Mono = Theme{
 	EditorSelection:  layout.ColorBrightBlack,
 	EditorWhitespace: layout.ColorBrightBlack,
 
+	ConflictLeft:  layout.ColorBrightBlack,
+	ConflictBase:  layout.ColorBlack,
+	ConflictRight: layout.ColorBrightBlack,
+
 	UIFocusBorder: layout.ColorWhite,
 }
 
@@ -136,6 +148,10 @@ var Amber = Theme{
 
 	EditorSelection:  layout.ColorBrightBlack,
 	EditorWhitespace: layout.ColorBrightBlack,
+
+	ConflictLeft:  layout.ColorYellow,
+	ConflictBase:  layout.ColorBrightBlack,
+	ConflictRight: layout.ColorRed,
 
 	UIFocusBorder: layout.ColorBrightYellow,
 }

@@ -76,6 +76,12 @@ const (
 	// The space/tab glyphs drawn when "whitespace = true" is set.
 	EditorWhitespace Role = "editor_whitespace"
 
+	// A merge-conflict region's three parts (see internal/merge): the
+	// background of their marker lines, and their gutter bar.
+	ConflictLeft  Role = "conflict_left"
+	ConflictBase  Role = "conflict_base"
+	ConflictRight Role = "conflict_right"
+
 	// The focused pane's border and title.
 	UIFocusBorder Role = "ui_focus_border"
 )
@@ -92,6 +98,7 @@ var AllRoles = []Role{
 	FiletreeIcon,
 	EditorSelection,
 	EditorWhitespace,
+	ConflictLeft, ConflictBase, ConflictRight,
 	UIFocusBorder,
 }
 
