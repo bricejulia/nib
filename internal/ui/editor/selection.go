@@ -374,6 +374,14 @@ func (v *View) continueTabDrag(m layout.Mouse) bool {
 func (v *View) mousePress(t *tab, m layout.Mouse) bool {
 	pos := v.positionAt(t, m)
 
+	// A plain click on a fold's gutter marker toggles it; one on a closed
+	// fold's placeholder opens it. Neither selects anything.
+	if m.Clicks <= 1 && m.Mods == 0 && v.foldClick(t, m, pos) {
+		t.clearSelection()
+		v.dragging = false
+		return true
+	}
+
 	// Shift+click extends the existing selection instead of starting a new
 	// one, keeping whichever end was already anchored.
 	if m.Mods&layout.ModShift != 0 && t.hasSel {
@@ -406,6 +414,50 @@ func (v *View) mousePress(t *tab, m layout.Mouse) bool {
 	return true
 }
 
+// foldClick handles a click landing on fold UI: the gutter's fold marker
+// column (toggle) or the placeholder drawn after a closed fold's text
+// (open). pos is the click's buffer position, from positionAt. Reports
+// whether the click was one of those.
+func (v *View) foldClick(t *tab, m layout.Mouse, pos position) bool {
+	if foldColumnWidth(t) == 0 {
+		return false
+	}
+	gutter := gutterWidthFor(t)
+	if m.Col == gutter-2 || m.Col == gutter-1 { // the marker, or the space after it
+		if _, ok := foldAtHeader(t.buf.foldRanges(), pos.ln); !ok {
+			return false
+		}
+		if !t.toggleFoldAt(pos.ln) {
+			return false
+		}
+		t.keepCursorVisible()
+		return true
+	}
+	if m.Col < gutter {
+		return false
+	}
+	if _, folded := t.foldedBelow(pos.ln); !folded {
+		return false
+	}
+	// On the placeholder: past the line's own text.
+	textWidth := textwidth.DisplayWidth(textwidth.ExpandTabs(lineAt(t, pos.ln), tabWidthOf(t)))
+	displayCol := m.Col - gutter + t.leftCol
+	if v.wrap {
+		tabWidth, width := tabWidthOf(t), wrapWidth(t, v.lastWidth)
+		steps := min(max(m.Row, 1), max(1, v.lastHeight-1)) - 1
+		ln, sub := stepVisualRows(t, t.topLine, t.topSub, steps, tabWidth, width)
+		if ln != pos.ln {
+			return false
+		}
+		starts := lineWrapStarts(t, ln, tabWidth, width)
+		displayCol = starts[min(sub, len(starts)-1)] + m.Col - gutter
+	}
+	if displayCol < textWidth {
+		return false
+	}
+	return t.openFoldAt(pos.ln)
+}
+
 // selectWordAt selects the identifier-like word touching pos. A click not
 // touching a word selects nothing, rather than guessing at a neighbouring
 // one.
@@ -428,10 +480,12 @@ func selectWordAt(t *tab, pos position) {
 // paste back as a whole line.
 func selectLineAt(t *tab, pos position) {
 	t.selAnchor = position{ln: pos.ln, col: 0}
-	if pos.ln+1 < len(t.buf.Lines) {
-		t.selHead = position{ln: pos.ln + 1, col: 0}
+	// A folded line selects its whole hidden block with it.
+	last := t.linewiseFoldEnd(pos.ln)
+	if last+1 < len(t.buf.Lines) {
+		t.selHead = position{ln: last + 1, col: 0}
 	} else {
-		t.selHead = position{ln: pos.ln, col: len(currentLineRunes(t, pos.ln, tabWidthOf(t)))}
+		t.selHead = position{ln: last, col: len(currentLineRunes(t, last, tabWidthOf(t)))}
 	}
 	t.hasSel = true
 }
@@ -459,7 +513,7 @@ func (v *View) positionAt(t *tab, m layout.Mouse) position {
 		return v.wrappedPositionAt(t, m, bodyRows)
 	}
 
-	ln := t.topLine + min(max(m.Row, 1), bodyRows) - 1
+	ln := t.stepVisible(t.topLine, min(max(m.Row, 1), bodyRows)-1)
 	if ln < 0 {
 		ln = 0
 	}

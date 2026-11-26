@@ -172,12 +172,12 @@ func newFakeHighlighter(t *testing.T) *fakeHighlighter {
 			f.results <- r
 		}
 	})
-	f.highlight = func(path string, src []byte) ([][]layout.Segment, bool) {
+	f.highlight = func(path string, src []byte) ([][]layout.Segment, []foldRange, bool) {
 		f.mu.Lock()
 		f.calls++
 		f.lastSrc = string(src)
 		f.mu.Unlock()
-		return [][]layout.Segment{{{Text: string(src)}}}, true
+		return [][]layout.Segment{{{Text: string(src)}}}, nil, true
 	}
 	t.Cleanup(f.Close)
 	return f
@@ -271,8 +271,8 @@ func TestHighlighterSubmitNowSkipsTheDebounce(t *testing.T) {
 // blank a whole file's colors because it was briefly too slow to parse.
 func TestHighlighterKeepsPreviousHighlightWhenTheParseGivesUp(t *testing.T) {
 	f := newFakeHighlighter(t)
-	f.highlight = func(path string, src []byte) ([][]layout.Segment, bool) {
-		return nil, false
+	f.highlight = func(path string, src []byte) ([][]layout.Segment, []foldRange, bool) {
+		return nil, nil, false
 	}
 	b := goBuffer(t, "package main")
 	before := b.highlighted

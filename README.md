@@ -304,6 +304,29 @@ Note that nib asks the terminal for mouse reporting, which means the
 terminal's *own* click-drag selection doesn't apply inside nib. Most
 terminals bypass this while a modifier is held (`Option` on macOS).
 
+### Editor — folding
+
+| Key | Action |
+| --- | --- |
+| `za` | Toggle the fold at the cursor |
+| `zc` | Close the block the cursor is in — again to close the one around it |
+| `zo` | Open the fold at the cursor |
+| `zM` / `zR` | Fold / unfold everything |
+| Click `▾` / `▸` | Fold / unfold that block; click a fold's `⋯` to open it |
+
+Any block spanning several lines folds: JSON objects and arrays, functions,
+classes, blocks, multi-line comments — taken from the file's syntax tree, so
+braces inside strings and comments don't count. Files without a grammar (or
+over 4 MB) fold on `{}`/`[]` pairs, or on indentation when they have none.
+
+A closed fold shows as its first line plus `⋯ N lines ⋯` and the closing
+bracket. `j`/`k` step over it, and `dd`/`yy`/`cc` act on the whole block. The
+cursor landing inside a fold any other way — search, `:N`, go to definition,
+undo — opens it, as does editing its first line. Folds belong to the pane:
+two panes on one file fold independently. Each command is also in the action
+popup, bindable on its own (`fold_toggle`, `fold_close`, `fold_open`,
+`fold_all`, `unfold_all`).
+
 ### Editor — code intelligence
 
 | Key | Action |

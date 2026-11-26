@@ -13,9 +13,9 @@ import (
 const scrollTabBarRows = 1
 
 // ScrollState implements layout.Scrollable. Viewport/Total mirror exactly
-// what renderBody's own clamp (view.go, "if t.cursorLn >= t.topLine+rows")
-// is computed against, so the scrollbar can never show a position the pane
-// itself disagrees with.
+// what renderBody's own clamp is computed against, so the scrollbar can
+// never show a position the pane itself disagrees with. Positions count
+// visible lines: a closed fold takes one row of track, not its length.
 func (v *View) ScrollState() layout.ScrollState {
 	t := v.activeTab()
 	if t == nil || t.buf == nil {
@@ -26,9 +26,9 @@ func (v *View) ScrollState() layout.ScrollState {
 		viewport = 0
 	}
 	return layout.ScrollState{
-		Top:       t.topLine,
+		Top:       t.visibleIndex(t.topLine),
 		Viewport:  viewport,
-		Total:     len(t.buf.Lines),
+		Total:     t.visibleLineCount(),
 		RowOffset: scrollTabBarRows,
 	}
 }
@@ -50,7 +50,7 @@ func (v *View) ScrollTo(top int) {
 	if viewport < 0 {
 		viewport = 0
 	}
-	maxTop := len(t.buf.Lines) - viewport
+	maxTop := t.visibleLineCount() - viewport
 	if maxTop < 0 {
 		maxTop = 0
 	}
@@ -60,15 +60,15 @@ func (v *View) ScrollTo(top int) {
 	if top > maxTop {
 		top = maxTop
 	}
-	t.topLine, t.topSub = top, 0
+	t.topLine, t.topSub = t.lineAtVisibleIndex(top), 0
 
 	if viewport > 0 {
 		moved := false
-		if t.cursorLn < top {
-			t.cursorLn = top
+		if cur := t.visibleIndex(t.cursorLn); cur < top {
+			t.cursorLn = t.topLine
 			moved = true
-		} else if t.cursorLn >= top+viewport {
-			t.cursorLn = top + viewport - 1
+		} else if cur >= top+viewport {
+			t.cursorLn = t.lineAtVisibleIndex(top + viewport - 1)
 			moved = true
 		}
 		if moved {
@@ -110,7 +110,7 @@ func (v *View) ScrollMarks() []layout.ScrollMark {
 	marks := make([]layout.ScrollMark, 0, len(t.lineStatus))
 	for line, status := range t.lineStatus {
 		marks = append(marks, layout.ScrollMark{
-			Line:     line,
+			Line:     t.visibleIndex(line),
 			Priority: scrollMarkPriority(status),
 			Style:    gitstyle.LineStyle(status),
 		})

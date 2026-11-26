@@ -55,7 +55,7 @@ type Highlighter struct {
 	// Set before the first Submit and not after: the worker reads it, and
 	// the only thing making that safe without a lock is that the first
 	// Submit's channel send orders the write ahead of every read.
-	highlight func(path string, src []byte) ([][]layout.Segment, bool)
+	highlight func(path string, src []byte) ([][]layout.Segment, []foldRange, bool)
 
 	// wake is signalled (never blocking) whenever pending changes, so a
 	// submit costs a mutex and a non-blocking send — no allocation, no
@@ -94,6 +94,7 @@ type HighlightResult struct {
 	buf   *Buffer
 	rev   uint64
 	lines [][]layout.Segment
+	folds []foldRange
 }
 
 // NewHighlighter starts a highlight worker that delivers its results
@@ -101,7 +102,7 @@ type HighlightResult struct {
 func NewHighlighter(post func(ev interface{})) *Highlighter {
 	h := &Highlighter{
 		post:      post,
-		highlight: highlightSource,
+		highlight: analyzeSource,
 		wake:      make(chan struct{}, 1),
 		quit:      make(chan struct{}),
 		done:      make(chan struct{}),
@@ -258,14 +259,14 @@ func (h *Highlighter) process(job highlightJob) {
 	if h.superseded(job) {
 		return
 	}
-	lines, ok := h.highlight(job.path, job.src)
+	lines, folds, ok := h.highlight(job.path, job.src)
 	if !ok {
 		return // parse gave up: leave the previous highlight in place
 	}
 	if h.post == nil {
 		return
 	}
-	h.post(HighlightResult{buf: job.buf, rev: job.rev, lines: lines})
+	h.post(HighlightResult{buf: job.buf, rev: job.rev, lines: lines, folds: folds})
 }
 
 // superseded reports whether a newer snapshot of job's buffer is already
@@ -293,4 +294,5 @@ func ApplyHighlightResult(r HighlightResult) {
 		return
 	}
 	r.buf.highlighted = r.lines
+	r.buf.setFolds(r.folds)
 }

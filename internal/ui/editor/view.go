@@ -146,6 +146,16 @@ var Scope = config.Scope{Name: "editor", Title: "Editor", Actions: config.Action
 	{ID: "conflict_auto_resolve", Keys: []string{"M"}, Desc: "Magic wand: resolve every conflict in this file whose sides don't collide", Section: "Editor — merge conflicts", InPopup: true},
 	{ID: "conflict_next", Keys: []string{"Alt+n"}, Desc: "Next merge conflict, then the next conflicted file", Section: "Editor — merge conflicts", InPopup: true},
 	{ID: "conflict_prev", Keys: []string{"Alt+p"}, Desc: "Previous merge conflict, then the previous conflicted file", Section: "Editor — merge conflicts", InPopup: true},
+	// Folding (see fold.go). "z" waits for one more key, vim-style — za
+	// toggle, zc close, zo open, zM close all, zR open all — the same
+	// capture-the-next-key shape as "r". Each also stands alone below,
+	// with no default key, for the action popup and for binding directly.
+	{ID: "fold", Keys: []string{"z"}, Desc: "Fold: za toggle, zc close, zo open, zM fold all, zR unfold all", Section: "Editor — folding"},
+	{ID: "fold_toggle", Desc: "Toggle the fold at the cursor", Section: "Editor — folding", InPopup: true},
+	{ID: "fold_close", Desc: "Close the fold at the cursor (again: the one around it)", Section: "Editor — folding", InPopup: true},
+	{ID: "fold_open", Desc: "Open the fold at the cursor", Section: "Editor — folding", InPopup: true},
+	{ID: "fold_all", Desc: "Fold everything", Section: "Editor — folding", InPopup: true},
+	{ID: "unfold_all", Desc: "Unfold everything", Section: "Editor — folding", InPopup: true},
 	// No key: only ever needed right after a save marked a file resolved
 	// by mistake, and the status line says where to find it.
 	{ID: "conflict_unresolve", Desc: "Mark this file as conflicted again (undo the automatic git add)", Section: "Editor — merge conflicts", InPopup: true},
@@ -308,6 +318,18 @@ type tab struct {
 	// panes on the same reloaded buffer each get their own until each is
 	// individually dismissed.
 	justReloaded bool
+
+	// closedFolds holds the header lines of this pane's closed folds (see
+	// fold.go) — view state like the cursor, so two panes on one buffer
+	// fold independently. foldRev is the buffer rev those line numbers
+	// describe (see syncFolds); foldGen bumps on every change, and
+	// hidden/hiddenKey cache the line spans they hide.
+	closedFolds map[int]bool
+	foldRev     uint64
+	foldGen     uint64
+	hidden      []foldRange
+	hiddenKey   foldCacheKey
+	hiddenValid bool
 }
 
 // View is the editor pane: zero or more open tabs, each with its own
@@ -383,6 +405,11 @@ type View struct {
 	// ExitEditingModes so losing focus mid-"r" doesn't leave the pane
 	// stuck waiting for a char forever.
 	awaitingReplaceChar bool
+
+	// awaitingFoldKey is true right after "z" (fold), waiting on the key
+	// that says which fold command — see handleFoldKey. Cleared like
+	// awaitingReplaceChar.
+	awaitingFoldKey bool
 
 	// OnAllTabsClosed, if set, is called whenever CloseTab/CloseAllTabs
 	// (directly, or via the ":q"/":qa" family — see closeActiveTab/
@@ -753,7 +780,10 @@ func (v *View) submitHighlight(buf *Buffer, immediate bool) {
 		return
 	}
 	if v.highlights == nil {
-		buf.highlighted = highlightBuffer(buf)
+		if lines, folds, ok := analyzeSource(buf.Path, buf.Source); ok {
+			buf.highlighted = lines
+			buf.setFolds(folds)
+		}
 		return
 	}
 	if immediate {
@@ -1746,7 +1776,7 @@ func (v *View) CursorPosition() (int, int, bool) {
 func (v *View) cursorAnchor(t *tab) (col, row int) {
 	if !v.wrap || t.buf == nil {
 		col = gutterWidthFor(t) + cursorDisplayColumn(t, tabWidthOf(t)) - t.leftCol
-		row = 1 + (t.cursorLn - t.topLine) // +1: row 0 is the tab bar
+		row = 1 + t.visibleLinesBetween(t.topLine, t.cursorLn, v.lastHeight) // +1: row 0 is the tab bar
 		return col, row
 	}
 	tabWidth, width := tabWidthOf(t), wrapWidth(t, v.lastWidth)
@@ -2341,10 +2371,16 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 	}
 
 	gutterWidth := gutterWidthFor(t)
+	foldCol := foldColumnWidth(t)
 	contentWidth := cols - gutterWidth
 	if contentWidth < 0 {
 		contentWidth = 0
 	}
+
+	// Defensive, like Render's clamp: whatever put the cursor on a line a
+	// fold hides, the fold opens rather than the cursor vanishing.
+	t.revealLine(t.cursorLn)
+	t.topLine = t.visibleAtOrBefore(max(0, min(t.topLine, len(t.buf.Lines)-1)))
 
 	if wrap {
 		scrollWrapped(t, tabWidth, contentWidth, rows)
@@ -2353,8 +2389,8 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 		if t.cursorLn < t.topLine {
 			t.topLine = t.cursorLn
 		}
-		if t.cursorLn >= t.topLine+rows {
-			t.topLine = t.cursorLn - rows + 1
+		if t.visibleLinesBetween(t.topLine, t.cursorLn, rows) >= rows {
+			t.topLine = t.stepVisible(t.cursorLn, -(rows - 1))
 		}
 		if t.topLine < 0 {
 			t.topLine = 0
@@ -2379,7 +2415,7 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 	selStart, selEnd, hasSel := t.selectionSpan()
 
 	row := 0
-	for ln := t.topLine; row < rows && ln < len(t.buf.Lines); ln++ {
+	for ln := t.topLine; row < rows && ln < len(t.buf.Lines); ln = t.nextVisible(ln) {
 		// Bounded once per row, up front: everything below — the heuristic
 		// highlighter, the real tree-sitter output, and the search/selection
 		// range overlays — must never pay a cost proportional to this
@@ -2429,6 +2465,9 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 		if conflict.hint != nil {
 			expandedSegs = append(expandedSegs, *conflict.hint)
 		}
+		if span, folded := t.foldedBelow(ln); folded {
+			expandedSegs = append(expandedSegs, layout.Segment{Text: foldPlaceholder(t, span), Style: foldClosedStyle()})
+		}
 		worst := worstSeverity(t.diagnostics[ln])
 		diagSeg := layout.Segment{
 			Text:  diagnosticMarker(worst),
@@ -2442,10 +2481,16 @@ func renderBody(w layout.Window, t *tab, tabWidth, cols, rows, rowOffset int, se
 			diffSeg = conflict.gutter
 		}
 		gutterSeg := layout.Segment{
-			Text:  fmt.Sprintf("%*d ", gutterWidth-3, ln+1),
+			Text:  fmt.Sprintf("%*d ", gutterWidth-3-foldCol, ln+1),
 			Style: layout.Style{Attr: layout.AttrDim},
 		}
 		gutter := []layout.Segment{diagSeg, diffSeg, gutterSeg}
+		if foldCol > 0 {
+			// The fold marker sits between the number and the text:
+			// "  12▾ func main() {".
+			gutterSeg.Text = fmt.Sprintf("%*d", gutterWidth-3-foldCol, ln+1)
+			gutter = []layout.Segment{diagSeg, diffSeg, gutterSeg, foldMarkerSegment(t, ln), {Text: " "}}
+		}
 
 		// Without wrap, one row showing the slice leftCol scrolled to; with
 		// it, a row per wrapStarts entry, each showing its own slice. Only
@@ -2519,7 +2564,7 @@ func gutterWidthFor(t *tab) int {
 	if t.buf == nil {
 		return 3
 	}
-	return len(fmt.Sprintf("%d", len(t.buf.Lines))) + 3
+	return len(fmt.Sprintf("%d", len(t.buf.Lines))) + 3 + foldColumnWidth(t)
 }
 
 // tabWidthOf returns t's buffer's configured indent width — see
@@ -2710,6 +2755,9 @@ func (v *View) HandleKey(k layout.Key) bool {
 	if v.awaitingReplaceChar {
 		return v.handleReplaceCharKey(k)
 	}
+	if v.awaitingFoldKey {
+		return v.handleFoldKey(k)
+	}
 
 	// A digit (other than a bare "0", vim's own line_start motion) always
 	// accumulates into the count prefix ahead of everything else — the "3"
@@ -2832,6 +2880,9 @@ func (v *View) runAction(action string, count int) bool {
 		return false
 	}
 	if v.runConflictAction(t, action) {
+		return true
+	}
+	if v.runFoldAction(t, action) {
 		return true
 	}
 
@@ -3025,10 +3076,12 @@ func (v *View) insertBlock(t *tab, s string) {
 // N times lands in the same place as doing it once.
 func (v *View) applyMovement(t *tab, action string, count int) bool {
 	switch action {
+	// Vertical moves step over closed folds, a folded block counting as
+	// the one line it shows.
 	case "move_down":
-		t.cursorLn += count
+		t.cursorLn = t.stepVisible(t.cursorLn, count)
 	case "move_up":
-		t.cursorLn -= count
+		t.cursorLn = t.stepVisible(t.cursorLn, -count)
 	case "move_left", "move_right":
 		// cursorCol lives in tab-expanded space, so stepping it directly
 		// would cross a tab one rendered column at a time, letting the
@@ -3099,9 +3152,9 @@ func (v *View) applyMovement(t *tab, action string, count int) bool {
 		}
 		t.cursorCol = expandedColForRawIndex(line, raw, tabWidth)
 	case "page_down":
-		t.cursorLn += v.pageSize()
+		t.cursorLn = t.stepVisible(t.cursorLn, v.pageSize())
 	case "page_up":
-		t.cursorLn -= v.pageSize()
+		t.cursorLn = t.stepVisible(t.cursorLn, -v.pageSize())
 	case "line_start":
 		t.cursorCol = 0
 	case "line_end":
@@ -3109,7 +3162,7 @@ func (v *View) applyMovement(t *tab, action string, count int) bool {
 	case "first_line":
 		t.cursorLn = 0
 	case "last_line":
-		t.cursorLn = len(t.buf.Lines) - 1
+		t.cursorLn = t.visibleAtOrBefore(len(t.buf.Lines) - 1)
 	case "word_forward", "word_backward", "word_end", "insert_word_forward", "insert_word_backward":
 		raw := rawIndexForExpandedCol(t.buf.Lines[t.cursorLn], t.cursorCol, tabWidthOf(t))
 		newLn, newRaw := motionDestination(t.buf, t.cursorLn, raw, action, count)
@@ -3423,6 +3476,7 @@ func (v *View) ExitEditingModes() {
 	// the pending press's next keystroke as a replacement instead of its
 	// own normal action.
 	v.awaitingReplaceChar = false
+	v.awaitingFoldKey = false
 	// Likewise a drag interrupted by focus moving elsewhere: the release that
 	// would have ended it is going to another pane, so nothing else would ever
 	// clear this. The selection ITSELF is kept — it survives losing focus the
@@ -4165,6 +4219,11 @@ func (v *View) clampCursor(t *tab, allowOnePastEnd bool) {
 		}
 		return
 	}
+	// The one place every cursor move passes through, so the one place a
+	// cursor landing inside a closed fold — a search match, :N, go to
+	// definition, undo — opens it. j/k never get here hidden: they step
+	// over folds (see applyMovement).
+	t.revealLine(t.cursorLn)
 	line := t.buf.Lines[t.cursorLn]
 
 	// A hard ceiling first: content past maxRenderLineRunes isn't

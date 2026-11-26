@@ -73,8 +73,11 @@ func (r *Register) Lines() []string {
 // starting at the cursor, clamped to the buffer — the inclusive end
 // deleteLines/yankLines/changeLines all need. Shared so "dd"/"3dd" and
 // "yy"/"3yy" and "cc"/"3cc" clamp identically at the end of the buffer.
+//
+// Counts visible lines: a closed fold is one line, and covering it covers
+// its whole hidden block, like "dd" on a fold in vim.
 func linewiseEnd(t *tab, count int) int {
-	end := t.cursorLn + count - 1
+	end := t.linewiseFoldEnd(t.stepVisible(t.cursorLn, count-1))
 	if last := len(t.buf.Lines) - 1; end > last {
 		end = last
 	}

@@ -129,9 +129,20 @@ func highlightBuffer(buf *Buffer) [][]layout.Segment {
 // on the highlight worker's goroutine, which must not touch a Buffer the
 // UI goroutine is free to be mutating (see Highlighter).
 func highlightSource(path string, src []byte) ([][]layout.Segment, bool) {
+	lines, _, ok := analyzeSource(path, src)
+	return lines, ok
+}
+
+// analyzeSource is highlightSource plus the file's foldable ranges (see
+// fold.go), taken from the same parse so folding costs no second one.
+// Files without a usable tree — no grammar, too big, a query that won't
+// compile — get the bracket/indentation fallback instead. ok has
+// highlightSource's meaning: false leaves both the existing highlight and
+// the existing folds in place.
+func analyzeSource(path string, src []byte) ([][]layout.Segment, []foldRange, bool) {
 	entry := highlightGrammar(path)
 	if entry == nil || len(src) > maxTreeSitterBytes {
-		return nil, true
+		return nil, foldRangesFallback(strings.Split(string(src), "\n")), true
 	}
 
 	hl, cached := highlighterCache[entry.Name]
@@ -145,7 +156,7 @@ func highlightSource(path string, src []byte) ([][]layout.Segment, bool) {
 		highlighterCache[entry.Name] = hl
 	}
 	if hl == nil {
-		return nil, true
+		return nil, foldRangesFallback(strings.Split(string(src), "\n")), true
 	}
 
 	// The Strict variant purely to learn whether the parse finished:
@@ -158,9 +169,9 @@ func highlightSource(path string, src []byte) ([][]layout.Segment, bool) {
 	}
 	if err != nil {
 		debuglog.Debug("highlight %s: %v", path, err)
-		return nil, false
+		return nil, nil, false
 	}
-	return splitHighlightsByLine(src, ranges), true
+	return splitHighlightsByLine(src, ranges), foldRangesFromTree(tree), true
 }
 
 // parserCache holds one *gotreesitter.Parser per language name, mirroring

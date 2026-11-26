@@ -49,6 +49,7 @@ var extras = []extra{
 		{"Double-click", "Select the word, and copy it"},
 		{"Triple-click", "Select the line, and copy it"},
 		{"Shift+click", "Extend the selection (copy with y)"},
+		{"Click ▾ / ▸", "Fold or unfold the block (click a fold's ⋯ to open it)"},
 		{"Wheel", "Scroll the pane under the pointer"},
 		{"Right-click tab", "Menu: close, split or move the tab to another pane"},
 	}},
