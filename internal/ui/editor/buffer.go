@@ -105,6 +105,24 @@ type Buffer struct {
 	// Highlighter and View.submitHighlight.
 	highlighted [][]layout.Segment
 
+	// folds is what can fold in this buffer (see fold.go), sorted by
+	// header line — set by the highlight pass for files a grammar handles,
+	// computed lazily by foldRanges for the rest (foldsRev records which
+	// rev that scan saw). Like highlighted, edits keep it aligned with
+	// Lines (see recordSplice) until a fresh result replaces it. foldsGen
+	// bumps on every change, for tabs caching what their folds hide.
+	folds    []foldRange
+	foldsRev uint64
+	foldsGen uint64
+	foldsSet bool // folds has been computed at least once
+
+	// splices logs recent structural edits so every pane can move its own
+	// closed folds along with the text (see tab.syncFolds). splicesDropped
+	// is the rev of the newest splice already pushed out of the log: a
+	// tab older than that can't catch up and drops its folds.
+	splices        []lineSplice
+	splicesDropped uint64
+
 	// rev counts content changes, so a highlight computed in the
 	// background can tell whether it is still describing this buffer's
 	// current text (see ApplyHighlightResult). Bumped by resync — i.e. by
@@ -271,6 +289,7 @@ func (b *Buffer) Reload() error {
 	if err != nil {
 		return err
 	}
+	b.recordDiffSplice(b.Lines, lf.lines)
 	b.Lines = lf.lines
 	b.mode = lf.mode
 	b.Charset = lf.charset
@@ -630,6 +649,7 @@ func (b *Buffer) resync() {
 // splice and this one disagree — the alignment invariant is already lost,
 // so the whole cache is dropped rather than a mangled one kept.
 func (b *Buffer) spliceHighlight(ln, removed, inserted int) {
+	b.recordSplice(ln, removed, inserted)
 	if b.highlighted == nil {
 		return
 	}
@@ -671,6 +691,7 @@ func (b *Buffer) spliceHighlight(ln, removed, inserted int) {
 // array to the new one to preserve. Every line falls back to the
 // highlightLine heuristic until the background result lands.
 func (b *Buffer) Restore(lines []string) {
+	b.recordDiffSplice(b.Lines, lines)
 	b.Lines = lines
 	b.highlighted = nil
 	b.resync()

@@ -88,6 +88,9 @@ func visualLineText(t *tab, ln, tabWidth int) string {
 	if truncated {
 		text += renderTruncationMarker.Text
 	}
+	if span, folded := t.foldedBelow(ln); folded {
+		text += foldPlaceholder(t, span)
+	}
 	return text
 }
 
@@ -117,8 +120,8 @@ func stepVisualRows(t *tab, ln, sub, n, tabWidth, width int) (int, int) {
 	for ; n > 0; n-- {
 		if sub+1 < len(lineWrapStarts(t, ln, tabWidth, width)) {
 			sub++
-		} else if ln < last {
-			ln, sub = ln+1, 0
+		} else if next := t.nextVisible(ln); next <= last {
+			ln, sub = next, 0
 		} else {
 			break
 		}
@@ -126,8 +129,8 @@ func stepVisualRows(t *tab, ln, sub, n, tabWidth, width int) (int, int) {
 	for ; n < 0; n++ {
 		if sub > 0 {
 			sub--
-		} else if ln > 0 {
-			ln--
+		} else if prev := t.prevVisible(ln); prev >= 0 {
+			ln = prev
 			sub = len(lineWrapStarts(t, ln, tabWidth, width)) - 1
 		} else {
 			break
@@ -146,7 +149,7 @@ func visualRowsBetween(t *tab, ln, sub, toLn, toSub, limit, tabWidth, width int)
 		return -1
 	}
 	n := -sub
-	for ; ln < toLn; ln++ {
+	for ; ln < toLn; ln = t.nextVisible(ln) {
 		n += len(lineWrapStarts(t, ln, tabWidth, width))
 		if n > limit {
 			return n
@@ -161,7 +164,7 @@ func visualRowsBetween(t *tab, ln, sub, toLn, toSub, limit, tabWidth, width int)
 // partway through a line taller than the pane.
 func scrollWrapped(t *tab, tabWidth, width, rows int) {
 	t.leftCol = 0
-	t.topLine = max(0, min(t.topLine, len(t.buf.Lines)-1))
+	t.topLine = t.visibleAtOrBefore(max(0, min(t.topLine, len(t.buf.Lines)-1)))
 	t.topSub = max(0, min(t.topSub, len(lineWrapStarts(t, t.topLine, tabWidth, width))-1))
 
 	curSub := cursorWrapRow(t, tabWidth, width)
